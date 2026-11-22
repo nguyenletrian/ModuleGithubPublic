@@ -207,6 +207,15 @@ def _SelectNativePaintInfluence(joint):
             cmds.warning("Paint Skin: expected only {}, got {}."
                          .format(matches[0], selected))
             return False
+
+        # Programmatic treeView selection does not fire the same callbacks as
+        # clicking an influence row in Maya Tool Settings. The native Paint
+        # Skin callback updates Artisan's displayed weights, not just the
+        # highlighted tree row or skinCluster.paintTrans connection.
+        item_name = matches[0].replace("\\", "\\\\").replace('"', '\\"')
+        mel.eval('artSkinInflListChanging "{}" 0;'.format(item_name))
+        mel.eval('artSkinInflListChanging "{}" 1;'.format(item_name))
+        mel.eval('artSkinInflListChanged artAttrSkinPaintCtx;')
         return True
     except (RuntimeError, TypeError, ValueError) as exc:
         cmds.warning("Cannot update Maya Paint Skin influence tree: {}"
