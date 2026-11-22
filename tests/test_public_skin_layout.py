@@ -143,7 +143,7 @@ class SkinningPaintDockTests(unittest.TestCase):
         self.assertIn("dock_layout.setContentsMargins(0, 0, 0, 0)", source)
         self.assertIn("PAINT_STRIP_WIDTH = 145", source)
         self.assertIn("self.paint_scroll.setFixedWidth(PAINT_STRIP_WIDTH)", source)
-        self.assertIn("self.workspace.setSizes([625, 440])", source)
+        self.assertIn("self.workspace.setSizes([510, 440])", source)
         self.assertIn("left_dock = key in LEFT_DOCK_SECTIONS", source)
         self.assertIn("if left_dock:", source)
         self.assertIn("self.paint_stack.insertWidget(", source)
