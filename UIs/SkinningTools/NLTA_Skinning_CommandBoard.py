@@ -1163,8 +1163,8 @@ class SkinningBoard(QtWidgets.QWidget):
         finally:
             self._reflowing = False
 
-    def activate_paint(self):
-        """Activate Maya's Artisan context without opening Paint Tool Settings."""
+    def activate_paint(self, quiet=False):
+        """Enter Paint Skin context without opening Maya Paint Tool Settings."""
         import NLTA_Skinning
         ensure = getattr(NLTA_Skinning, "EnsurePaintContext", None)
         if not callable(ensure):
@@ -1173,13 +1173,15 @@ class SkinningBoard(QtWidgets.QWidget):
                 "Reinstall NLTA with AutoInstall.py and reopen Skinning."
                 .format(getattr(NLTA_Skinning, "__file__", "<unknown>")))
             return False
+        # A non-skin action (e.g. Clear Skins or export) can leave no skin in
+        # the scene. Do not open Tool Settings or warn in that situation.
+        if quiet and not NLTA_Skinning.EnsureSkinSession(warn=False):
+            return False
         return bool(ensure())
 
     def dispatch(self, action_id, callback):
-        # Follow the legacy Skinning callbacks: joint switching and pair
-        # unlocking initialize their own paint context AFTER reading selection.
-        # Pre-activating Paint here can consume joint/vertex selection or cause
-        # Switch Joint to skip an influence.
+        # Read joint/vertex/control selections BEFORE entering Paint Skin for
+        # operations that need them. Return to Paint Skin only afterward.
         needs_paint = (
             action_id.startswith("weight/increment/") or
             action_id in {
@@ -1189,18 +1191,25 @@ class SkinningBoard(QtWidgets.QWidget):
                 "paint/locks/Unlock All"
             }
         )
-        if action_id == "skin/max/Check":
-            result = callback(maxValue=self.max_influences.value())
-        elif action_id == "skin/max/Fix":
-            result = callback(maxInfluence=self.max_influences.value())
-        else:
+        run_callback = True
+        try:
+            if action_id == "skin/max/Check":
+                return callback(maxValue=self.max_influences.value())
+            if action_id == "skin/max/Fix":
+                return callback(maxInfluence=self.max_influences.value())
             if needs_paint and cmds.currentCtx() != "artAttrSkinContext":
                 if not self.activate_paint():
+                    run_callback = False
                     return
-            result = callback()
-        if action_id.startswith(("paint/locks/", "skin/bind/")):
-            self.influences.refresh()
-        return result
+            return callback()
+        finally:
+            if run_callback:
+                # Use only the Artisan paint context: never launch native
+                # ArtPaintSkinWeightsToolOptions or the Tool Settings window.
+                if cmds.currentCtx() != "artAttrSkinContext":
+                    self.activate_paint(quiet=True)
+                if action_id.startswith(("paint/locks/", "skin/bind/")):
+                    self.influences.refresh()
 
     def showEvent(self, event):
         QtWidgets.QWidget.showEvent(self, event)
