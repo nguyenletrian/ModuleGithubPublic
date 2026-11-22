@@ -30,6 +30,7 @@ LEFT_DOCK_GROUP_ORDER = (
 )
 INFLUENCE_CONTEXT_ACTIONS = (
     ("Unlock", "unlock"),
+    ("Lock Inverse", "lock_inverse"),
     ("Unlock All", "unlock_all"),
     ("Add Unlock", "add_unlock"),
     ("Add Up", "add_up"),
@@ -514,7 +515,9 @@ def _influence_menu_plan(skin, joint, action):
         cmds.warning("The clicked joint is no longer bound to this skinCluster.")
         return None
     bound = set(available)
-    if action == "unlock":
+    if action in ("unlock", "lock_inverse"):
+        # Exclusive: clicked joint unlocked; every other influence locked.
+        # Keep the legacy exclusive Unlock behavior for compatibility.
         return True, [joint], joint
     if action == "unlock_all":
         return False, available, joint
