@@ -938,7 +938,11 @@ class InfluencePanel(QtWidgets.QFrame):
             return
         if rows is None:
             rows = _skin_influence_rows(self.skin)
-        if rows == self._rows:
+        if rows == self._rows and all(
+                joint not in self._items or locked is None
+                or self._items[joint].checkState(1) == (
+                    QtCore.Qt.Checked if locked else QtCore.Qt.Unchecked)
+                for joint, locked in rows):
             return
         if {joint for joint, _ in rows} != set(self._items):
             self._rows = rows
