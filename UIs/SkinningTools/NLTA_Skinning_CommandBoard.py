@@ -28,19 +28,20 @@ LEFT_DOCK_GROUP_ORDER = (
     ("paint", "locks"), ("paint", "helpers"),
     ("weight", "increment"), ("paint", "quick"),
 )
-# Column 1 contains a painted checkbox and seven tiny click targets.
-# Drawing through one delegate avoids constructing widgets per joint and
-# repeated QWidget lifetime callbacks during Maya scene changes.
+# Small, painted controls in two rows per joint; no QWidget per influence.
+# (label, action, caption, width, row), with 0 = top / 1 = bottom.
 INFLUENCE_ROW_ACTIONS = (
-    ("Unlock", "unlock", "U", 20),
-    ("Lock Inverse", "lock_inverse", "Inv", 26),
-    ("Unlock All", "unlock_all", "All", 25),
-    ("Add Unlock", "add_unlock", "+", 20),
-    ("Add Up", "add_up", "↑", 20),
-    ("Add Down", "add_down", "↓", 20),
-    ("Isolate", "isolate", "Iso", 25),
+    ("Unlock", "unlock", "U", 24, 0),
+    ("Add Unlock", "add_unlock", "+", 23, 0),
+    ("Add Up", "add_up", "↑", 23, 0),
+    ("Add Down", "add_down", "↓", 23, 0),
+    ("Unlock All", "unlock_all", "All", 28, 1),
+    ("Lock Inverse", "lock_inverse", "Inv", 30, 1),
+    ("Isolate", "isolate", "Iso", 29, 1),
+    ("Un Isolate", "un_isolate", "UnIso", 43, 1),
 )
-INFLUENCE_LOCK_WIDTH = 204
+INFLUENCE_LOCK_WIDTH = 154
+INFLUENCE_CELL_HEIGHT = 44
 PAINT_STRIP_WIDTH = 145  # Half of the former 290-px action strip.
 
 
@@ -624,20 +625,28 @@ def _influence_hierarchy(rows):
 
 
 def _influence_cell_slots(rect):
-    """Compact hit targets shared by paint, hover and mouse click handling."""
-    y = rect.y() + max(0, (rect.height() - 18) // 2)
-    x = rect.x() + 3
-    slots = [("toggle_lock", "Toggle this joint's Lock", "",
-              QtCore.QRect(x, y, 19, 18))]
-    x += 22
-    for label, action, caption, width in INFLUENCE_ROW_ACTIONS:
-        slots.append((action, label, caption, QtCore.QRect(x, y, width, 18)))
-        x += width + 2
+    """Two-row hit boxes reused for delegate painting, tooltips and clicks."""
+    top = rect.y() + max(0, (rect.height() - 39) // 2)
+    row_y = (top, top + 21)
+    first_x = rect.x() + 3
+    slots = [("toggle_lock", "Lock State", "",
+              QtCore.QRect(first_x, row_y[0], 19, 18))]
+    x = [first_x + 22, first_x]
+    for label, action, caption, width, row in INFLUENCE_ROW_ACTIONS:
+        slots.append((action, label, caption,
+                      QtCore.QRect(x[row], row_y[row], width, 18)))
+        x[row] += width + 2
     return slots
 
 
 class InfluenceCellDelegate(QtWidgets.QStyledItemDelegate):
-    """Render small clickable controls without adding 7 QWidget objects per row."""
+    """Paint lightweight two-row controls without per-joint QWidget objects."""
+
+    def sizeHint(self, option, index):
+        hint = QtWidgets.QStyledItemDelegate.sizeHint(self, option, index)
+        if index.column() == 1:
+            hint.setHeight(max(hint.height(), INFLUENCE_CELL_HEIGHT))
+        return hint
 
     def paint(self, painter, option, index):
         if index.column() != 1:
@@ -673,8 +682,8 @@ class InfluencePanel(QtWidgets.QFrame):
     def __init__(self, parent=None):
         super(InfluencePanel, self).__init__(parent)
         self.setObjectName("SkinningInfluencePanel")
-        self.setMinimumWidth(430)
-        self.setMaximumWidth(660)
+        self.setMinimumWidth(345)
+        self.setMaximumWidth(550)
         self.skin = None
         self.mesh = None
         self._rows = []
@@ -736,7 +745,7 @@ class InfluencePanel(QtWidgets.QFrame):
         self.tree.setItemDelegateForColumn(1, self._influence_delegate)
         self.tree.headerItem().setTextAlignment(1, QtCore.Qt.AlignCenter)
         self.tree.setAlternatingRowColors(True)
-        self.tree.setUniformRowHeights(True)
+        self.tree.setUniformRowHeights(False)  # Two painted rows per influence
         self.tree.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.tree.setToolTip(
             "The blue row is the active influence in Maya Paint Skin Weights.\n"
@@ -866,6 +875,8 @@ class InfluencePanel(QtWidgets.QFrame):
                 item.setData(0, QtCore.Qt.UserRole, joint)
                 item.setToolTip(0, joint)
                 item.setTextAlignment(1, QtCore.Qt.AlignCenter)
+                item.setSizeHint(
+                    1, QtCore.QSize(INFLUENCE_LOCK_WIDTH, INFLUENCE_CELL_HEIGHT))
                 if locked is not None:
                     item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
                     item.setCheckState(
@@ -1020,10 +1031,14 @@ class InfluencePanel(QtWidgets.QFrame):
         self._pending_lock_skin = None
         self._editing_locks = True
         try:
-            if action == "isolate":
+            if action in ("isolate", "un_isolate"):
                 import NLTA_Skinning
-                NLTA_Skinning.IsolateEffectVertex(
-                    mesh=self.mesh, joint=joint)
+                if action == "isolate":
+                    NLTA_Skinning.IsolateEffectVertex(
+                        mesh=self.mesh, joint=joint)
+                else:
+                    NLTA_Skinning.UnIsolateEffectVertex(
+                        mesh=self.mesh, joint=joint)
                 focused = joint
             else:
                 plan = _influence_action_plan(skin, joint, action)
@@ -1281,7 +1296,7 @@ class SkinningBoard(QtWidgets.QWidget):
         self.workspace.addWidget(self.scroll)
         self.workspace.setStretchFactor(0, 0)
         self.workspace.setStretchFactor(1, 1)
-        self.workspace.setSizes([625, 440])
+        self.workspace.setSizes([510, 440])
         inside = QtWidgets.QWidget()
         inside.setObjectName("SkinningContent")
         self.content = QtWidgets.QVBoxLayout(inside)
