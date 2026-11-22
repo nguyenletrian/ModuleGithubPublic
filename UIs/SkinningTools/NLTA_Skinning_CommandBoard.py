@@ -28,15 +28,19 @@ LEFT_DOCK_GROUP_ORDER = (
     ("paint", "locks"), ("paint", "helpers"),
     ("weight", "increment"), ("paint", "quick"),
 )
-INFLUENCE_CONTEXT_ACTIONS = (
-    ("Unlock", "unlock"),
-    ("Lock Inverse", "lock_inverse"),
-    ("Unlock All", "unlock_all"),
-    ("Add Unlock", "add_unlock"),
-    ("Add Up", "add_up"),
-    ("Add Down", "add_down"),
-    ("Isolate", "isolate"),
+# Column 1 contains a painted checkbox and seven tiny click targets.
+# Drawing through one delegate avoids constructing widgets per joint and
+# repeated QWidget lifetime callbacks during Maya scene changes.
+INFLUENCE_ROW_ACTIONS = (
+    ("Unlock", "unlock", "U", 20),
+    ("Lock Inverse", "lock_inverse", "Inv", 26),
+    ("Unlock All", "unlock_all", "All", 25),
+    ("Add Unlock", "add_unlock", "+", 20),
+    ("Add Up", "add_up", "↑", 20),
+    ("Add Down", "add_down", "↓", 20),
+    ("Isolate", "isolate", "Iso", 25),
 )
+INFLUENCE_LOCK_WIDTH = 204
 PAINT_STRIP_WIDTH = 145  # Half of the former 290-px action strip.
 
 
@@ -503,8 +507,8 @@ def _set_influence_locks(skin, joints, mode):
     return changed
 
 
-def _influence_menu_plan(skin, joint, action):
-    """Resolve right-click actions against the exact bound DAG joint.
+def _influence_action_plan(skin, joint, action):
+    """Resolve each inline action against the exact bound DAG joint.
 
     Exclusive operations match the original singleUnlock behavior. Add Unlock
     keeps existing locks, while Add Up/Down unlock the clicked joint and its
@@ -538,7 +542,7 @@ def _influence_menu_plan(skin, joint, action):
                 "parent" if action == "add_up" else "child", joint))
             return None
         return True, [joint, linked[0]], linked[0]
-    cmds.warning("Unsupported influence menu action: " + action)
+    cmds.warning("Unsupported inline influence action: " + action)
     return None
 
 
@@ -619,14 +623,58 @@ def _influence_hierarchy(rows):
     return parents
 
 
+def _influence_cell_slots(rect):
+    """Compact hit targets shared by paint, hover and mouse click handling."""
+    y = rect.y() + max(0, (rect.height() - 18) // 2)
+    x = rect.x() + 3
+    slots = [("toggle_lock", "Toggle this joint's Lock", "",
+              QtCore.QRect(x, y, 19, 18))]
+    x += 22
+    for label, action, caption, width in INFLUENCE_ROW_ACTIONS:
+        slots.append((action, label, caption, QtCore.QRect(x, y, width, 18)))
+        x += width + 2
+    return slots
+
+
+class InfluenceCellDelegate(QtWidgets.QStyledItemDelegate):
+    """Render small clickable controls without adding 7 QWidget objects per row."""
+
+    def paint(self, painter, option, index):
+        if index.column() != 1:
+            return QtWidgets.QStyledItemDelegate.paint(self, painter, option, index)
+        style = option.widget.style() if option.widget else QtWidgets.QApplication.style()
+        painter.save()
+        try:
+            style.drawPrimitive(QtWidgets.QStyle.PE_PanelItemViewItem,
+                                option, painter, option.widget)
+            state = index.data(QtCore.Qt.CheckStateRole)
+            for action, label, caption, bounds in _influence_cell_slots(option.rect):
+                button = QtWidgets.QStyleOptionButton()
+                button.rect = bounds
+                button.state = QtWidgets.QStyle.State_Enabled
+                if action == "toggle_lock":
+                    button.state |= (QtWidgets.QStyle.State_On
+                                     if state == QtCore.Qt.Checked
+                                     else QtWidgets.QStyle.State_Off)
+                    style.drawControl(QtWidgets.QStyle.CE_CheckBox,
+                                      button, painter, option.widget)
+                else:
+                    button.state |= QtWidgets.QStyle.State_Raised
+                    button.text = caption
+                    style.drawControl(QtWidgets.QStyle.CE_PushButton,
+                                      button, painter, option.widget)
+        finally:
+            painter.restore()
+
+
 class InfluencePanel(QtWidgets.QFrame):
     """Live influence list for the selected skinned mesh; no weight edits."""
 
     def __init__(self, parent=None):
         super(InfluencePanel, self).__init__(parent)
         self.setObjectName("SkinningInfluencePanel")
-        self.setMinimumWidth(220)
-        self.setMaximumWidth(430)
+        self.setMinimumWidth(430)
+        self.setMaximumWidth(660)
         self.skin = None
         self.mesh = None
         self._rows = []
@@ -683,7 +731,9 @@ class InfluencePanel(QtWidgets.QFrame):
         header.setStretchLastSection(False)
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
-        self.tree.setColumnWidth(1, 52)
+        self.tree.setColumnWidth(1, INFLUENCE_LOCK_WIDTH)
+        self._influence_delegate = InfluenceCellDelegate(self.tree)
+        self.tree.setItemDelegateForColumn(1, self._influence_delegate)
         self.tree.headerItem().setTextAlignment(1, QtCore.Qt.AlignCenter)
         self.tree.setAlternatingRowColors(True)
         self.tree.setUniformRowHeights(True)
@@ -695,8 +745,9 @@ class InfluencePanel(QtWidgets.QFrame):
         self.tree.itemChanged.connect(self.change_item_lock)
         self.tree.currentItemChanged.connect(self.change_active_influence)
         self.tree.itemDoubleClicked.connect(self.select_joint)
-        self.tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        self.tree.customContextMenuRequested.connect(self.show_influence_menu)
+        # Intercept only inline control clicks; name clicks still activate the
+        # influence. No QMenu, setItemWidget or Qt object per joint.
+        self.tree.viewport().installEventFilter(self)
         column.addWidget(self.tree, 1)
 
         self.status = QtWidgets.QLabel("0 joints")
@@ -877,27 +928,79 @@ class InfluencePanel(QtWidgets.QFrame):
         finally:
             self.tree.blockSignals(blocked)
 
-    def show_influence_menu(self, position):
-        """Popup only for the clicked bound joint; never change selection."""
-        item = self.tree.itemAt(position)
-        if not item or not self.skin or self._populating:
+    def _inline_control_at(self, position):
+        """Resolve one painted control by row, not by Maya's current influence."""
+        if not self.skin or self._populating:
+            return None
+        row = self.tree.itemAt(position)
+        if row is None:
+            return None
+        joint = row.data(0, QtCore.Qt.UserRole)
+        if joint not in self._items:
+            return None
+        header = self.tree.header()
+        rect = QtCore.QRect(
+            header.sectionViewportPosition(1),
+            self.tree.visualItemRect(row).y(),
+            self.tree.columnWidth(1),
+            self.tree.visualItemRect(row).height())
+        if not rect.contains(position):
+            return None
+        for action, label, caption, bounds in _influence_cell_slots(rect):
+            if bounds.contains(position):
+                return joint, action, label
+        return None
+
+    def eventFilter(self, watched, event):
+        if watched is self.tree.viewport():
+            event_type = event.type()
+            if event_type == QtCore.QEvent.ToolTip:
+                control = self._inline_control_at(event.pos())
+                if control:
+                    QtWidgets.QToolTip.showText(
+                        event.globalPos(),
+                        "{}: {}".format(control[2], control[0].rsplit("|", 1)[-1]),
+                        self.tree)
+                    return True
+            if event_type in (
+                    QtCore.QEvent.MouseButtonPress,
+                    QtCore.QEvent.MouseButtonRelease,
+                    QtCore.QEvent.MouseButtonDblClick):
+                if event.button() == QtCore.Qt.LeftButton:
+                    control = self._inline_control_at(event.pos())
+                    if control:
+                        if event_type == QtCore.QEvent.MouseButtonRelease:
+                            joint, action, label = control
+                            if action == "toggle_lock":
+                                self.queue_inline_lock(joint)
+                            else:
+                                self.queue_influence_action(joint, action)
+                        # Do not select/rebuild the row during mouse handling.
+                        return True
+        return QtWidgets.QFrame.eventFilter(self, watched, event)
+
+    def queue_inline_lock(self, joint):
+        """Preview checkbox state now, defer the Maya setAttr until Qt is idle."""
+        if not self.skin or joint not in self._items:
             return
-        joint = item.data(0, QtCore.Qt.UserRole)
-        if joint not in self._items or not cmds.objExists(self.skin):
-            return
-        menu = QtWidgets.QMenu(self.tree)
-        menu.setObjectName("SkinningInfluenceContextMenu")
-        for label, action in INFLUENCE_CONTEXT_ACTIONS:
-            option = menu.addAction(label)
-            option.triggered.connect(
-                partial(self.queue_influence_action, joint, action))
-        menu.aboutToHide.connect(menu.deleteLater)
-        # Non-blocking popup: never run Maya or rebuild the tree while Qt
-        # owns the QTreeWidgetItem sending this context-menu event.
-        menu.popup(self.tree.viewport().mapToGlobal(position))
+        if self._pending_lock_skin != self.skin:
+            self._pending_locks.clear()
+            self._pending_lock_skin = self.skin
+        item = self._items[joint]
+        current = self._pending_locks.get(
+            joint, item.checkState(1) == QtCore.Qt.Checked)
+        next_locked = not current
+        self._pending_locks[joint] = next_locked
+        blocked = self.tree.blockSignals(True)
+        try:
+            item.setCheckState(
+                1, QtCore.Qt.Checked if next_locked else QtCore.Qt.Unchecked)
+        finally:
+            self.tree.blockSignals(blocked)
+        self._lock_timer.start(0)
 
     def queue_influence_action(self, joint, action, *args):
-        """Defer Maya edits until after the QAction/menu signals have unwound."""
+        """Defer Maya edits until after the viewport mouse event has unwound."""
         if not self.skin or joint not in self._items:
             return
         self._pending_context_action = (self.skin, joint, action)
@@ -923,7 +1026,7 @@ class InfluencePanel(QtWidgets.QFrame):
                     mesh=self.mesh, joint=joint)
                 focused = joint
             else:
-                plan = _influence_menu_plan(skin, joint, action)
+                plan = _influence_action_plan(skin, joint, action)
                 if plan is None:
                     return
                 exclusive, targets, focused = plan
@@ -1178,7 +1281,7 @@ class SkinningBoard(QtWidgets.QWidget):
         self.workspace.addWidget(self.scroll)
         self.workspace.setStretchFactor(0, 0)
         self.workspace.setStretchFactor(1, 1)
-        self.workspace.setSizes([450, 440])
+        self.workspace.setSizes([625, 440])
         inside = QtWidgets.QWidget()
         inside.setObjectName("SkinningContent")
         self.content = QtWidgets.QVBoxLayout(inside)
