@@ -131,9 +131,18 @@ class BrushContextTests(unittest.TestCase):
         self.assertEqual(self.cmds.brush_value, float(value))
         self.assertEqual(self.cmds.context_edits[-1], {
             "edit": True, "skinPaintMode": 1,
-            "selectedattroper": operation, "minvalue": -1.0,
-            "value": float(value), "opacity": 1.0,
+            "selectedattroper": operation, "stampProfile": "solid",
+            "minvalue": -1.0, "value": float(value), "opacity": 1.0,
         })
+
+    def test_every_preset_resets_custom_stamp_to_solid(self):
+        # The artist may have previously selected a soft brush.
+        # Every preset should return to the requested solid default.
+        self.cmds.context_edits.clear()
+        self.assert_preset_only("ReplaceWeight", 0, "absolute")
+        self.assertEqual(self.cmds.context_edits[-1]["stampProfile"], "solid")
+        self.assert_preset_only("AddWeight", -0.01, "additive")
+        self.assertEqual(self.cmds.context_edits[-1]["stampProfile"], "solid")
 
     def test_set_zero_sets_replace_value_only_at_full_opacity(self):
         self.assert_preset_only("ReplaceWeight", 0, "absolute")
