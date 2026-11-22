@@ -1006,9 +1006,7 @@ class SkinningBoard(QtWidgets.QWidget):
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        self.workspace.addWidget(self.scroll)
-
-        # Two-column Paint/Weight groups to the RIGHT of the joint tree.
+        # Compact Paint/Weight strip to the LEFT of the joint hierarchy.
         # Keep the original buttons and callbacks; no duplicate commands.
         self.paint_scroll = QtWidgets.QScrollArea()
         self.paint_scroll.setObjectName("SkinningPaintWeightScroll")
@@ -1026,20 +1024,21 @@ class SkinningBoard(QtWidgets.QWidget):
         self.paint_stack.addStretch()
         self.paint_scroll.setWidget(paint_host)
 
-        # Seamless dock: influence hierarchy + narrow two-column actions.
-        # The splitter now separates only the tool shelf from this dock.
+        # Seamless left-side dock: narrow two-column actions + joint hierarchy.
+        # Remaining tool sections appear to the right of the dock.
         self.influence_actions = QtWidgets.QFrame(self.workspace)
         self.influence_actions.setObjectName("SkinningInfluenceActionsDock")
         dock_layout = QtWidgets.QHBoxLayout(self.influence_actions)
         dock_layout.setContentsMargins(0, 0, 0, 0)
         dock_layout.setSpacing(0)
         self.influences = InfluencePanel(self.influence_actions)
-        dock_layout.addWidget(self.influences, 1)
         dock_layout.addWidget(self.paint_scroll, 0)
+        dock_layout.addWidget(self.influences, 1)
         self.workspace.addWidget(self.influence_actions)
-        self.workspace.setStretchFactor(0, 1)
-        self.workspace.setStretchFactor(1, 0)
-        self.workspace.setSizes([440, 450])
+        self.workspace.addWidget(self.scroll)
+        self.workspace.setStretchFactor(0, 0)
+        self.workspace.setStretchFactor(1, 1)
+        self.workspace.setSizes([450, 440])
         inside = QtWidgets.QWidget()
         inside.setObjectName("SkinningContent")
         self.content = QtWidgets.QVBoxLayout(inside)
@@ -1369,7 +1368,7 @@ class SkinningBoard(QtWidgets.QWidget):
             QScrollArea#SkinningPaintWeightScroll {
                 background-color: #202020;
                 border: none;
-                border-left: 1px solid #454545;
+                border-right: 1px solid #454545;
             }
             QWidget#SkinningPaintWeightContent {
                 background-color: #202020;
