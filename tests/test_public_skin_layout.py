@@ -137,6 +137,28 @@ class SkinningPaintDockTests(unittest.TestCase):
                     for _, _, items in groups)
         self.assertEqual(count, 51)
 
+    def test_hot_reload_can_close_old_maya_widgets_without_super_errors(self):
+        source = FILE.read_text(encoding="utf-8")
+        self.assertNotIn("super(SkinningBoard, self).", source)
+        self.assertNotIn("super(ResponsiveButtons, self).resizeEvent", source)
+        for base_call in (
+            "QtWidgets.QWidget.eventFilter(self, watched, event)",
+            "QtWidgets.QWidget.showEvent(self, event)",
+            "QtWidgets.QWidget.hideEvent(self, event)",
+            "QtWidgets.QWidget.closeEvent(self, event)",
+            "QtWidgets.QWidget.resizeEvent(self, event)",
+        ):
+            self.assertIn(base_call, source)
+        self.assertIn("old_class = type(widget)", source)
+        self.assertIn('setattr(old_class, handler, getattr(QtWidgets.QWidget, handler))',
+                      source)
+        self.assertIn('influences.deactivate()', source)
+        self.assertIn('old_scroll.viewport().removeEventFilter(widget)', source)
+        self.assertLess(source.index('influences.deactivate()'),
+                        source.index('widget.close()'))
+        self.assertLess(source.index('widget.close()'),
+                        source.index('widget.deleteLater()'))
+
     def test_keyframes_on_left_and_marked_controls_removed(self):
         source = FILE.read_text(encoding="utf-8")
         self.assertNotIn('self.filter_box = QtWidgets.QComboBox()', source)
