@@ -622,10 +622,10 @@ class InfluencePanel(QtWidgets.QFrame):
         self.tree.headerItem().setTextAlignment(1, QtCore.Qt.AlignCenter)
         self.tree.setAlternatingRowColors(True)
         self.tree.setUniformRowHeights(True)
-        self.tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.tree.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.tree.setToolTip(
-            "Select a joint to make it active in Maya Paint Skin Weights.\n"
-            "Use Ctrl/Shift for multiple rows; the Lock checkbox is independent.")
+            "Click one joint to make it the sole active Paint Skin influence.\n"
+            "The Lock checkbox is independent of influence selection.")
         self.tree.itemChanged.connect(self.change_item_lock)
         self.tree.currentItemChanged.connect(self.change_active_influence)
         self.tree.itemDoubleClicked.connect(self.select_joint)
