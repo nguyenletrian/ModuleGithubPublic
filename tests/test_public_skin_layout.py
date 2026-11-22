@@ -79,31 +79,41 @@ class SkinningPaintDockTests(unittest.TestCase):
         self.assertNotIn("Add +1", actions["weight"])
         self.assertEqual(len(actions["weight"]), 18)
 
-    def test_influence_context_menu_exposes_lock_inverse_and_unlock_two_only(self):
+    def test_inline_lock_column_exposes_actions_and_unlock_two_only(self):
         source = FILE.read_text(encoding="utf-8")
         tree = ast.parse(source)
-        menu = next(node for node in tree.body
-                    if isinstance(node, ast.Assign) and any(
-                        isinstance(t, ast.Name) and t.id == "INFLUENCE_CONTEXT_ACTIONS"
-                        for t in node.targets))
-        self.assertEqual(ast.literal_eval(menu.value), (
-            ("Unlock", "unlock"),
-            ("Lock Inverse", "lock_inverse"),
-            ("Unlock All", "unlock_all"),
-            ("Add Unlock", "add_unlock"),
-            ("Add Up", "add_up"),
-            ("Add Down", "add_down"),
-            ("Isolate", "isolate"),
-        ))
+        controls = next(node for node in tree.body
+                        if isinstance(node, ast.Assign) and any(
+                            isinstance(t, ast.Name) and t.id == "INFLUENCE_ROW_ACTIONS"
+                            for t in node.targets))
+        self.assertEqual(
+            [(name, key, caption) for name, key, caption, width
+             in ast.literal_eval(controls.value)],
+            [
+                ("Unlock", "unlock", "U"),
+                ("Lock Inverse", "lock_inverse", "Inv"),
+                ("Unlock All", "unlock_all", "All"),
+                ("Add Unlock", "add_unlock", "+"),
+                ("Add Up", "add_up", "↑"),
+                ("Add Down", "add_down", "↓"),
+                ("Isolate", "isolate", "Iso"),
+            ])
         groups = {key: items
                   for section, _, section_groups in load_catalog()
                   if section == "paint"
                   for key, _, items in section_groups}
-        self.assertEqual([label for label, *_ in groups["locks"]],
+        self.assertEqual([name for name, *_ in groups["locks"]],
                          ["Unlock 2 Joints"])
-        self.assertIn('self.tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)', source)
-        self.assertIn('self.tree.customContextMenuRequested.connect(self.show_influence_menu)', source)
+        self.assertIn('self.tree.setColumnWidth(1, INFLUENCE_LOCK_WIDTH)', source)
+        self.assertIn('self.tree.setItemDelegateForColumn(1, self._influence_delegate)', source)
+        self.assertIn('self.tree.viewport().installEventFilter(self)', source)
         self.assertIn('self._context_timer.timeout.connect(self._apply_influence_action)', source)
+        self.assertIn('self.queue_influence_action(joint, action)', source)
+        self.assertIn('self.queue_inline_lock(joint)', source)
+        self.assertNotIn('self.tree.setItemWidget(', source)
+        self.assertNotIn('QtWidgets.QMenu(', source)
+        self.assertNotIn('self.tree.customContextMenuRequested.connect(', source)
+
 
     def test_dock_owns_original_widget_sections_in_adjacent_column(self):
         source = FILE.read_text(encoding="utf-8")
@@ -127,7 +137,7 @@ class SkinningPaintDockTests(unittest.TestCase):
         self.assertIn("dock_layout.setContentsMargins(0, 0, 0, 0)", source)
         self.assertIn("PAINT_STRIP_WIDTH = 145", source)
         self.assertIn("self.paint_scroll.setFixedWidth(PAINT_STRIP_WIDTH)", source)
-        self.assertIn("self.workspace.setSizes([450, 440])", source)
+        self.assertIn("self.workspace.setSizes([625, 440])", source)
         self.assertIn("left_dock = key in LEFT_DOCK_SECTIONS", source)
         self.assertIn("if left_dock:", source)
         self.assertIn("self.paint_stack.insertWidget(", source)
