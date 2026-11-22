@@ -1,5 +1,6 @@
 """Offline Maya regression for temporary Animation & Poses control tests."""
 import ast
+import json
 from pathlib import Path
 import sys
 import types
@@ -177,7 +178,7 @@ def load_logic(cmds):
     assert ast.get_docstring(parsed)
     assignments = [node for node in parsed.body if isinstance(node, ast.Assign)]
     defs = [node for node in parsed.body if isinstance(node, ast.FunctionDef)]
-    scope = {"cmds": cmds}
+    scope = {"cmds": cmds, "json": json}
     exec(compile(ast.Module(body=assignments + defs, type_ignores=[]),
                  str(SOURCE), "exec"), scope)
     return scope
