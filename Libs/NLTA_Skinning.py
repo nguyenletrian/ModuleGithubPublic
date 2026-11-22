@@ -174,6 +174,37 @@ def EnsurePaintContext(mesh=None):
     return True
 
 
+def SelectPaintInfluence(mesh, joint):
+    """Synchronize the selected joint with Maya's native Paint Skin UI."""
+    data = GetSkinData(mesh)
+    skin = data["skinCluster"]
+    bound = _BoundJoint(skin, joint, data["joints"]) if skin else None
+    if not bound:
+        cmds.warning("{} is not a bound influence of {}."
+                     .format(joint, skin or mesh))
+        return False
+    if not EnsurePaintContext(mesh):
+        return False
+
+    # paintTrans / artAttrSkinPaintCtx alone do not update the highlighted
+    # influence in Maya Tool Settings. Use Maya's own selection procedure.
+    # Full DAG paths prevent selecting a different joint with the same name.
+    mel_name = bound.replace("\\", "\\\\").replace('"', '\\"')
+    try:
+        mel.eval('setSmoothSkinInfluence "{}";'.format(mel_name))
+        mel.eval('artSkinRevealSelected artAttrSkinPaintCtx;')
+    except RuntimeError as exc:
+        cmds.warning("Unable to select influence in Paint Skin Weights: {}"
+                     .format(exc))
+        return False
+
+    if not ActiveJoint(mesh, bound):
+        return False
+    cmds.artAttrSkinPaintCtx(
+        "artAttrSkinContext", edit=True, influence=bound)
+    return True
+
+
 def GetActivePaintJoint(skinCluster=None):
     if skinCluster is None:
         session = EnsureSkinSession(warn=False)
@@ -363,9 +394,7 @@ def unlock(*arr):
 
     cmds.select(session["mesh"], r=True)
     singleUnlock(joints)
-    EnsurePaintContext()
-    ActiveJoint(session["mesh"], joints[0])
-    cmds.artAttrSkinPaintCtx("artAttrSkinContext", edit=True, influence=joints[0])
+    SelectPaintInfluence(session["mesh"], joints[0])
 
 def UnlockJoints(mesh, jnts):
     skin = GetSkinCluster(mesh)
@@ -406,10 +435,7 @@ def addUnlockUp(*arr):
         return
 
     singleUnlock([jointActive, parentJoint])
-    EnsurePaintContext(session["mesh"])
-    if ActiveJoint(session["mesh"], parentJoint):
-        cmds.artAttrSkinPaintCtx("artAttrSkinContext", edit=True,
-                                 influence=parentJoint)
+    SelectPaintInfluence(session["mesh"], parentJoint)
 
 def UnlockTwoJoints(*arr):
     selection = cmds.ls(sl=True, fl=True) or []
@@ -444,9 +470,7 @@ def UnlockTwoJoints(*arr):
     jointA = _BoundJoint(skin, jointA, joints)
     jointB = _BoundJoint(skin, jointB, joints)
     cmds.select(mesh, r=True)
-    EnsurePaintContext(mesh)
-    if ActiveJoint(mesh, jointB):
-        cmds.artAttrSkinPaintCtx("artAttrSkinContext", edit=True, influence=jointB)
+    SelectPaintInfluence(mesh, jointB)
     return jointA, jointB
 
 def UnlockInfluenceJoints(*arr):
@@ -500,9 +524,7 @@ def UnlockInfluenceJoints(*arr):
         return
 
     cmds.select(mesh, r=True)
-    EnsurePaintContext(mesh)
-    if ActiveJoint(mesh, active):
-        cmds.artAttrSkinPaintCtx("artAttrSkinContext", edit=True, influence=active)
+    SelectPaintInfluence(mesh, active)
 
     return unlocked
 
@@ -531,10 +553,7 @@ def addUnlockDown(*arr):
         return
 
     singleUnlock([jointActive, childJoint])
-    EnsurePaintContext(session["mesh"])
-    if ActiveJoint(session["mesh"], childJoint):
-        cmds.artAttrSkinPaintCtx("artAttrSkinContext", edit=True,
-                                 influence=childJoint)
+    SelectPaintInfluence(session["mesh"], childJoint)
 
 def ActiveJoint(mesh, joint, *arr):
     data = GetSkinData(mesh)
@@ -574,9 +593,7 @@ def switchJoint(*arr):
 
     jointActive = GetActivePaintJoint(skinName)
     index = (unlocked.index(jointActive) + 1) % len(unlocked) if jointActive in unlocked else 0
-    if EnsurePaintContext(data["mesh"]) and ActiveJoint(data["mesh"], unlocked[index]):
-        cmds.artAttrSkinPaintCtx("artAttrSkinContext", edit=True,
-                                 influence=unlocked[index])
+    SelectPaintInfluence(data["mesh"], unlocked[index])
 
 def goToBindPose(*arr):
     mel.eval('GoToBindPose;')
