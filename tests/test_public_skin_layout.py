@@ -150,6 +150,7 @@ class SkinningPaintDockTests(unittest.TestCase):
         ):
             self.assertIn(base_call, source)
         self.assertIn("old_class = type(widget)", source)
+        self.assertIn('old_class.__name__ == "SkinningBoard"', source)
         self.assertIn('setattr(old_class, handler, getattr(QtWidgets.QWidget, handler))',
                       source)
         self.assertIn('influences.deactivate()', source)
