@@ -347,7 +347,7 @@ class ResponsiveButtons(QtWidgets.QWidget):
         self.last_width = width
 
     def resizeEvent(self, event):
-        super(ResponsiveButtons, self).resizeEvent(event)
+        QtWidgets.QWidget.resizeEvent(self, event)
         self.reflow()
 
 
@@ -1080,7 +1080,7 @@ class SkinningBoard(QtWidgets.QWidget):
         if (watched is self.scroll.viewport()
                 and event.type() == QtCore.QEvent.Resize):
             self.reflow_sections()
-        return super(SkinningBoard, self).eventFilter(watched, event)
+        return QtWidgets.QWidget.eventFilter(self, watched, event)
 
     def estimate_section_height(self, record, width):
         """Approximate card height to avoid large blank spaces below panels."""
@@ -1203,17 +1203,17 @@ class SkinningBoard(QtWidgets.QWidget):
         return result
 
     def showEvent(self, event):
-        super(SkinningBoard, self).showEvent(event)
+        QtWidgets.QWidget.showEvent(self, event)
         self.influences.activate()
 
     def hideEvent(self, event):
         self.influences.deactivate()
-        super(SkinningBoard, self).hideEvent(event)
+        QtWidgets.QWidget.hideEvent(self, event)
 
     def closeEvent(self, event):
         self.influences.deactivate()
         self.settings.setValue("geometry_masonry", self.saveGeometry())
-        super(SkinningBoard, self).closeEvent(event)
+        QtWidgets.QWidget.closeEvent(self, event)
 
     def change_density(self, value):
         self.compact = value == "Compact"
@@ -1410,9 +1410,23 @@ def OpenWindow(tools, uis):
     application = QtWidgets.QApplication.instance()
     if application:
         for widget in application.allWidgets():
-            if widget.objectName() == "NLTA_SkinningCommandBoard":
-                widget.close()
-                widget.deleteLater()
+            if widget.objectName() != "NLTA_SkinningCommandBoard":
+                continue
+            # The old instance may belong to a class object from before a
+            # hot reload. Its Python super(SkinningBoard, self) is then invalid.
+            # Disconnect live callbacks before Qt disposes of that instance.
+            timer = getattr(widget, "_live_timer", None)
+            if timer is None:
+                influences = getattr(widget, "influences", None)
+                timer = getattr(influences, "_live_timer", None)
+            if timer is not None:
+                timer.stop()
+            old_scroll = getattr(widget, "scroll", None)
+            if old_scroll is not None:
+                old_scroll.viewport().removeEventFilter(widget)
+            widget.blockSignals(True)
+            widget.hide()
+            widget.deleteLater()
 
     slider = _bridge_controls(uis)
     board = SkinningBoard(command_catalog(tools, slider), slider, uis)
