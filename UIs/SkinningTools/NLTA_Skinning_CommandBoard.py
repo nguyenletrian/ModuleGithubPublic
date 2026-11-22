@@ -441,16 +441,23 @@ def _selected_unskinned_mesh():
 
 
 def _skin_influence_rows(skin):
-    """Rows contain (full DAG influence name, locked) for this skin only."""
+    """Use the same authoritative full DAG influence paths as paint callbacks."""
     if not skin or not cmds.objExists(skin):
         return []
+    try:
+        import NLTA_Skinning
+        names = NLTA_Skinning._SkinInfluencePaths(skin)
+    except (ImportError, AttributeError):
+        # Compatibility for older installations; current public library
+        # resolves these identities through MFnSkinCluster.
+        names = []
+        for name in cmds.skinCluster(skin, query=True, influence=True) or []:
+            matches = cmds.ls(name, long=True, type="joint") or []
+            if len(matches) == 1:
+                names.append(matches[0])
     rows = []
-    for name in cmds.skinCluster(skin, query=True, influence=True) or []:
-        if not cmds.objExists(name):
-            continue
-        full = cmds.ls(name, long=True) or [name]
-        joint = full[0]
-        if cmds.nodeType(joint) != "joint":
+    for joint in names:
+        if not cmds.objExists(joint) or cmds.nodeType(joint) != "joint":
             continue
         attr = joint + ".liw"
         locked = bool(cmds.getAttr(attr)) if cmds.objExists(attr) else None
