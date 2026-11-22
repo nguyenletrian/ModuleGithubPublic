@@ -580,6 +580,7 @@ class InfluencePanel(QtWidgets.QFrame):
         self._tree_skin = None
         self._populating = False
         self._syncing = False
+        self._editing_locks = False
         self._active_joint = None
         self._live_ticks = 0
         self._jobs = []
@@ -664,11 +665,21 @@ class InfluencePanel(QtWidgets.QFrame):
         self.refresh(prefer_selection=False)
 
     def on_selection_changed(self):
+        # A Maya SelectionChanged scriptJob may be fired synchronously while
+        # artAttrSkinPaintCtx or setAttr is still processing a Qt item signal.
+        # Never clear/rebuild that signal's QTreeWidgetItem.
+        if self._populating or self._syncing or self._editing_locks:
+            return
         data = _skin_from_selection()
         if data:
-            self.skin = data["skinCluster"]
-            self.mesh = data["mesh"]
-            self.refresh(prefer_selection=False)
+            skin = data["skinCluster"]
+            mesh = data["mesh"]
+            if skin != self.skin or mesh != self.mesh:
+                self.skin = skin
+                self.mesh = mesh
+                self.refresh(prefer_selection=False)
+            else:
+                self.sync_from_paint()
         elif _selected_unskinned_mesh() or (
                 self.skin and not cmds.objExists(self.skin)):
             self.reset_scene()
@@ -685,11 +696,18 @@ class InfluencePanel(QtWidgets.QFrame):
         if self.skin and not cmds.objExists(self.skin):
             self.skin = None
             self.mesh = None
-        self._rows = _skin_influence_rows(self.skin)
+        rows = _skin_influence_rows(self.skin)
         self.heading_label.setToolTip(
             "{}\nSkin: {}".format(self.mesh, self.skin) if self.skin
             else "Select a skinned mesh or vertices")
-        self.populate()
+        # Reuse existing items when only .liw has changed. A clear() from
+        # inside itemChanged/currentItemChanged can crash Maya in native Qt.
+        if (self.skin == self._tree_skin
+                and {joint for joint, _ in rows} == set(self._items)):
+            self.sync_lock_states(rows)
+        else:
+            self._rows = rows
+            self.populate()
         self.sync_from_paint()
 
     def populate(self):
@@ -777,12 +795,37 @@ class InfluencePanel(QtWidgets.QFrame):
             self.tree.blockSignals(blocked)
 
     def change_item_lock(self, item, column):
-        if self._populating or column != 1 or not self.skin:
+        if (self._populating or self._syncing or self._editing_locks
+                or column != 1 or not self.skin):
             return
         joint = item.data(0, QtCore.Qt.UserRole)
+        if joint not in self._items or not cmds.objExists(self.skin):
+            return
         locked = item.checkState(1) == QtCore.Qt.Checked
-        _set_influence_locks(self.skin, [joint], "lock" if locked else "unlock")
-        self.refresh(prefer_selection=False)
+        self._editing_locks = True
+        try:
+            _set_influence_locks(
+                self.skin, [joint], "lock" if locked else "unlock")
+            # If Maya refused the setAttr (referenced/locked rig), reflect
+            # the real .liw, rather than leaving a misleading checkbox.
+            plug = joint + ".liw"
+            current = (bool(cmds.getAttr(plug))
+                       if cmds.objExists(plug) else None)
+            self._rows = [
+                (name, current if name == joint else state)
+                for name, state in self._rows]
+            blocked = self.tree.blockSignals(True)
+            try:
+                if current is not None and current != locked:
+                    item.setCheckState(
+                        1, QtCore.Qt.Checked if current else QtCore.Qt.Unchecked)
+                self.filter_rows()
+            finally:
+                self.tree.blockSignals(blocked)
+            # IMPORTANT: no refresh(), populate(), or tree.clear() here.
+            # Qt still owns the item emitting this itemChanged signal.
+        finally:
+            self._editing_locks = False
 
     def change_locks(self, mode, selected_only):
         if not self.skin:
@@ -796,33 +839,39 @@ class InfluencePanel(QtWidgets.QFrame):
                 return
         else:
             joints = [joint for joint, _ in self._rows]
-        _set_influence_locks(self.skin, joints, mode)
-        self.refresh(prefer_selection=False)
+        self._editing_locks = True
+        try:
+            _set_influence_locks(self.skin, joints, mode)
+            self.sync_lock_states()
+        finally:
+            self._editing_locks = False
 
     def change_active_influence(self, item, previous):
         """A click/keyboard selection switches Maya's active paint influence."""
-        if self._populating or self._syncing or not item or not self.skin:
+        if (self._populating or self._syncing or self._editing_locks
+                or not item or not self.skin):
             return
         joint = item.data(0, QtCore.Qt.UserRole)
-        # Reapply even for the same row: Maya's native Paint Skin list can
-        # retain multiple selected influences after external UI operations.
         if joint not in self._items:
             return
-        if _activate_skin_paint_influence(
-                self.skin, self.mesh, joint, self._items):
+        # Keep the guard active throughout Maya MEL and Qt selection updates.
+        # Both can synchronously invoke scriptJobs and nested UI signals.
+        self._syncing = True
+        blocked = self.tree.blockSignals(True)
+        try:
+            if not _activate_skin_paint_influence(
+                    self.skin, self.mesh, joint, self._items):
+                return
             self._active_joint = joint
-            # A changed current item does not always select the row in Qt,
-            # particularly when Maya's Tool Settings retains keyboard focus.
-            self._syncing = True
-            blocked = self.tree.blockSignals(True)
-            try:
+            live_item = self._items.get(joint)
+            if live_item is not None:
                 self.tree.clearSelection()
-                self.tree.setCurrentItem(item)
-                item.setSelected(True)
-            finally:
-                self.tree.blockSignals(blocked)
-                self._syncing = False
+                self.tree.setCurrentItem(live_item)
+                live_item.setSelected(True)
             self.filter_rows()
+        finally:
+            self.tree.blockSignals(blocked)
+            self._syncing = False
 
     def select_joint(self, item, column):
         """Double-click also activates painting; do not select the DAG joint."""
@@ -830,7 +879,7 @@ class InfluencePanel(QtWidgets.QFrame):
 
     def sync_from_paint(self):
         """Highlight an influence selected in Maya's Paint Skin Weights UI."""
-        if self._syncing or self._populating or not self.skin:
+        if self._syncing or self._populating or self._editing_locks or not self.skin:
             return
         joint = _active_skin_paint_influence(self.skin, self._items)
         if not joint or joint not in self._items:
@@ -856,11 +905,12 @@ class InfluencePanel(QtWidgets.QFrame):
             self.tree.blockSignals(False)
             self._syncing = False
 
-    def sync_lock_states(self):
-        """Observe changes made in Maya's native influence lock UI."""
-        if not self.skin:
+    def sync_lock_states(self, rows=None):
+        """Update checkboxes without rebuilding the hierarchy on .liw changes."""
+        if not self.skin or self._populating:
             return
-        rows = _skin_influence_rows(self.skin)
+        if rows is None:
+            rows = _skin_influence_rows(self.skin)
         if rows == self._rows:
             return
         if {joint for joint, _ in rows} != set(self._items):
@@ -869,7 +919,7 @@ class InfluencePanel(QtWidgets.QFrame):
             self.sync_from_paint()
             return
         self._rows = rows
-        self.tree.blockSignals(True)
+        blocked = self.tree.blockSignals(True)
         try:
             for joint, locked in rows:
                 item = self._items.get(joint)
@@ -878,12 +928,13 @@ class InfluencePanel(QtWidgets.QFrame):
                     if item.checkState(1) != state:
                         item.setCheckState(1, state)
         finally:
-            self.tree.blockSignals(False)
+            self.tree.blockSignals(blocked)
         self.filter_rows()
 
     def sync_live(self):
         """Lightweight Maya polling, only while the Skinning window is visible."""
-        if self._populating or self._syncing or not self.skin:
+        if (self._populating or self._syncing or self._editing_locks
+                or not self.skin):
             return
         self.sync_from_paint()
         self._live_ticks += 1
