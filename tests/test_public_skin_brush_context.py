@@ -82,7 +82,7 @@ class FakeMel:
 def load_callbacks(cmds, mel):
     module = ast.parse(SOURCE.read_text(encoding="utf-8"))
     wanted = {
-        "_skinPaintContext", "_setSelectedWeights", "ReplaceWeight",
+        "_skinPaintContext", "_setBrushValue", "ReplaceWeight",
         "AddWeight", "smooth", "pickValue", "flood",
     }
     methods = [x for x in module.body if isinstance(x, ast.FunctionDef)
@@ -106,56 +106,71 @@ class BrushContextTests(unittest.TestCase):
         self.mel = FakeMel()
         self.brush = load_callbacks(self.cmds, self.mel)
 
-    def test_set_zero_without_tool_settings_sets_selected_vertices_only(self):
-        before = self.cmds.weights[MESH + ".vtx[3]"]
-        self.assertTrue(self.brush["ReplaceWeight"](0))
-        self.assertEqual(self.cmds.weights[MESH + ".vtx[1]"], 0.0)
-        self.assertEqual(self.cmds.weights[MESH + ".vtx[2]"], 0.0)
-        self.assertEqual(self.cmds.weights[MESH + ".vtx[3]"], before)
-        self.assertEqual(len(self.cmds.skin_writes), 2)
-        self.assertEqual(self.cmds.refreshed, 1)
-        self.assertEqual(self.cmds.context_edits, [{
-            "edit": True, "skinPaintMode": 1,
-            "selectedattroper": "absolute", "value": 0.0,
-        }])
-
-    def test_set_zero_uses_native_mel_when_present(self):
-        self.mel.loaded = True
-        self.assertTrue(self.brush["ReplaceWeight"](0))
-        self.assertEqual(self.cmds.skin_writes, [])
-        self.assertIn(
-            "artSkinSetSelectionValue 0.0 false artAttrSkinPaintCtx artAttrSkin;",
-            self.mel.eval_calls)
-
-    def test_add_and_subtract_clamp_per_vertex_to_zero_one(self):
-        self.brush["AddWeight"](0.1)
-        self.assertAlmostEqual(self.cmds.weights[MESH + ".vtx[1]"], 0.3)
-        self.assertEqual(self.cmds.weights[MESH + ".vtx[2]"], 1.0)
-        self.brush["AddWeight"](-0.5)
-        self.assertEqual(self.cmds.weights[MESH + ".vtx[1]"], 0.0)
-        self.assertEqual(self.cmds.weights[MESH + ".vtx[2]"], 0.5)
-        self.assertEqual(self.cmds.context_edits[-1]["selectedattroper"], "additive")
-
-    def test_lock_prevents_fallback_modify(self):
-        self.cmds.liw = True
-        self.assertFalse(self.brush["ReplaceWeight"](0))
-        self.assertEqual(self.cmds.skin_writes, [])
-        self.assertTrue(any("locked" in x for x in self.cmds.warnings))
-
-    def test_no_selected_vertices_does_not_flood_whole_mesh(self):
-        self.cmds.selection = [MESH]
-        self.assertFalse(self.brush["ReplaceWeight"](0))
+    def _assert_brush_only(self, value, operation="absolute"):
+        before = dict(self.cmds.weights)
+        selection = list(self.cmds.selection)
+        self.assertTrue(self.brush["ReplaceWeight"](value))
+        self.assertEqual(self.cmds.weights, before)
+        self.assertEqual(self.cmds.selection, selection)
         self.assertEqual(self.cmds.skin_writes, [])
         self.assertEqual(self.cmds.refreshed, 0)
-        self.assertTrue(self.cmds.warnings)
+        self.assertEqual(self.mel.eval_calls, [])
+        self.assertEqual(self.cmds.context_edits[-1], {
+            "edit": True, "skinPaintMode": 1,
+            "selectedattroper": operation, "value": float(value),
+        })
 
-    def test_missing_context_does_not_write(self):
+    def test_set_zero_changes_brush_only(self):
+        self._assert_brush_only(0)
+
+    def test_set_one_changes_brush_only(self):
+        self._assert_brush_only(1)
+
+    def test_set_zero_with_no_selected_vertex_still_changes_brush(self):
+        self.cmds.selection = [MESH]
+        self._assert_brush_only(0)
+
+    def test_set_one_with_no_selected_vertex_still_changes_brush(self):
+        self.cmds.selection = [MESH]
+        self._assert_brush_only(1)
+
+    def test_locked_influence_does_not_block_setting_brush_value(self):
+        self.cmds.liw = True
+        self._assert_brush_only(1)
+
+    def test_native_mel_ui_procedures_are_never_invoked(self):
+        self.mel.loaded = True
+        self._assert_brush_only(0)
+        self._assert_brush_only(1)
+
+    def test_switch_brush_additive_preset_does_not_change_vertex_weights(self):
+        original = dict(self.cmds.weights)
+        self.assertTrue(self.brush["AddWeight"](-1))
+        self.assertEqual(self.cmds.weights, original)
+        self.assertEqual(self.cmds.skin_writes, [])
+        self.assertEqual(self.cmds.context_edits[-1], {
+            "edit": True, "skinPaintMode": 1,
+            "selectedattroper": "additive", "value": -1.0,
+        })
+
+    def test_switching_zero_and_one_sets_current_value_only(self):
+        self._assert_brush_only(0)
+        self._assert_brush_only(1)
+        self._assert_brush_only(0)
+        self.assertEqual(
+            [x["value"] for x in self.cmds.context_edits], [0.0, 1.0, 0.0])
+
+    def test_uninitialized_context_does_not_touch_weights(self):
+        original = dict(self.cmds.weights)
         self.cmds.exists = False
         self.assertFalse(self.brush["ReplaceWeight"](0))
+        self.assertFalse(self.brush["AddWeight"](1))
+        self.assertEqual(self.cmds.weights, original)
+        self.assertEqual(self.cmds.context_edits, [])
         self.assertEqual(self.cmds.skin_writes, [])
         self.assertEqual(self.mel.eval_calls, [])
 
-    def test_smooth_uses_native_supported_context_flags(self):
+    def test_smooth_keeps_legacy_solid_profile_without_mel_ui(self):
         self.brush["smooth"]("solid")
         self.assertEqual(self.cmds.context_edits, [{
             "edit": True, "skinPaintMode": 1,
@@ -163,14 +178,14 @@ class BrushContextTests(unittest.TestCase):
         }])
         self.assertEqual(self.mel.eval_calls, [])
 
-    def test_flood_uses_clear_not_incorrect_mel_ui_proc(self):
+    def test_flood_uses_explicit_clear_only(self):
         self.brush["flood"]()
         self.assertEqual(self.cmds.context_edits, [{
             "edit": True, "skinPaintMode": 1, "clear": True,
         }])
         self.assertEqual(self.mel.eval_calls, [])
 
-    def test_pick_value_does_not_depend_on_tool_settings(self):
+    def test_pick_value_is_not_dependent_on_tool_settings(self):
         self.brush["pickValue"]()
         self.assertEqual(self.cmds.context_edits, [{
             "edit": True, "selectedattroper": "absolute",
@@ -178,12 +193,16 @@ class BrushContextTests(unittest.TestCase):
         }])
         self.assertEqual(self.mel.eval_calls, [])
 
-    def test_old_missing_mel_procedures_are_absent(self):
+    def test_no_legacy_mel_or_direct_weight_modifications_in_brush(self):
         source = SOURCE.read_text(encoding="utf-8")
-        for outdated in ("artAttrSkinPaintModePaintSelect",
-                         "artAttrPaintOperation",
-                         "artUpdateStampProfile"):
-            self.assertNotIn(outdated, source)
+        for unsafe in (
+            "artAttrSkinPaintModePaintSelect",
+            "artAttrPaintOperation",
+            "artSkinSetSelectionValue",
+            "skinPercent(",
+            "artUpdateStampProfile",
+        ):
+            self.assertNotIn(unsafe, source)
 
 
 if __name__ == "__main__":
