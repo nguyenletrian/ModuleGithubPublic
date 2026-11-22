@@ -167,7 +167,9 @@ class SkinningPaintDockTests(unittest.TestCase):
         self.assertIn("group_vertical.addWidget(grid)", source)
         self.assertIn("for group_id in LEFT_DOCK_GROUP_ORDER:", source)
         self.assertIn("self.paint_stack.insertWidget(", source)
-        self.assertNotIn("vertical.addWidget(grid)", source)
+        self.assertFalse(any(
+            line.strip() == "vertical.addWidget(grid)"
+            for line in source.splitlines()))
 
         actions = ["/".join((section, group, label))
                    for section, _, groups in catalog
