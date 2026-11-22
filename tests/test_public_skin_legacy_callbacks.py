@@ -697,9 +697,9 @@ class LegacyButtonContractTests(unittest.TestCase):
 
 
 class PaintContextDispatchTests(unittest.TestCase):
-    """Offline callback dispatch tests without launching Maya."""
+    """Every Skinning command returns to Artisan without opening Tool Settings."""
 
-    def load_dispatch(self, context):
+    def load_dispatch(self, start_context):
         tree = ast.parse(BOARD.read_text(encoding="utf-8"))
         board = next(node for node in tree.body if isinstance(node, ast.ClassDef)
                      and node.name == "SkinningBoard")
@@ -707,15 +707,18 @@ class PaintContextDispatchTests(unittest.TestCase):
                       and node.name == "dispatch")
 
         class MayaContext:
-            def currentCtx(self):
-                return context
+            context = start_context
 
-        namespace = {"cmds": MayaContext()}
+            def currentCtx(self):
+                return self.context
+
+        cmds = MayaContext()
+        namespace = {"cmds": cmds}
         exec(compile(ast.Module(body=[method], type_ignores=[]),
                      str(BOARD), "exec"), namespace)
-        return namespace["dispatch"]
+        return namespace["dispatch"], cmds
 
-    def make_board(self, paint_succeeds=True):
+    def make_board(self, maya, paint_succeeds=True):
         class Board:
             def __init__(self):
                 self.events = []
@@ -725,14 +728,15 @@ class PaintContextDispatchTests(unittest.TestCase):
                     "Influences", (), {
                         "refresh": lambda inner: self.events.append("refresh")})()
 
-            def activate_paint(self):
-                self.events.append("activate_paint")
+            def activate_paint(self, quiet=False):
+                self.events.append("activate_paint_quiet" if quiet else "activate_paint")
+                if paint_succeeds:
+                    maya.context = "artAttrSkinContext"
                 return paint_succeeds
 
         return Board()
 
-    def test_joint_operations_do_not_steal_selection_before_legacy_callback(self):
-        dispatch = self.load_dispatch("selectSuperContext")
+    def test_joint_operations_read_selection_first_and_return_to_skin(self):
         direct_actions = (
             "paint/locks/Unlock",
             "paint/locks/Add Up",
@@ -742,16 +746,22 @@ class PaintContextDispatchTests(unittest.TestCase):
             "paint/locks/Unlock Joints",
             "paint/quick/Copy Weight",
             "paint/quick/Copy Ratio",
+            "animation/local/Rotate",
+            "animation/timeline/Delete Keys",
+            "skin/bind/Add Joint",
+            "files/io/Export Skin",
         )
         for action in direct_actions:
             with self.subTest(action=action):
-                board = self.make_board()
+                dispatch, maya = self.load_dispatch("selectSuperContext")
+                board = self.make_board(maya)
                 dispatch(board, action, lambda: board.events.append("callback"))
-                self.assertNotIn("activate_paint", board.events)
+                self.assertEqual(board.events[0], "callback")
+                self.assertIn("activate_paint_quiet", board.events)
+                self.assertEqual(maya.context, "artAttrSkinContext")
                 self.assertEqual(board.events.count("callback"), 1)
 
-    def test_brush_and_weight_actions_require_paint_only_when_not_active(self):
-        dispatch = self.load_dispatch("selectSuperContext")
+    def test_brush_and_weight_actions_enter_paint_before_running(self):
         for action in (
             "paint/quick/Smooth", "paint/quick/Flood",
             "paint/quick/Pick Value", "paint/helpers/Switch Brush",
@@ -759,35 +769,74 @@ class PaintContextDispatchTests(unittest.TestCase):
             "paint/locks/Unlock All", "weight/increment/-0.01",
         ):
             with self.subTest(action=action):
-                board = self.make_board()
+                dispatch, maya = self.load_dispatch("selectSuperContext")
+                board = self.make_board(maya)
                 dispatch(board, action, lambda: board.events.append("callback"))
-                self.assertEqual(board.events.count("activate_paint"), 1)
-                self.assertEqual(board.events.count("callback"), 1)
+                self.assertEqual(board.events[:2], ["activate_paint", "callback"])
+                self.assertNotIn("activate_paint_quiet", board.events)
+                self.assertEqual(maya.context, "artAttrSkinContext")
 
-        dispatch = self.load_dispatch("artAttrSkinContext")
-        board = self.make_board()
-        dispatch(board, "weight/increment/+0.01",
-                 lambda: board.events.append("callback"))
-        self.assertEqual(board.events, ["callback"])
+    def test_all_actions_restore_skin_when_callback_switches_context(self):
+        for action in (
+            "paint/quick/Copy Ratio",
+            "animation/world/Rotate Together",
+            "animation/timeline/Bind Pose",
+            "mesh/mesh/Component",
+            "skin/max/Fix",
+        ):
+            with self.subTest(action=action):
+                dispatch, maya = self.load_dispatch("artAttrSkinContext")
+                board = self.make_board(maya)
+                def callback(**kwargs):
+                    board.events.append("callback")
+                    maya.context = "selectSuperContext"
+                dispatch(board, action, callback)
+                self.assertEqual(board.events[0], "callback")
+                self.assertIn("activate_paint_quiet", board.events)
+                self.assertEqual(maya.context, "artAttrSkinContext")
 
-    def test_failed_activation_never_runs_weight_operation(self):
-        dispatch = self.load_dispatch("selectSuperContext")
-        board = self.make_board(paint_succeeds=False)
+    def test_failed_pre_activation_never_runs_weight_operation(self):
+        dispatch, maya = self.load_dispatch("selectSuperContext")
+        board = self.make_board(maya, paint_succeeds=False)
         dispatch(board, "weight/increment/-0.1",
                  lambda: board.events.append("callback"))
         self.assertEqual(board.events, ["activate_paint"])
 
+    def test_callback_error_still_restores_skin_context(self):
+        dispatch, maya = self.load_dispatch("selectSuperContext")
+        board = self.make_board(maya)
+        def broken():
+            board.events.append("callback")
+            raise RuntimeError("test")
+        with self.assertRaisesRegex(RuntimeError, "test"):
+            dispatch(board, "paint/quick/Copy Weight", broken)
+        self.assertEqual(board.events, ["callback", "activate_paint_quiet"])
+        self.assertEqual(maya.context, "artAttrSkinContext")
+
     def test_max_influence_commands_pass_current_field_value(self):
-        dispatch = self.load_dispatch("selectSuperContext")
         for action, expected in (
             ("skin/max/Check", {"maxValue": 5}),
             ("skin/max/Fix", {"maxInfluence": 5}),
         ):
-            board = self.make_board()
+            dispatch, maya = self.load_dispatch("selectSuperContext")
+            board = self.make_board(maya)
             results = []
             dispatch(board, action, lambda **kw: results.append(kw))
             self.assertEqual(results, [expected])
-            self.assertEqual(board.events, [])
+            self.assertEqual(board.events, ["activate_paint_quiet"])
+
+    def test_activation_uses_artisan_without_opening_native_settings(self):
+        source = BOARD.read_text(encoding="utf-8")
+        board = next(node for node in ast.parse(source).body
+                     if isinstance(node, ast.ClassDef)
+                     and node.name == "SkinningBoard")
+        activate = next(node for node in board.body
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "activate_paint")
+        implementation = ast.get_source_segment(source, activate)
+        self.assertIn('"EnsurePaintContext"', implementation)
+        self.assertNotIn("ArtPaintSkinWeightsToolOptions", implementation)
+        self.assertNotIn("toolPropertyWindow", implementation)
 
 
 if __name__ == "__main__":
