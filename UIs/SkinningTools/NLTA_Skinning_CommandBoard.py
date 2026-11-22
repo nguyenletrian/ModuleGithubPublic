@@ -161,10 +161,10 @@ def command_catalog(tools, distance_ui):
         ]),
         ("animation", "ANIMATION & POSES", animation_groups + [
             ("timeline", "Timeline", [
-                ("Delete Keys", k.deleteSenceKeyframe, "Delete Scene Keys", ""),
-                ("Zoom Range", k.ZoomRangeAnim, "", ""),
-                ("Delete Attr Keys", k.DeleteAttrKeyframes, "", ""),
-                ("Fit Range", g.FitRangeAnim, "", ""),
+                ("Delete Keys", k.deleteSenceKeyframe, "Delete generated animation tests, not existing control animation", ""),
+                ("Zoom Range", k.ZoomRangeAnim, "Zoom to nearby keys on controls or test drivers", ""),
+                ("Delete Attr Keys", k.DeleteAttrKeyframes, "Delete generated tests for selected controls, else cut selected animation keys", ""),
+                ("Fit Range", k.FitRangeAnim, "Fit keys on selected controls or animation-test drivers", ""),
                 ("Bind Pose", s.goToBindPose, "", ""),
             ]),
         ]),
