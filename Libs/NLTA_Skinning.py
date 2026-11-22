@@ -174,8 +174,42 @@ def EnsurePaintContext(mesh=None):
     return True
 
 
+def _SelectNativePaintInfluence(joint):
+    """Replace, never append, the active row in Maya's Paint Skin tree."""
+    try:
+        tree = mel.eval(
+            'global string $gArtSkinInfluencesList; $gArtSkinInfluencesList;')
+        if not tree or not cmds.treeView(tree, exists=True):
+            return None  # Tool Settings is not showing the native influence tree.
+        items = cmds.treeView(tree, query=True, children="") or []
+        matches = []
+        for item in items:
+            paths = cmds.ls(item, long=True, type="joint") or []
+            if joint in paths or item == joint or item.lstrip("|") == joint.lstrip("|"):
+                matches.append(item)
+        if len(matches) != 1:
+            cmds.warning(
+                "Paint Skin: cannot uniquely locate {} in Maya's influence tree."
+                .format(joint))
+            return False
+        # Setting influence alone leaves old rows selected in Maya. Explicitly
+        # clear all native rows before selecting the single intended joint.
+        cmds.treeView(tree, edit=True, clearSelection=True)
+        cmds.treeView(tree, edit=True, selectItem=(matches[0], True))
+        selected = cmds.treeView(tree, query=True, selectItem=True) or []
+        if selected != [matches[0]]:
+            cmds.warning("Paint Skin: expected only {}, got {}."
+                         .format(matches[0], selected))
+            return False
+        return True
+    except (RuntimeError, TypeError, ValueError) as exc:
+        cmds.warning("Cannot update Maya Paint Skin influence tree: {}"
+                     .format(exc))
+        return False
+
+
 def SelectPaintInfluence(mesh, joint):
-    """Synchronize the selected joint with Maya's native Paint Skin UI."""
+    """Select exactly one influence in the custom and Maya native skin lists."""
     data = GetSkinData(mesh)
     skin = data["skinCluster"]
     bound = _BoundJoint(skin, joint, data["joints"]) if skin else None
@@ -186,18 +220,18 @@ def SelectPaintInfluence(mesh, joint):
     if not EnsurePaintContext(mesh):
         return False
 
-    # paintTrans / artAttrSkinPaintCtx alone do not update the highlighted
-    # influence in Maya Tool Settings. Use Maya's own selection procedure.
-    # Full DAG paths prevent selecting a different joint with the same name.
+    # Use Maya's influence setter, but not artSkinRevealSelected: the latter
+    # can leave several native influence rows highlighted.
     mel_name = bound.replace("\\", "\\\\").replace('"', '\\"')
     try:
         mel.eval('setSmoothSkinInfluence "{}";'.format(mel_name))
-        mel.eval('artSkinRevealSelected artAttrSkinPaintCtx;')
     except RuntimeError as exc:
-        cmds.warning("Unable to select influence in Paint Skin Weights: {}"
-                     .format(exc))
+        cmds.warning("Unable to set Paint Skin influence: {}".format(exc))
         return False
 
+    selected = _SelectNativePaintInfluence(bound)
+    if selected is False:
+        return False
     if not ActiveJoint(mesh, bound):
         return False
     cmds.artAttrSkinPaintCtx(
