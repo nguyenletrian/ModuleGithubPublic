@@ -3,10 +3,12 @@
 Generated keys live on disposable driver transforms rather than on the rig.
 Delete Keys removes only these drivers (and supported legacy test helpers).
 """
+import json
 import maya.cmds as cmds
 
 _TEST_SOURCE = "NLTA_TestAnimSource"
 _TEST_CONSTRAINT = "NLTA_TestAnimConstraint"
+_TEST_POSE = "NLTA_TestAnimPose"
 _STEP = 30
 session = {"drivers": [], "controls": [], "start": None, "end": None}
 
@@ -49,17 +51,52 @@ def _driver_for_control(control):
     return drivers
 
 
+def _saved_pose(driver):
+    """Read the source pose stored on the test driver in the Maya scene."""
+    plug = driver + "." + _TEST_POSE
+    if not cmds.objExists(plug):
+        return None
+    try:
+        data = json.loads(cmds.getAttr(plug))
+    except (ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _restore_poses(snapshots):
+    """Restore parent-to-child local channels only after constraints are gone."""
+    for pose in sorted(snapshots, key=lambda item: item["control"].count("|")):
+        control = pose.get("control")
+        if not control or not cmds.objExists(control):
+            continue
+        for channel, value in pose.get("channels", {}).items():
+            if channel not in ("tx", "ty", "tz", "rx", "ry", "rz"):
+                continue
+            plug = control + "." + channel
+            if not cmds.objExists(plug) or cmds.getAttr(plug, lock=True):
+                continue
+            # Never overwrite new connections, keyed channels or other rig inputs.
+            if cmds.listConnections(plug, source=True, destination=False) or []:
+                continue
+            cmds.setAttr(plug, value)
+
+
 def _remove_drivers(drivers):
+    restores = []
     removed = 0
     for driver in drivers:
         if not cmds.objExists(driver):
             continue
+        pose = _saved_pose(driver)
+        if pose:
+            restores.append(pose)
         if cmds.objExists(driver + "." + _TEST_CONSTRAINT):
             constraint = cmds.getAttr(driver + "." + _TEST_CONSTRAINT)
             if constraint and cmds.objExists(constraint):
                 cmds.delete(constraint)
         cmds.delete(driver)
         removed += 1
+    _restore_poses(restores)
     return removed
 
 
@@ -75,7 +112,7 @@ def _available_channels(control, kind):
     return channels
 
 
-def _make_driver(control, space, kind, channels):
+def _make_driver(control, space, kind, channels, initial_pose, origin):
     parent = (cmds.listRelatives(control, parent=True, fullPath=True) or [None])[0]
     name = "NLTA_TestAnim_" + control.rsplit("|", 1)[-1].replace(":", "_") + "_DRV"
     kwargs = {"name": name, "skipSelect": True}
@@ -84,6 +121,14 @@ def _make_driver(control, space, kind, channels):
     driver = cmds.createNode("transform", **kwargs)
     constraint = None
     try:
+        cmds.addAttr(driver, longName=_TEST_SOURCE, dataType="string")
+        cmds.setAttr(driver + "." + _TEST_SOURCE, control, type="string")
+        cmds.addAttr(driver, longName=_TEST_POSE, dataType="string")
+        cmds.setAttr(
+            driver + "." + _TEST_POSE,
+            json.dumps({"control": control, "channels": {
+                attr: initial_pose[attr] for attr in channels}, "origin": origin}),
+            type="string")
         if space == "local":
             cmds.matchTransform(driver, control, position=True, rotation=True)
         else:
@@ -97,8 +142,6 @@ def _make_driver(control, space, kind, channels):
         else:
             constraint = cmds.pointConstraint(driver, control, **options)[0]
 
-        cmds.addAttr(driver, longName=_TEST_SOURCE, dataType="string")
-        cmds.setAttr(driver + "." + _TEST_SOURCE, control, type="string")
         cmds.addAttr(driver, longName=_TEST_CONSTRAINT, dataType="string")
         cmds.setAttr(driver + "." + _TEST_CONSTRAINT, constraint, type="string")
         cmds.setAttr(driver + ".visibility", 0)
@@ -108,6 +151,8 @@ def _make_driver(control, space, kind, channels):
             cmds.delete(constraint)
         if cmds.objExists(driver):
             cmds.delete(driver)
+        _restore_poses([{"control": control, "channels": {
+            attr: initial_pose[attr] for attr in channels}}])
         raise
 
 
@@ -184,6 +229,13 @@ def CreateKeyframe(keyInput, *arr):
     try:
         for control in controls:
             _remove_drivers(_driver_for_control(control))
+        # Capture every control BEFORE any new parent/child constraints run.
+        # This keeps the neutral pose independent of selected chain order.
+        initial_poses = {
+            control: {attr: cmds.getAttr(control + "." + attr)
+                      for attr in ("tx", "ty", "tz", "rx", "ry", "rz")}
+            for control in controls
+        }
         for i, control in enumerate(controls):
             available = _available_channels(control, kind)
             if not available:
@@ -192,7 +244,8 @@ def CreateKeyframe(keyInput, *arr):
                 continue
             driver = None
             try:
-                driver = _make_driver(control, space, kind, available)
+                driver = _make_driver(
+                    control, space, kind, available, initial_poses[control], origin)
                 start = origin if simultaneous else origin + i * duration
                 _animate_driver(driver, kind, available, start, start + duration)
                 if start > origin:
@@ -251,8 +304,15 @@ def FitRangeAnim(*arr):
 
 
 def deleteSenceKeyframe(*arr):
-    """Delete only generated animation tests, not the rig's existing keys."""
+    """Return controls to their original poses and delete generated tests."""
     drivers = _test_drivers()
+    saved = [_saved_pose(driver) for driver in drivers]
+    origins = [p["origin"] for p in saved
+               if p and isinstance(p.get("origin"), (int, float))]
+    # Like the previous implementation, return to the test's starting frame
+    # before removing animated constraints, not the frame mid-test.
+    if origins:
+        cmds.currentTime(min(origins))
     count = _remove_drivers(drivers)
     # Compatible with helpers generated by the older Skinning Animation tool.
     legacy = cmds.ls("*.NLTA_worldKeyframe", objectsOnly=True, long=True) or []
@@ -272,6 +332,8 @@ def deleteSenceKeyframe(*arr):
         if cmds.objExists(node + ".NLTA_SourceJoint"):
             cmds.deleteAttr(node + ".NLTA_SourceJoint")
     session.update({"drivers": [], "controls": [], "start": None, "end": None})
+    if legacy and not origins:
+        cmds.currentTime(0)  # Legacy helper tests were created around frame 0.
     if not count:
         cmds.warning("No generated animation tests to delete.")
     return count
