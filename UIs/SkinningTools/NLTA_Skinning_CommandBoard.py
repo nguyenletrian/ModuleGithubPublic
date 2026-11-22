@@ -1412,9 +1412,21 @@ def OpenWindow(tools, uis):
         for widget in application.allWidgets():
             if widget.objectName() != "NLTA_SkinningCommandBoard":
                 continue
-            # The old instance may belong to a class object from before a
-            # hot reload. Its Python super(SkinningBoard, self) is then invalid.
-            # Disconnect live callbacks before Qt disposes of that instance.
+            # Older instances may still have event methods referring to the
+            # new module's SkinningBoard class through super(). Patch only the
+            # obsolete window class before calling hide/close.
+            old_class = type(widget)
+            if old_class is not SkinningBoard:
+                for handler in ("eventFilter", "showEvent", "hideEvent",
+                                "closeEvent"):
+                    setattr(old_class, handler, getattr(QtWidgets.QWidget, handler))
+                for child in widget.findChildren(QtWidgets.QWidget):
+                    child_class = type(child)
+                    if child_class.__name__ in ("ResponsiveButtons",
+                                                "WeightPairButtons"):
+                        setattr(child_class, "resizeEvent",
+                                QtWidgets.QWidget.resizeEvent)
+            # Disconnect live callbacks before disposing of the old board.
             timer = getattr(widget, "_live_timer", None)
             if timer is None:
                 influences = getattr(widget, "influences", None)
@@ -1425,7 +1437,7 @@ def OpenWindow(tools, uis):
             if old_scroll is not None:
                 old_scroll.viewport().removeEventFilter(widget)
             widget.blockSignals(True)
-            widget.hide()
+            widget.close()
             widget.deleteLater()
 
     slider = _bridge_controls(uis)
