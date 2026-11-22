@@ -398,12 +398,281 @@ def masonry_assignments(cards, columns):
     return output
 
 
+
+def _skin_from_selection():
+    """Return only a skinCluster actually bound to the selected mesh."""
+    import NLTA_Skinning
+    for component in cmds.ls(selection=True, long=True) or []:
+        node = component.split(".", 1)[0]
+        try:
+            data = NLTA_Skinning.GetSkinData(node)
+        except (RuntimeError, ValueError, TypeError):
+            continue
+        if data.get("skinCluster"):
+            return data
+    return None
+
+
+def _skin_influence_rows(skin):
+    """Rows contain (full DAG influence name, locked) for this skin only."""
+    if not skin or not cmds.objExists(skin):
+        return []
+    rows = []
+    for name in cmds.skinCluster(skin, query=True, influence=True) or []:
+        if not cmds.objExists(name):
+            continue
+        full = cmds.ls(name, long=True) or [name]
+        joint = full[0]
+        if cmds.nodeType(joint) != "joint":
+            continue
+        attr = joint + ".liw"
+        locked = bool(cmds.getAttr(attr)) if cmds.objExists(attr) else None
+        rows.append((joint, locked))
+    return rows
+
+
+def _set_influence_locks(skin, joints, mode):
+    """Edit skinCluster influences only; 1 means locked, 0 means unlocked."""
+    if mode not in ("lock", "unlock", "reverse"):
+        raise ValueError("Unsupported influence lock mode: " + mode)
+    available = dict(_skin_influence_rows(skin))
+    changed = 0
+    for joint in dict.fromkeys(joints):
+        if joint not in available or available[joint] is None:
+            continue
+        current = available[joint]
+        locked = (not current if mode == "reverse" else mode == "lock")
+        if locked == current:
+            continue
+        try:
+            cmds.setAttr(joint + ".liw", int(locked))
+            changed += 1
+        except RuntimeError as exc:
+            cmds.warning("Cannot change skin influence lock {}: {}".format(
+                joint, exc))
+    return changed
+
+
+class InfluencePanel(QtWidgets.QFrame):
+    """Live influence list for the selected skinned mesh; no weight edits."""
+
+    def __init__(self, parent=None):
+        super(InfluencePanel, self).__init__(parent)
+        self.setObjectName("SkinningInfluencePanel")
+        self.setMinimumWidth(220)
+        self.setMaximumWidth(430)
+        self.skin = None
+        self.mesh = None
+        self._rows = []
+        self._populating = False
+        self._jobs = []
+
+        column = QtWidgets.QVBoxLayout(self)
+        column.setContentsMargins(7, 7, 7, 7)
+        column.setSpacing(5)
+
+        heading = QtWidgets.QHBoxLayout()
+        heading.addWidget(QtWidgets.QLabel("SKIN INFLUENCES"))
+        heading.addStretch()
+        refresh = QtWidgets.QPushButton("Refresh")
+        refresh.setObjectName("SkinningInfluenceRefresh")
+        refresh.setToolTip("Read the skinned mesh from current Maya selection")
+        refresh.clicked.connect(lambda checked=False: self.refresh())
+        heading.addWidget(refresh)
+        column.addLayout(heading)
+
+        self.mesh_label = QtWidgets.QLabel("Select a skinned mesh or vertices")
+        self.mesh_label.setObjectName("SkinningInfluenceMesh")
+        self.mesh_label.setWordWrap(True)
+        column.addWidget(self.mesh_label)
+
+        self.search = QtWidgets.QLineEdit()
+        self.search.setObjectName("SkinningInfluenceSearch")
+        self.search.setPlaceholderText("Filter joint names...")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(self.filter_rows)
+        column.addWidget(self.search)
+
+        self.filter_box = QtWidgets.QComboBox()
+        self.filter_box.setObjectName("SkinningInfluenceStateFilter")
+        self.filter_box.addItems(("All", "Locked", "Unlocked"))
+        self.filter_box.currentTextChanged.connect(self.filter_rows)
+        column.addWidget(self.filter_box)
+
+        self.tree = QtWidgets.QTreeWidget()
+        self.tree.setObjectName("SkinningInfluenceTree")
+        self.tree.setHeaderLabels(("Influence joint", "Lock"))
+        self.tree.setRootIsDecorated(False)
+        self.tree.setAlternatingRowColors(True)
+        self.tree.setUniformRowHeights(True)
+        self.tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.tree.setColumnWidth(0, 170)
+        self.tree.setToolTip(
+            "Check Lock to prevent weight changes for that joint.\n"
+            "Ctrl/Shift-click to select multiple rows; double-click to select in Maya.")
+        self.tree.itemChanged.connect(self.change_item_lock)
+        self.tree.itemDoubleClicked.connect(self.select_joint)
+        column.addWidget(self.tree, 1)
+
+        self.status = QtWidgets.QLabel("0 joints")
+        self.status.setObjectName("SkinningInfluenceStatus")
+        column.addWidget(self.status)
+
+        selected = QtWidgets.QGridLayout()
+        selected.setSpacing(3)
+        for index, (label, mode) in enumerate((
+                ("Lock", "lock"), ("Unlock", "unlock"),
+                ("Reverse", "reverse"))):
+            button = QtWidgets.QPushButton(label)
+            button.setToolTip("{} selected influence joints".format(label))
+            button.clicked.connect(
+                lambda checked=False, m=mode: self.change_locks(m, True))
+            selected.addWidget(button, 0, index)
+        column.addLayout(selected)
+
+        all_buttons = QtWidgets.QGridLayout()
+        all_buttons.setSpacing(3)
+        for index, (label, mode) in enumerate((
+                ("Lock All", "lock"), ("Unlock All", "unlock"),
+                ("Reverse All", "reverse"))):
+            button = QtWidgets.QPushButton(label)
+            button.setToolTip("{} influences bound to this skin".format(label))
+            button.clicked.connect(
+                lambda checked=False, m=mode: self.change_locks(m, False))
+            all_buttons.addWidget(button, 0, index)
+        column.addLayout(all_buttons)
+
+        hint = QtWidgets.QLabel(
+            "Checkbox: lock one joint  |  Double-click: select joint")
+        hint.setWordWrap(True)
+        hint.setObjectName("SkinningInfluenceHint")
+        column.addWidget(hint)
+
+    def activate(self):
+        if not self._jobs:
+            for event in ("SelectionChanged", "SceneOpened", "NewSceneOpened"):
+                try:
+                    self._jobs.append(cmds.scriptJob(
+                        event=[event, self.on_selection_changed]))
+                except RuntimeError:
+                    pass
+        self.refresh()
+
+    def deactivate(self):
+        for job in self._jobs:
+            if cmds.scriptJob(exists=job):
+                cmds.scriptJob(kill=job, force=True)
+        self._jobs = []
+
+    def on_selection_changed(self):
+        data = _skin_from_selection()
+        if data and (data["skinCluster"], data["mesh"]) != (
+                self.skin, self.mesh):
+            self.skin = data["skinCluster"]
+            self.mesh = data["mesh"]
+            self.refresh(prefer_selection=False)
+        elif self.skin and not cmds.objExists(self.skin):
+            self.skin = None
+            self.mesh = None
+            self.refresh(prefer_selection=False)
+
+    def refresh(self, prefer_selection=True):
+        if prefer_selection:
+            data = _skin_from_selection()
+            if data:
+                self.skin = data["skinCluster"]
+                self.mesh = data["mesh"]
+        if self.skin and not cmds.objExists(self.skin):
+            self.skin = None
+            self.mesh = None
+        self._rows = _skin_influence_rows(self.skin)
+        caption = self.mesh.rsplit("|", 1)[-1] if self.mesh else "Select a skinned mesh or vertices"
+        self.mesh_label.setText(caption)
+        self.mesh_label.setToolTip(
+            "{}\nSkin: {}".format(self.mesh, self.skin) if self.skin else "")
+        self.populate()
+
+    def populate(self):
+        selected = {item.data(0, QtCore.Qt.UserRole)
+                    for item in self.tree.selectedItems()}
+        self._populating = True
+        self.tree.setUpdatesEnabled(False)
+        self.tree.blockSignals(True)
+        try:
+            self.tree.clear()
+            for joint, locked in self._rows:
+                short = joint.rsplit("|", 1)[-1]
+                item = QtWidgets.QTreeWidgetItem(
+                    (short, "Locked" if locked else "Unlocked"
+                     if locked is not None else "N/A"))
+                item.setData(0, QtCore.Qt.UserRole, joint)
+                item.setToolTip(0, joint)
+                if locked is not None:
+                    item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
+                    item.setCheckState(
+                        1, QtCore.Qt.Checked if locked else QtCore.Qt.Unchecked)
+                self.tree.addTopLevelItem(item)
+                if joint in selected:
+                    item.setSelected(True)
+        finally:
+            self.tree.blockSignals(False)
+            self.tree.setUpdatesEnabled(True)
+            self._populating = False
+        self.filter_rows()
+
+    def filter_rows(self, *_):
+        phrase = self.search.text().strip().casefold()
+        state = self.filter_box.currentText()
+        visible = 0
+        for index, (joint, locked) in enumerate(self._rows):
+            name = joint.rsplit("|", 1)[-1]
+            matches_name = phrase in joint.casefold() or phrase in name.casefold()
+            matches_state = (state == "All" or
+                             (state == "Locked" and locked is True) or
+                             (state == "Unlocked" and locked is False))
+            shown = matches_name and matches_state
+            self.tree.topLevelItem(index).setHidden(not shown)
+            visible += int(shown)
+        locked_count = sum(locked is True for _, locked in self._rows)
+        unlocked_count = sum(locked is False for _, locked in self._rows)
+        self.status.setText("{} shown / {} joints  |  {} locked  |  {} unlocked".format(
+            visible, len(self._rows), locked_count, unlocked_count))
+
+    def change_item_lock(self, item, column):
+        if self._populating or column != 1 or not self.skin:
+            return
+        joint = item.data(0, QtCore.Qt.UserRole)
+        locked = item.checkState(1) == QtCore.Qt.Checked
+        _set_influence_locks(self.skin, [joint], "lock" if locked else "unlock")
+        self.refresh(prefer_selection=False)
+
+    def change_locks(self, mode, selected_only):
+        if not self.skin:
+            cmds.warning("Choose a skinned mesh first")
+            return
+        if selected_only:
+            joints = [item.data(0, QtCore.Qt.UserRole)
+                      for item in self.tree.selectedItems()]
+            if not joints:
+                cmds.warning("Select influence rows in the table first")
+                return
+        else:
+            joints = [joint for joint, _ in self._rows]
+        _set_influence_locks(self.skin, joints, mode)
+        self.refresh(prefer_selection=False)
+
+    def select_joint(self, item, column):
+        joint = item.data(0, QtCore.Qt.UserRole)
+        if cmds.objExists(joint):
+            cmds.select(joint, replace=True)
+
+
 class SkinningBoard(QtWidgets.QWidget):
     def __init__(self, catalog, distance_ui, uis):
         super(SkinningBoard, self).__init__()
         self.setObjectName("NLTA_SkinningCommandBoard")
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        self.setMinimumWidth(690)
+        self.setMinimumWidth(820)
         self.setMinimumHeight(440)
         self.catalog = catalog
         self.uis = uis
@@ -472,12 +741,22 @@ class SkinningBoard(QtWidgets.QWidget):
         top.addWidget(self.count)
         outer.addLayout(top)
 
+        self.workspace = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.workspace.setObjectName("SkinningWorkspaceSplitter")
+        self.workspace.setChildrenCollapsible(False)
+        outer.addWidget(self.workspace, 1)
+
         self.scroll = QtWidgets.QScrollArea()
         self.scroll.setObjectName("SkinningBoardScroll")
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        outer.addWidget(self.scroll, 1)
+        self.workspace.addWidget(self.scroll)
+        self.influences = InfluencePanel(self.workspace)
+        self.workspace.addWidget(self.influences)
+        self.workspace.setStretchFactor(0, 1)
+        self.workspace.setStretchFactor(1, 0)
+        self.workspace.setSizes([780, 280])
         inside = QtWidgets.QWidget()
         inside.setObjectName("SkinningContent")
         self.content = QtWidgets.QVBoxLayout(inside)
@@ -711,7 +990,16 @@ class SkinningBoard(QtWidgets.QWidget):
             return
         return callback()
 
+    def showEvent(self, event):
+        super(SkinningBoard, self).showEvent(event)
+        self.influences.activate()
+
+    def hideEvent(self, event):
+        self.influences.deactivate()
+        super(SkinningBoard, self).hideEvent(event)
+
     def closeEvent(self, event):
+        self.influences.deactivate()
         self.settings.setValue("geometry_masonry", self.saveGeometry())
         super(SkinningBoard, self).closeEvent(event)
 
@@ -834,6 +1122,26 @@ class SkinningBoard(QtWidgets.QWidget):
             QPushButton#SkinningAction[role="danger"] {
                 border-color: #836060;
             }
+            QFrame#SkinningInfluencePanel {
+                background-color: #202020;
+                border: 1px solid #454545;
+                border-radius: 4px;
+            }
+            QLabel#SkinningInfluenceMesh, QLabel#SkinningInfluenceStatus,
+            QLabel#SkinningInfluenceHint {
+                color: #B5B5B5;
+                font-size: 10px;
+            }
+            QTreeWidget#SkinningInfluenceTree {
+                background-color: #252525;
+                alternate-background-color: #2D2D2D;
+                color: #E5E5E5;
+                border: 1px solid #454545;
+                selection-background-color: #505050;
+            }
+            QTreeWidget#SkinningInfluenceTree::item {
+                min-height: 20px;
+            }
             QLineEdit {
                 background-color: #252525;
                 color: #EEEEEE;
@@ -902,7 +1210,7 @@ def OpenWindow(tools, uis):
     if saved:
         board.restoreGeometry(saved)
     else:
-        board.resize(1020, 790)
+        board.resize(1180, 790)
     _BOARD = board
     uis["board"] = board
     board.show()
