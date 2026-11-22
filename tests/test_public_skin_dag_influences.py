@@ -193,7 +193,7 @@ FUNCTIONS = (
     "addUnlockDown", "ActiveJoint", "switchJoint", "GetVertexWeights",
     "UnlockTwoJoints", "UnlockInfluenceJoints", "SelectPaintInfluence",
     "_SelectNativePaintInfluence", "_RefreshPaintInfluenceDisplay",
-    "RefreshPaintInfluenceLocks"
+    "RefreshPaintInfluenceLocks", "_SetPaintInfluenceLock"
 )
 
 
@@ -226,6 +226,13 @@ def load_logic(fake):
                 return fake.native_tree
             if statement.startswith("setSmoothSkinInfluence"):
                 fake.native_active = statement.split('"')[1]
+            if statement.startswith("artSkinLockInfPassedIn"):
+                joint = statement.split('"')[1]
+                locked = bool(int(statement.rsplit(" ", 1)[-1].rstrip(";")))
+                fake.locks[joint] = locked
+                fake.native_lock_icons[joint] = (
+                    "buttonDown" if locked else "buttonUp")
+                fake.native_events.append(("nativeLock", joint, locked))
             if statement.startswith("artSkinInflListChanging"):
                 item = statement.split('"')[1]
                 state = int(statement.rsplit(" ", 1)[-1].rstrip(";"))
@@ -363,6 +370,32 @@ class DagBoundInfluenceTests(unittest.TestCase):
         self.assertEqual(
             self.logic["RefreshPaintInfluenceLocks"](self.fake.skin), 0)
         self.assertEqual(self.fake.locks, before)
+
+    def test_native_paint_lock_refreshes_immediately_without_tool_reopen(self):
+        self.fake.native_tree = "artSkinInfluencesTree"
+        self.fake.native_items = [ROOT, CHILD]
+        self.fake.native_lock_icons = {ROOT: "buttonDown", CHILD: "buttonDown"}
+        self.fake.locks[ROOT] = True
+        self.fake.locks[CHILD] = True
+        self.assertTrue(self.logic["_SetPaintInfluenceLock"](ROOT, False))
+        self.assertEqual(self.fake.native_lock_icons[ROOT], "buttonUp")
+        self.assertFalse(self.fake.locks[ROOT])
+        self.assertTrue(any(
+            x.startswith('artSkinLockInfPassedIn "') for x in self.fake.mel_calls))
+
+    def test_relative_hierarchy_joint_name_resolves_unique_dag_suffix(self):
+        self.fake.influences = [ROOT, CHILD]
+        self.assertEqual(
+            self.logic["_BoundJoint"]("skinCluster1", "joint1|joint2"), CHILD)
+        self.fake.influences.append("|Other|joint1|joint2")
+        self.assertIsNone(
+            self.logic["_BoundJoint"]("skinCluster1", "joint1|joint2"))
+
+    def test_native_paint_lock_does_not_reapply_unchanged_state(self):
+        self.fake.locks[ROOT] = True
+        self.assertFalse(self.logic["_SetPaintInfluenceLock"](ROOT, True))
+        self.assertFalse(any(
+            x.startswith('artSkinLockInfPassedIn "') for x in self.fake.mel_calls))
 
     def test_api_returns_only_the_exact_bound_paths(self):
         self.assertEqual(
