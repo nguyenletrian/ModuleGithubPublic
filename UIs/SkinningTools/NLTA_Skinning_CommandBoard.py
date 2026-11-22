@@ -81,12 +81,12 @@ def command_catalog(tools, distance_ui):
                 ("Add Down", s.addUnlockDown, "", ""),
                 ("Add Up", s.addUnlockUp, "", ""),
                 ("Unlock All", s.unlockAll, "", ""),
-                ("Unlock 2 Joints", s.UnlockTwoJoints, "", ""),
-                ("Unlock Joints", s.UnlockInfluenceJoints, "Unlock all influence joints", ""),
-                ("Isolate", s.IsolateEffectVertex, "", ""),
+                ("Unlock 2 Joints", s.UnlockTwoJoints, "Select one vertex: unlock its top two weighted influences", ""),
+                ("Unlock Joints", s.UnlockInfluenceJoints, "Select one vertex: unlock every influence affecting that vertex", ""),
+                ("Isolate", s.IsolateEffectVertex, "Isolate vertices affected by the active paint influence", ""),
             ]),
             ("helpers", "Paint helpers", [
-                ("Switch Joint", s.switchJoint, "", ""),
+                ("Switch Joint", s.switchJoint, "Advance to the next unlocked influence on the selected skin", ""),
                 ("Switch Brush", b.SwitchBrush, "", ""),
                 ("Middle Weight", s.setMiddleWeight, "", ""),
                 ("Prune", s.pruneSmallWeights, "", ""),
@@ -100,9 +100,9 @@ def command_catalog(tools, distance_ui):
         ("skin", "SKIN & JOINTS", [
             ("bind", "Skin and influences", [
                 ("Bind Skin", g.bindSkin, "", ""),
-                ("Copy Skin", g.copyJointBind, "", ""),
+                ("Copy Skin", g.copyJointBind, "Select source mesh first, then destination mesh(es)", ""),
                 ("Add Joint", s.AddJoint, "Joint(s) and mesh(es)", ""),
-                ("Add Mesh Joint", s.AddMeshJoint, "", ""),
+                ("Add Mesh Joint", s.AddMeshJoint, "Select source skinned mesh, then destination skinned mesh(es)", ""),
                 ("Remove Joint", s.RemoveJoint,
                  "Transfers selected joint weights bottom-up and removes skin influences", "primary"),
                 ("Clear Unused", s.removeUnneedJoint, "", ""),
