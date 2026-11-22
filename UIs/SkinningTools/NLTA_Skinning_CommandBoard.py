@@ -803,7 +803,9 @@ class InfluencePanel(QtWidgets.QFrame):
         if self._populating or self._syncing or not item or not self.skin:
             return
         joint = item.data(0, QtCore.Qt.UserRole)
-        if joint not in self._items or joint == self._active_joint:
+        # Reapply even for the same row: Maya's native Paint Skin list can
+        # retain multiple selected influences after external UI operations.
+        if joint not in self._items:
             return
         if _activate_skin_paint_influence(
                 self.skin, self.mesh, joint, self._items):
