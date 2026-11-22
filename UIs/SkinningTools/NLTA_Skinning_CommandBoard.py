@@ -45,13 +45,22 @@ def command_catalog(tools, distance_ui):
     sets = tools["NLTA_Set"]
     bs = tools["NLTA_BlendShape"]
 
-    # These are Paint Skin brush value presets, not direct vertex edits.
+    # MayaScriptNew: +/- presets add weights to selected vertices.
+    # Set 0 and Set 1 only configure the Paint Skin brush Value.
+    increments = (0.0001, 0.0005, 0.001, 0.005, 0.01, 0.03, 0.05, 0.1)
     weight_commands = [
         ("Set 0", partial(b.ReplaceWeight, 0),
-         "Paint Skin: Replace brush Value = 0 (does not modify weights yet)", "primary"),
+         "Paint Skin: set brush Value to 0 (no vertex edit)", "primary"),
         ("Set 1", partial(b.ReplaceWeight, 1),
-         "Paint Skin: Replace brush Value = 1 (does not modify weights yet)", "primary"),
+         "Paint Skin: set brush Value to 1 (no vertex edit)", "primary"),
     ]
+    for amount in increments:
+        weight_commands.extend((
+            ("-" + str(amount), partial(b.AddWeight, -amount),
+             "Subtract {} from selected vertex weights".format(amount), ""),
+            ("+" + str(amount), partial(b.AddWeight, amount),
+             "Add {} to selected vertex weights".format(amount), ""),
+        ))
 
     animation_groups = []
     for key, space in (("local", "local"), ("world", "world")):
@@ -99,7 +108,7 @@ def command_catalog(tools, distance_ui):
             ]),
         ]),
         ("weight", "WEIGHT ADJUSTMENTS", [
-            ("increment", "Paint Value", weight_commands),
+            ("increment", "Weight - / +", weight_commands),
         ]),
         ("skin", "SKIN & JOINTS", [
             ("bind", "Skin and influences", [
@@ -355,13 +364,23 @@ class ResponsiveButtons(QtWidgets.QWidget):
         self.reflow()
 
 
+WEIGHT_STEPS = ("0.0001", "0.0005", "0.001", "0.005",
+                "0.01", "0.03", "0.05", "0.1")
+
+
 def weight_grid_position(name):
-    """Keep Set 0 and Set 1 side-by-side in the compact Weight group."""
-    return (0, 1) if name == "Set 1" else (0, 0)
+    """Legacy two-column pairing for negative and positive weight edits."""
+    if name == "Set 0":
+        return 0, 0
+    if name == "Set 1":
+        return len(WEIGHT_STEPS) + 1, 1
+    if name[:1] in ("-", "+") and name[1:] in WEIGHT_STEPS:
+        return WEIGHT_STEPS.index(name[1:]) + 1, int(name[0] == "+")
+    return len(WEIGHT_STEPS) + 2, 0
 
 
 class WeightPairButtons(ResponsiveButtons):
-    """Keep Set 0 / Set 1 paired in two columns at any window width."""
+    """Keep legacy +/- weight steps paired in two columns."""
 
     def reflow(self, force=False):
         active = [button for button in self.items if not button.isHidden()]
