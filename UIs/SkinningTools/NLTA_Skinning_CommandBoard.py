@@ -47,7 +47,7 @@ def command_catalog(tools, distance_ui):
 
     increments = (0.0001, 0.0005, 0.001, 0.005, 0.01, 0.03, 0.05, 0.1)
     weight_commands = [
-        ("Set 0", partial(b.ReplaceWeight, 0), "Replace weight with 0", "primary"),
+        ("Set 0", partial(b.ReplaceWeight, 0), "Set Paint Skin brush Value to 0 without changing weights", "primary"),
         ("Add +1", partial(b.AddWeight, 1), "Add weight by 1", ""),
     ]
     for amount in increments:
