@@ -289,6 +289,93 @@ class AnimationControlTests(unittest.TestCase):
         self.assertEqual(self.cmds.cut_keys, [])
         self.assertEqual(self.cmds.selected, [ROOT, ARM])
 
+    def test_delete_keys_restores_original_parent_child_pose_from_mid_animation(self):
+        originals = {
+            ROOT: {"rx": 18.25, "ry": -21.0, "rz": 5.0},
+            ARM: {"rx": -6.0, "ry": 4.0, "rz": 12.75},
+        }
+        for ctrl, channels in originals.items():
+            for channel, value in channels.items():
+                self.cmds.attrs[ctrl + "." + channel] = value
+        drivers = self.create()
+        self.assertEqual(len(drivers), 2)
+        # A frame in the middle of an animated test, not its neutral pose.
+        self.cmds.currentTime(221)
+        for ctrl in originals:
+            for channel in originals[ctrl]:
+                self.cmds.attrs[ctrl + "." + channel] = 91.0
+
+        count = self.logic["deleteSenceKeyframe"]()
+        self.assertEqual(count, 2)
+        self.assertEqual(self.cmds.time, 17.0)
+        for ctrl, channels in originals.items():
+            for channel, original in channels.items():
+                self.assertEqual(self.cmds.attrs[ctrl + "." + channel], original)
+        self.assertEqual(self.cmds.constraints, {})
+        self.assertEqual(self.cmds.selected, [ROOT, ARM])
+        self.assertEqual(self.cmds.cut_keys, [])
+        self.assertEqual(self.logic["_test_drivers"](), [])
+
+    def test_translate_delete_restores_nonzero_local_position_only(self):
+        self.cmds.selected = [ARM]
+        starting = {"tx": 8.0, "ty": -2.5, "tz": 3.25}
+        for channel, value in starting.items():
+            self.cmds.attrs[ARM + "." + channel] = value
+        self.cmds.attrs[ARM + ".ry"] = 32.0
+        self.create(space="world", kind="translate")
+        self.cmds.currentTime(183)
+        for channel in starting:
+            self.cmds.attrs[ARM + "." + channel] = 999.0
+        self.logic["deleteSenceKeyframe"]()
+        for channel, value in starting.items():
+            self.assertEqual(self.cmds.attrs[ARM + "." + channel], value)
+        self.assertEqual(self.cmds.attrs[ARM + ".ry"], 32.0)
+        self.assertEqual(self.cmds.time, 17.0)
+
+    def test_pose_snapshot_persists_on_driver_across_session_reload(self):
+        self.cmds.selected = [ARM]
+        self.cmds.attrs[ARM + ".rz"] = 42.0
+        drivers = self.create()
+        self.assertEqual(len(drivers), 1)
+        self.assertIn(drivers[0] + ".NLTA_TestAnimPose", self.cmds.attrs)
+        for channel in "xyz":
+            self.cmds.attrs[ARM + ".r" + channel] = 90.0
+        self.cmds.currentTime(277)
+        # Simulate reimport/reload of the module and loss of in-memory state.
+        reloaded = load_logic(self.cmds)
+        self.assertEqual(reloaded["session"]["drivers"], [])
+        self.assertEqual(reloaded["deleteSenceKeyframe"](), 1)
+        self.assertEqual(self.cmds.attrs[ARM + ".rz"], 42.0)
+        self.assertEqual(self.cmds.time, 17.0)
+
+    def test_delete_only_restores_its_channels_not_later_external_connections(self):
+        self.cmds.selected = [ARM]
+        self.cmds.attrs[ARM + ".rx"] = 15.0
+        self.create()
+        self.cmds.attrs[ARM + ".rx"] = 67.0
+        # A separate system has taken over this channel after the test began.
+        self.cmds.connected.add(ARM + ".rx")
+        self.logic["deleteSenceKeyframe"]()
+        self.assertEqual(self.cmds.attrs[ARM + ".rx"], 67.0)
+        self.assertEqual(self.cmds.constraints, {})
+        self.assertEqual(self.cmds.cut_keys, [])
+
+    def test_delete_attr_keys_on_test_restores_original_pose(self):
+        self.cmds.selected = [ARM]
+        self.cmds.attrs[ARM + ".ry"] = -13.5
+        self.create()
+        self.cmds.attrs[ARM + ".ry"] = 71.0
+        self.logic["DeleteAttrKeyframes"]()
+        self.assertEqual(self.cmds.attrs[ARM + ".ry"], -13.5)
+        self.assertEqual(self.logic["_test_drivers"](), [])
+
+    def test_delete_without_test_keeps_current_frame_and_control_pose(self):
+        self.cmds.currentTime(221)
+        self.cmds.attrs[ARM + ".rx"] = 27.0
+        self.assertEqual(self.logic["deleteSenceKeyframe"](), 0)
+        self.assertEqual(self.cmds.time, 221)
+        self.assertEqual(self.cmds.attrs[ARM + ".rx"], 27.0)
+
     def test_zoom_and_fit_scope_to_test_driver_not_unrelated_scene_curve(self):
         self.cmds.selected = [ARM]
         self.create()
