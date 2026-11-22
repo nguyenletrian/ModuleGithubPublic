@@ -245,8 +245,10 @@ class AnimationControlTests(unittest.TestCase):
             with self.subTest(axis=attr):
                 actual = self.cmds.key_values[(driver, attr)]
                 self.assertEqual(sorted(actual), frames)
+                legacy_frames = [30 + "xyz".index(attr[-1]) * 150 + i * 30
+                                 for i in range(5)]
                 self.assertEqual(
-                    [actual[t] for t in frames[1:-1]],
+                    [actual[t] for t in legacy_frames],
                     [0, -90, 0, 90, 0])
         self.assertEqual(self.cmds.playback["min"], 0)
         self.assertEqual(self.cmds.playback["max"], 450)
