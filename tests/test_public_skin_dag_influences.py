@@ -174,6 +174,8 @@ def load_logic(fake):
         def eval(self, statement):
             fake.mel_calls.append(statement)
             if "$gArtSkinInfluencesList" in statement:
+                assert "string $nltaPaintTree = $gArtSkinInfluencesList;" in statement
+                assert "; $gArtSkinInfluencesList;" not in statement
                 return fake.native_tree
             if statement.startswith("setSmoothSkinInfluence"):
                 fake.native_active = statement.split('"')[1]
@@ -234,7 +236,8 @@ class DagBoundInfluenceTests(unittest.TestCase):
         self.assertEqual(
             self.fake.mel_calls,
             ['setSmoothSkinInfluence "{}";'.format(CHILD),
-             'global string $gArtSkinInfluencesList; $gArtSkinInfluencesList;'])
+             'global string $gArtSkinInfluencesList; '
+             'string $nltaPaintTree = $gArtSkinInfluencesList;'])
 
     def test_single_native_row_after_repeated_influence_clicks(self):
         self.fake.native_tree = "artSkinInfluencesTree"
