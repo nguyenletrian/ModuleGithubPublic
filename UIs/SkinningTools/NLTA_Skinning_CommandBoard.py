@@ -1416,7 +1416,8 @@ def OpenWindow(tools, uis):
             # new module's SkinningBoard class through super(). Patch only the
             # obsolete window class before calling hide/close.
             old_class = type(widget)
-            if old_class is not SkinningBoard:
+            if (old_class is not SkinningBoard
+                    and old_class.__name__ == "SkinningBoard"):
                 for handler in ("eventFilter", "showEvent", "hideEvent",
                                 "closeEvent"):
                     setattr(old_class, handler, getattr(QtWidgets.QWidget, handler))
