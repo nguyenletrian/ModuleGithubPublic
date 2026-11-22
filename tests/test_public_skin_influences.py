@@ -17,10 +17,19 @@ class FakeCmds:
         self.warning_messages = []
         self.selected = ["|Body|Mesh.vtx[11]"]
         self.selected_joint = None
+        self.paint_context_exists = True
+        self.active_influence = "|Rig|Spine_JNT"
+        self.source_joint = "|Rig|Spine_JNT"
+        self.paint_edits = []
+        self.connections = []
 
     def ls(self, *args, **kwargs):
         if kwargs.get("selection"):
             return self.selected
+        if kwargs.get("type") == "joint" and args:
+            name = args[0]
+            return [joint for joint in self.influences
+                    if joint == name or joint.rsplit("|", 1)[-1] == name]
         return list(args)
 
     def objExists(self, name):
@@ -53,12 +62,36 @@ class FakeCmds:
     def warning(self, message):
         self.warning_messages.append(message)
 
+    def artAttrSkinPaintCtx(self, context, **kwargs):
+        assert context == "artAttrSkinContext"
+        if kwargs.get("exists"):
+            return self.paint_context_exists
+        if kwargs.get("query") and kwargs.get("influence"):
+            return self.active_influence
+        if kwargs.get("edit"):
+            joint = kwargs.get("influence")
+            self.paint_edits.append(joint)
+            self.active_influence = joint
+            return None
+        raise AssertionError("Unexpected context operation")
+
+    def connectionInfo(self, attribute, **kwargs):
+        assert attribute == "skin1.paintTrans"
+        return self.source_joint + ".message" if self.source_joint else ""
+
+    def connectAttr(self, source, destination, **kwargs):
+        assert destination == "skin1.paintTrans" and kwargs.get("force")
+        self.source_joint = source.rsplit(".", 1)[0]
+        self.connections.append((source, destination))
+
+
 
 def load_logic(cmds):
     parsed = ast.parse(BOARD.read_text(encoding="utf-8"))
     names = ("_skin_from_selection", "_selected_unskinned_mesh",
              "_skin_influence_rows", "_influence_hierarchy",
-             "_set_influence_locks")
+             "_resolve_skin_influence", "_active_skin_paint_influence",
+             "_activate_skin_paint_influence", "_set_influence_locks")
     nodes = [node for node in parsed.body
              if isinstance(node, ast.FunctionDef) and node.name in names]
     assert len(nodes) == len(names)
@@ -155,6 +188,52 @@ class InfluenceLogicTests(unittest.TestCase):
         self.cmds.selected = ["|Rig|Arm_JNT"]
         self.assertFalse(check())
 
+    def test_paint_context_selection_resolves_to_bound_dag_joint(self):
+        self.cmds.active_influence = "Arm_JNT"
+        active = self.logic["_active_skin_paint_influence"]("skin1")
+        self.assertEqual(active, "|Rig|Arm_JNT")
+
+    def test_native_paint_influence_falls_back_to_skin_painttrans(self):
+        self.cmds.paint_context_exists = False
+        self.cmds.source_joint = "|Rig|Extra_JNT"
+        self.assertEqual(self.logic["_active_skin_paint_influence"]("skin1"),
+                         "|Rig|Extra_JNT")
+
+    def test_ambiguous_joint_name_is_never_mapped_to_wrong_skin_influence(self):
+        self.cmds.influences.append("|Another|Arm_JNT")
+        self.cmds.locks["|Another|Arm_JNT"] = False
+        self.assertIsNone(self.logic["_resolve_skin_influence"](
+            "skin1", "Arm_JNT"))
+        self.assertEqual(self.logic["_resolve_skin_influence"](
+            "skin1", "|Rig|Arm_JNT"), "|Rig|Arm_JNT")
+        self.assertIsNone(self.logic["_resolve_skin_influence"](
+            "skin1", "Unbound_JNT"))
+
+    def test_list_selection_sets_paint_joint_without_selecting_scene_joint(self):
+        backend = types.ModuleType("NLTA_Skinning")
+        ensure_calls = []
+        backend.EnsurePaintContext = lambda mesh: (
+            ensure_calls.append(mesh) or True)
+        before = list(self.cmds.selected)
+        with mock.patch.dict(sys.modules, {"NLTA_Skinning": backend}):
+            result = self.logic["_activate_skin_paint_influence"](
+                "skin1", "|Body|Mesh", "|Rig|Arm_JNT")
+        self.assertTrue(result)
+        self.assertEqual(ensure_calls, ["|Body|Mesh"])
+        self.assertEqual(self.cmds.paint_edits, ["|Rig|Arm_JNT"])
+        self.assertEqual(self.cmds.source_joint, "|Rig|Arm_JNT")
+        self.assertEqual(self.cmds.selected, before)
+
+    def test_unbound_joint_does_not_edit_skin_paint_context(self):
+        backend = types.ModuleType("NLTA_Skinning")
+        backend.EnsurePaintContext = lambda mesh: True
+        with mock.patch.dict(sys.modules, {"NLTA_Skinning": backend}):
+            result = self.logic["_activate_skin_paint_influence"](
+                "skin1", "|Body|Mesh", "|Unbound|Other_JNT")
+        self.assertFalse(result)
+        self.assertEqual(self.cmds.paint_edits, [])
+        self.assertEqual(self.cmds.source_joint, "|Rig|Spine_JNT")
+
     def test_board_has_joint_column_and_maya_scriptjob_lifecycle(self):
         text = BOARD.read_text(encoding="utf-8")
         for expected in (
@@ -173,6 +252,16 @@ class InfluenceLogicTests(unittest.TestCase):
                 '"Lock"', '"Unlock"', '"Reverse"',
                 'self.tree.itemChanged.connect(self.change_item_lock)',
                 'self.tree.itemDoubleClicked.connect(self.select_joint)',
+                'self.tree.currentItemChanged.connect(self.change_active_influence)',
+                'self._live_timer.setInterval(300)',
+                'self._live_timer.timeout.connect(self.sync_live)',
+                'self._live_timer.start()',
+                'self._live_timer.stop()',
+                'self.tree.blockSignals(True)',
+                'self.tree.setCurrentItem(item)',
+                'def sync_from_paint(self):',
+                'def sync_live(self):',
+                'def sync_lock_states(self):',
                 'event=[event, callback]',
                 "def reset_scene(self):",
                 "self.influences.refresh()",
