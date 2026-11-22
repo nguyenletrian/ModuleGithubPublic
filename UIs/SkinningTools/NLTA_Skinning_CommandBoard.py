@@ -470,6 +470,78 @@ def _set_influence_locks(skin, joints, mode):
     return changed
 
 
+def _resolve_skin_influence(skin, name):
+    """Resolve Maya's short paint-influence names against this skin's full DAG paths."""
+    if not name or not skin:
+        return None
+    if isinstance(name, (list, tuple)):
+        name = name[0] if len(name) == 1 else None
+    if not isinstance(name, str):
+        return None
+    name = name.split(".", 1)[0]
+    bound = {joint for joint, _ in _skin_influence_rows(skin)}
+    if name in bound:
+        return name
+    try:
+        candidates = cmds.ls(name, long=True, type="joint") or []
+    except RuntimeError:
+        return None
+    resolved = [joint for joint in candidates if joint in bound]
+    return resolved[0] if len(resolved) == 1 else None
+
+
+def _active_skin_paint_influence(skin):
+    """Read Maya Paint Skin Weights selection; fall back to skin.paintTrans."""
+    if not skin or not cmds.objExists(skin):
+        return None
+    context = "artAttrSkinContext"
+    try:
+        if cmds.artAttrSkinPaintCtx(context, exists=True):
+            active = cmds.artAttrSkinPaintCtx(
+                context, query=True, influence=True)
+            resolved = _resolve_skin_influence(skin, active)
+            if resolved:
+                return resolved
+    except (RuntimeError, ValueError, TypeError):
+        pass
+    try:
+        connection = cmds.connectionInfo(
+            skin + ".paintTrans", sourceFromDestination=True) or ""
+        return _resolve_skin_influence(skin, connection.split(".", 1)[0])
+    except (RuntimeError, ValueError):
+        return None
+
+
+def _activate_skin_paint_influence(skin, mesh, joint):
+    """Activate painting on a bound joint, preserving mesh/vertex selection."""
+    if not skin or not mesh:
+        return False
+    joint = _resolve_skin_influence(skin, joint)
+    if not joint:
+        cmds.warning("Choose a joint bound to the current skinCluster.")
+        return False
+    try:
+        import NLTA_Skinning
+        ensure = getattr(NLTA_Skinning, "EnsurePaintContext", None)
+        if not callable(ensure) or not ensure(mesh):
+            cmds.warning("Could not activate Maya Paint Skin Weights for {}.".format(mesh))
+            return False
+
+        # The existing NLTA tools use paintTrans as their current influence.
+        source = cmds.connectionInfo(
+            skin + ".paintTrans", sourceFromDestination=True) or ""
+        current = source.split(".", 1)[0]
+        if _resolve_skin_influence(skin, current) != joint:
+            cmds.connectAttr(joint + ".message", skin + ".paintTrans", force=True)
+        cmds.artAttrSkinPaintCtx(
+            "artAttrSkinContext", edit=True, influence=joint)
+        return True
+    except (RuntimeError, ValueError) as exc:
+        cmds.warning("Unable to select paint influence {}: {}".format(
+            joint, exc))
+        return False
+
+
 def _influence_hierarchy(rows):
     """Use the nearest bound DAG ancestor; omit non-skin influences."""
     joints = {joint for joint, _ in rows}
@@ -497,7 +569,13 @@ class InfluencePanel(QtWidgets.QFrame):
         self._parents = {}
         self._tree_skin = None
         self._populating = False
+        self._syncing = False
+        self._active_joint = None
+        self._live_ticks = 0
         self._jobs = []
+        self._live_timer = QtCore.QTimer(self)
+        self._live_timer.setInterval(300)
+        self._live_timer.timeout.connect(self.sync_live)
 
         column = QtWidgets.QVBoxLayout(self)
         column.setContentsMargins(7, 7, 7, 7)
@@ -546,9 +624,10 @@ class InfluencePanel(QtWidgets.QFrame):
         self.tree.setUniformRowHeights(True)
         self.tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.tree.setToolTip(
-            "Check Lock to prevent weight changes for that joint.\n"
-            "Ctrl/Shift-click to select multiple rows; double-click to select in Maya.")
+            "Select a joint to make it active in Maya Paint Skin Weights.\n"
+            "Use Ctrl/Shift for multiple rows; the Lock checkbox is independent.")
         self.tree.itemChanged.connect(self.change_item_lock)
+        self.tree.currentItemChanged.connect(self.change_active_influence)
         self.tree.itemDoubleClicked.connect(self.select_joint)
         column.addWidget(self.tree, 1)
 
@@ -581,7 +660,7 @@ class InfluencePanel(QtWidgets.QFrame):
         column.addLayout(all_buttons)
 
         hint = QtWidgets.QLabel(
-            "Checkbox: lock one joint  |  Double-click: select joint")
+            "Select row: active paint influence  |  Checkbox: lock")
         hint.setWordWrap(True)
         hint.setObjectName("SkinningInfluenceHint")
         column.addWidget(hint)
@@ -597,8 +676,11 @@ class InfluencePanel(QtWidgets.QFrame):
                 except RuntimeError:
                     pass
         self.refresh()
+        self._live_timer.start()
+        self.sync_live()
 
     def deactivate(self):
+        self._live_timer.stop()
         for job in self._jobs:
             if cmds.scriptJob(exists=job):
                 cmds.scriptJob(kill=job, force=True)
@@ -607,6 +689,7 @@ class InfluencePanel(QtWidgets.QFrame):
     def reset_scene(self):
         self.skin = None
         self.mesh = None
+        self._active_joint = None
         self.refresh(prefer_selection=False)
 
     def on_selection_changed(self):
@@ -637,6 +720,7 @@ class InfluencePanel(QtWidgets.QFrame):
         self.mesh_label.setToolTip(
             "{}\nSkin: {}".format(self.mesh, self.skin) if self.skin else "")
         self.populate()
+        self.sync_from_paint()
 
     def populate(self):
         selected = {item.data(0, QtCore.Qt.UserRole)
@@ -644,6 +728,8 @@ class InfluencePanel(QtWidgets.QFrame):
         expanded = {joint for joint, item in self._items.items()
                     if item.isExpanded()}
         first_load = self._tree_skin != self.skin
+        if first_load:
+            self._active_joint = None
         self._parents = _influence_hierarchy(self._rows)
         self._populating = True
         self.tree.setUpdatesEnabled(False)
@@ -699,9 +785,11 @@ class InfluencePanel(QtWidgets.QFrame):
             if matches_name and matches_state:
                 matched.add(joint)
 
-        # Display ancestors for context, even if they do not match the filter.
+        # Keep the live active influence visible even while filtering.
         visible = set(matched)
-        for joint in matched:
+        if self._active_joint in self._items:
+            visible.add(self._active_joint)
+        for joint in visible.copy():
             parent = self._parents.get(joint)
             while parent:
                 visible.add(parent)
@@ -742,10 +830,80 @@ class InfluencePanel(QtWidgets.QFrame):
         _set_influence_locks(self.skin, joints, mode)
         self.refresh(prefer_selection=False)
 
-    def select_joint(self, item, column):
+    def change_active_influence(self, item, previous):
+        """A click/keyboard selection switches Maya's active paint influence."""
+        if self._populating or self._syncing or not item or not self.skin:
+            return
         joint = item.data(0, QtCore.Qt.UserRole)
-        if cmds.objExists(joint):
-            cmds.select(joint, replace=True)
+        if joint not in self._items or joint == self._active_joint:
+            return
+        if _activate_skin_paint_influence(self.skin, self.mesh, joint):
+            self._active_joint = joint
+            self.filter_rows()
+
+    def select_joint(self, item, column):
+        """Double-click also activates painting; do not select the DAG joint."""
+        self.change_active_influence(item, None)
+
+    def sync_from_paint(self):
+        """Highlight an influence selected in Maya's Paint Skin Weights UI."""
+        if self._syncing or self._populating or not self.skin:
+            return
+        joint = _active_skin_paint_influence(self.skin)
+        if not joint or joint not in self._items:
+            return
+        if joint == self._active_joint and self.tree.currentItem() is self._items[joint]:
+            return
+        self._syncing = True
+        self.tree.blockSignals(True)
+        try:
+            self._active_joint = joint
+            self.filter_rows()
+            item = self._items[joint]
+            self.tree.setCurrentItem(item)
+            parent = item.parent()
+            while parent:
+                parent.setExpanded(True)
+                parent = parent.parent()
+            self.tree.scrollToItem(
+                item, QtWidgets.QAbstractItemView.PositionAtCenter)
+        finally:
+            self.tree.blockSignals(False)
+            self._syncing = False
+
+    def sync_lock_states(self):
+        """Observe changes made in Maya's native influence lock UI."""
+        if not self.skin:
+            return
+        rows = _skin_influence_rows(self.skin)
+        if rows == self._rows:
+            return
+        if {joint for joint, _ in rows} != set(self._items):
+            self._rows = rows
+            self.populate()
+            self.sync_from_paint()
+            return
+        self._rows = rows
+        self.tree.blockSignals(True)
+        try:
+            for joint, locked in rows:
+                item = self._items.get(joint)
+                if item and locked is not None:
+                    state = QtCore.Qt.Checked if locked else QtCore.Qt.Unchecked
+                    if item.checkState(1) != state:
+                        item.setCheckState(1, state)
+        finally:
+            self.tree.blockSignals(False)
+        self.filter_rows()
+
+    def sync_live(self):
+        """Lightweight Maya polling, only while the Skinning window is visible."""
+        if self._populating or self._syncing or not self.skin:
+            return
+        self.sync_from_paint()
+        self._live_ticks += 1
+        if self._live_ticks % 3 == 0:
+            self.sync_lock_states()
 
 
 class SkinningBoard(QtWidgets.QWidget):
