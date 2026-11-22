@@ -28,14 +28,21 @@ class FakeCmds:
             return True
         if name.endswith(".liw"):
             return name[:-4] in self.locks
-        return name in self.influences
+        return name in self.influences or name in ("|Body|Mesh", "|Body|UnboundMesh")
 
     def skinCluster(self, skin, **kwargs):
         assert skin == "skin1" and kwargs.get("query") and kwargs.get("influence")
         return self.influences
 
     def nodeType(self, joint):
+        if joint in ("|Body|Mesh", "|Body|UnboundMesh"):
+            return "transform"
+        if joint.endswith("|Shape"):
+            return "mesh"
         return "joint"
+
+    def listRelatives(self, node, **kwargs):
+        return [node + "|Shape"] if kwargs.get("shapes") else []
 
     def getAttr(self, attribute):
         return self.locks[attribute[:-4]]
@@ -49,7 +56,8 @@ class FakeCmds:
 
 def load_logic(cmds):
     parsed = ast.parse(BOARD.read_text(encoding="utf-8"))
-    names = ("_skin_from_selection", "_skin_influence_rows", "_set_influence_locks")
+    names = ("_skin_from_selection", "_selected_unskinned_mesh",
+             "_skin_influence_rows", "_set_influence_locks")
     nodes = [node for node in parsed.body
              if isinstance(node, ast.FunctionDef) and node.name in names]
     assert len(nodes) == len(names)
@@ -106,6 +114,13 @@ class InfluenceLogicTests(unittest.TestCase):
             data = self.logic["_skin_from_selection"]()
         self.assertEqual(data["skinCluster"], "skin1")
 
+    def test_unbound_mesh_is_distinct_from_joint_selection(self):
+        check = self.logic["_selected_unskinned_mesh"]
+        self.cmds.selected = ["|Body|UnboundMesh"]
+        self.assertTrue(check())
+        self.cmds.selected = ["|Rig|Arm_JNT"]
+        self.assertFalse(check())
+
     def test_board_has_joint_column_and_maya_scriptjob_lifecycle(self):
         text = BOARD.read_text(encoding="utf-8")
         for expected in (
@@ -117,7 +132,9 @@ class InfluenceLogicTests(unittest.TestCase):
                 '"Lock"', '"Unlock"', '"Reverse"',
                 'self.tree.itemChanged.connect(self.change_item_lock)',
                 'self.tree.itemDoubleClicked.connect(self.select_joint)',
-                'event=[event, self.on_selection_changed]',
+                'event=[event, callback]',
+                "def reset_scene(self):",
+                "self.influences.refresh()",
                 "self.influences.deactivate()",
                 '("SelectionChanged", "SceneOpened", "NewSceneOpened")',
                 ):
