@@ -231,6 +231,59 @@ class DagBoundInfluenceTests(unittest.TestCase):
         self.fake = FakeMaya()
         self.logic = load_logic(self.fake)
 
+    def test_paint_context_is_not_reactivated_when_already_current(self):
+        tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
+        method = next(node for node in tree.body
+                      if isinstance(node, ast.FunctionDef)
+                      and node.name == "EnsurePaintContext")
+        code = compile(ast.Module(body=[method], type_ignores=[]),
+                       str(SOURCE), "exec")
+
+        class Context:
+            def __init__(self, active):
+                self.active = active
+                self.reset_calls = 0
+                self.feedback = []
+
+            def artAttrSkinPaintCtx(self, name, **kw):
+                if kw.get("exists"):
+                    return True
+                if kw.get("edit"):
+                    self.feedback.append((name, kw))
+                else:
+                    raise AssertionError(kw)
+
+            def currentCtx(self):
+                return self.active
+
+            def setToolTo(self, name):
+                self.reset_calls += 1
+                self.active = name
+
+        for initial, expected in (
+            ("artAttrSkinContext", 0),
+            ("selectSuperContext", 1),
+        ):
+            with self.subTest(initial=initial):
+                cmds = Context(initial)
+                scope = {
+                    "cmds": cmds,
+                    "EnsureSkinSession": lambda mesh=None: {
+                        "skinCluster": "skinCluster1",
+                        "mesh": "|Body|Mesh",
+                        "joints": [ROOT, CHILD],
+                    },
+                    "GetActivePaintJoint": lambda skin: ROOT,
+                }
+                exec(code, scope)
+                self.assertTrue(scope["EnsurePaintContext"]("|Body|Mesh"))
+                self.assertEqual(cmds.reset_calls, expected)
+                self.assertEqual(
+                    cmds.feedback[-1],
+                    ("artAttrSkinContext", {
+                        "edit": True, "influence": ROOT,
+                    }))
+
     def test_api_returns_only_the_exact_bound_paths(self):
         self.assertEqual(
             self.logic["_SkinInfluencePaths"](self.fake.skin), [ROOT, CHILD])
