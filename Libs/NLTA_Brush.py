@@ -34,63 +34,25 @@ def _skinPaintContext():
     return context
 
 
-def _setSelectedWeights(value, operation):
-    """Apply to selected components, keeping the original Replace/Add behavior."""
-    context = _skinPaintContext()
-    if not context:
-        return False
-    value = float(value)
-    cmds.artAttrSkinPaintCtx(
-        context, edit=True, skinPaintMode=1, selectedattroper=operation,
-        value=value)
-    # Optional native MEL procedure may not be loaded when the standalone
-    # NLTA Command Board uses Paint Skin without opening Tool Settings.
-    if mel.eval('exists "artSkinSetSelectionValue"'):
-        mel.eval(
-            "artSkinSetSelectionValue {} false artAttrSkinPaintCtx artAttrSkin;"
-            .format(value))
-        return True
-
-    # Fallback only touches explicitly selected vertices, never the whole mesh.
-    verts = [item for item in (cmds.ls(selection=True, long=True,
-                                      flatten=True) or [])
-             if ".vtx[" in item]
-    session = NLTA_Skinning.EnsureSkinSession(warn=False)
-    skin = session["skinCluster"] if session else None
-    influence = NLTA_Skinning.GetActivePaintJoint(skin) if skin else None
-    if not verts or not influence:
-        cmds.warning(
-            "Skinning: select skinned vertices to adjust weights. "
-            "The Paint Skin Tool Settings window is not required.")
-        return False
-    if cmds.objExists(influence + ".liw") and cmds.getAttr(influence + ".liw"):
-        cmds.warning("Skinning: active influence is locked: " + influence)
-        return False
-    for vert in verts:
-        target = value
-        if operation == "additive":
-            current = cmds.skinPercent(skin, vert, query=True,
-                                       transform=influence)
-            target = float(current) + value
-        cmds.skinPercent(
-            skin, vert, transformValue=(influence, max(0.0, min(1.0, target))))
-    cmds.refresh(force=True)
-    return True
-
-
-def ReplaceWeight(value, *arr):
-    """Set the Paint Skin brush Value only; never modify vertex weights."""
+def _setBrushValue(value, operation):
+    """Configure the Paint Skin brush; do not edit selected vertex weights."""
     context = _skinPaintContext()
     if not context:
         return False
     cmds.artAttrSkinPaintCtx(
         context, edit=True, skinPaintMode=1,
-        selectedattroper="absolute", value=float(value))
+        selectedattroper=operation, value=float(value))
     return True
 
 
+def ReplaceWeight(value, *arr):
+    """Set the absolute Paint Skin brush Value (Set 0 / Set 1)."""
+    return _setBrushValue(value, "absolute")
+
+
 def AddWeight(value, *arr):
-    return _setSelectedWeights(value, "additive")
+    """Change the additive brush Value only (used by Switch Brush)."""
+    return _setBrushValue(value, "additive")
 
 
 def smooth(value, *arr):
