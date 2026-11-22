@@ -1427,12 +1427,9 @@ def OpenWindow(tools, uis):
                         setattr(child_class, "resizeEvent",
                                 QtWidgets.QWidget.resizeEvent)
             # Disconnect live callbacks before disposing of the old board.
-            timer = getattr(widget, "_live_timer", None)
-            if timer is None:
-                influences = getattr(widget, "influences", None)
-                timer = getattr(influences, "_live_timer", None)
-            if timer is not None:
-                timer.stop()
+            influences = getattr(widget, "influences", None)
+            if influences is not None:
+                influences.deactivate()  # Kill Maya scriptJobs as well as Qt timer.
             old_scroll = getattr(widget, "scroll", None)
             if old_scroll is not None:
                 old_scroll.viewport().removeEventFilter(widget)
