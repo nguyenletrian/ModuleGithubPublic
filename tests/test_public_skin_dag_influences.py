@@ -44,6 +44,8 @@ class FakeMaya:
         self.locks = {path: True for path in self.scene_joints}
         self.warning_messages = []
         self.connected = []
+        self.native_active = ROOT
+        self.mel_calls = []
         self.weight_map = {ROOT: 0.25, CHILD: 0.75, OTHER: 0.0, EXTRA: 0.0}
 
     def ls(self, *args, **kwargs):
@@ -116,7 +118,7 @@ FUNCTIONS = (
     "_SkinInfluencePaths", "_BoundJoint", "GetActivePaintJoint",
     "singleUnlock", "unlock", "UnlockJoints", "addUnlockUp",
     "addUnlockDown", "ActiveJoint", "switchJoint", "GetVertexWeights",
-    "UnlockTwoJoints", "UnlockInfluenceJoints"
+    "UnlockTwoJoints", "UnlockInfluenceJoints", "SelectPaintInfluence"
 )
 
 
@@ -139,9 +141,16 @@ def load_logic(fake):
     class OMA:
         MFnSkinCluster = SkinFn
 
+    class MEL:
+        def eval(self, statement):
+            fake.mel_calls.append(statement)
+            if statement.startswith("setSmoothSkinInfluence"):
+                fake.native_active = statement.split('"')[1]
+
     session = {"mesh": "|Body|Mesh", "skinCluster": fake.skin,
                "joints": list(fake.influences)}
-    scope = {"cmds": fake, "om": OM, "oma": OMA, "skinSession": session}
+    scope = {"cmds": fake, "om": OM, "oma": OMA,
+             "mel": MEL(), "skinSession": session}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), "exec"),
          scope)
     scope["EnsureSkinSession"] = lambda **kw: session
@@ -183,6 +192,32 @@ class DagBoundInfluenceTests(unittest.TestCase):
         self.assertTrue(self.fake.locks[OTHER])
         self.assertFalse(any("not an influence" in text
                              for text in self.fake.warning_messages))
+
+    def test_native_paint_influence_selection_updates_tool_settings(self):
+        before = list(self.fake.selected)
+        self.assertTrue(self.logic["SelectPaintInfluence"](
+            "|Body|Mesh", CHILD))
+        self.assertEqual(self.fake.active, CHILD)
+        self.assertEqual(self.fake.native_active, CHILD)
+        self.assertEqual(self.fake.selected, before)
+        self.assertEqual(
+            self.fake.mel_calls,
+            ['setSmoothSkinInfluence "{}";'.format(CHILD),
+             'artSkinRevealSelected artAttrSkinPaintCtx;'])
+
+    def test_native_selection_rejects_unbound_duplicate_name(self):
+        self.fake.native_active = ROOT
+        self.assertFalse(self.logic["SelectPaintInfluence"](
+            "|Body|Mesh", OTHER))
+        self.assertEqual(self.fake.native_active, ROOT)
+        self.assertEqual(self.fake.mel_calls, [])
+
+    def test_switch_joint_updates_native_ui_as_well_as_painttrans(self):
+        self.fake.locks[ROOT] = False
+        self.fake.locks[CHILD] = False
+        self.logic["switchJoint"]()
+        self.assertEqual(self.fake.native_active, CHILD)
+        self.assertEqual(self.fake.active, CHILD)
 
     def test_add_up_returns_to_actual_parent(self):
         self.fake.active = CHILD
