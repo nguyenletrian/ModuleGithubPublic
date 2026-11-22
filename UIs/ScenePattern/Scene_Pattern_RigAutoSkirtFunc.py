@@ -169,16 +169,11 @@ def liveFollicleSize(row, *args):
     return False
 
 
-def lineField(parent, label, initial, picker=True, action=None):
-    cmds.rowLayout(parent=parent, numberOfColumns=3, adjustableColumn=2,
-                   columnWidth3=(105, 160, 92 if action else 55))
+def lineField(parent, label, initial, picker=True):
+    cmds.rowLayout(parent=parent, numberOfColumns=3, adjustableColumn=2, columnWidth3=(105, 160, 55))
     cmds.text(label=label, align="left")
     widget = cmds.textField(text=str(initial))
-    if action:
-        cmds.button(label="Create Sphere", width=90, height=24,
-                    annotation="Create and aim the NURBS sphere; rebuild U/V to 0-1",
-                    command=action)
-    elif picker:
+    if picker:
         cmds.button(label="Pick", command=partial(pickSingle, widget))
     else:
         cmds.text(label="")
@@ -1348,8 +1343,7 @@ def addRow(parent, record=None):
     system = cmds.textField(STATE["top"]["name"], query=True, text=True).strip()
     row["id"] = lineField(col, "Reader ID", rid, False)
     row["sphere"] = lineField(col, "Sphere Name",
-                                record.get("sphere") or system + "_" + rid + "_Sphere",
-                                False, action=partial(createSphereFromRow, row))
+                                record.get("sphere") or system + "_" + rid + "_Sphere", False)
     row["parent"] = lineField(col, "Parent", record.get("parent", ""))
     row["start"] = lineField(col, "Start", record.get("start", ""))
     row["end"] = lineField(col, "End", record.get("end", ""))
@@ -1366,10 +1360,14 @@ def addRow(parent, record=None):
     cmds.button(parent=actions, label="Pick All", width=68, height=34, command=partial(pickControls, row["controls"]))
     cmds.button(parent=actions, label="Add", width=68, height=34, command=partial(addSelectedDrivens, row))
     cmds.setParent(col)
-    line = cmds.rowLayout(parent=col, numberOfColumns=3, columnWidth3=(115, 115, 115))
-    cmds.button(parent=line, label="Edit Sub Items", width=113, command=partial(editSubItems, row))
-    cmds.button(parent=line, label="Mirror Reader", width=113, command=partial(mirrorRow, row))
-    cmds.button(parent=line, label="Remove Reader", width=113, command=partial(removeRow, row))
+    line = cmds.rowLayout(parent=col, numberOfColumns=4,
+                         columnWidth4=(90, 90, 90, 90))
+    cmds.button(parent=line, label="Edit Sub Items", width=88, command=partial(editSubItems, row))
+    cmds.button(parent=line, label="Mirror Reader", width=88, command=partial(mirrorRow, row))
+    cmds.button(parent=line, label="Remove Reader", width=88, command=partial(removeRow, row))
+    cmds.button(parent=line, label="Create Sphere", width=88,
+                annotation="Create and aim a NURBS sphere; rebuild its UV to 0-1",
+                command=partial(createSphereFromRow, row))
     cmds.setParent("..")
     cmds.setParent("..")
     cmds.setParent("..")
