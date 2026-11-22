@@ -81,15 +81,17 @@ class SkinningPaintDockTests(unittest.TestCase):
         self.assertIn('self.paint_scroll.setObjectName("SkinningPaintWeightScroll")',
                       source)
         self.assertIn("self.workspace.addWidget(self.scroll)", source)
-        # Order is core tools, influence hierarchy, then two-column Paint/Weight groups.
+        # Left tools + integrated list/action dock; no third splitter pane.
         left = source.index("self.workspace.addWidget(self.scroll)")
-        middle = source.index("self.workspace.addWidget(self.influences)")
-        right = source.index("self.workspace.addWidget(self.paint_scroll)")
-        self.assertLess(left, middle)
-        self.assertLess(middle, right)
-        self.assertIn("self.paint_scroll.setMinimumWidth(205)", source)
-        self.assertIn("self.paint_scroll.setMaximumWidth(350)", source)
-        self.assertIn("self.workspace.setSizes([500, 300, 290])", source)
+        right = source.index("self.workspace.addWidget(self.influence_actions)")
+        self.assertLess(left, right)
+        self.assertIn("dock_layout.addWidget(self.influences, 1)", source)
+        self.assertIn("dock_layout.addWidget(self.paint_scroll, 0)", source)
+        self.assertIn("dock_layout.setSpacing(0)", source)
+        self.assertIn("dock_layout.setContentsMargins(0, 0, 0, 0)", source)
+        self.assertIn("PAINT_STRIP_WIDTH = 145", source)
+        self.assertIn("self.paint_scroll.setFixedWidth(PAINT_STRIP_WIDTH)", source)
+        self.assertIn("self.workspace.setSizes([440, 450])", source)
         self.assertIn("if key in PAINT_WEIGHT_SECTIONS:", source)
         self.assertIn("self.paint_stack.insertWidget(", source)
         self.assertIn("not in PAINT_WEIGHT_SECTIONS", source)
@@ -117,6 +119,7 @@ class SkinningPaintDockTests(unittest.TestCase):
         self.assertIn("self.layout_grid.setColumnStretch(1, 1)", source)
         self.assertIn("self.paint_stack.insertWidget(", source)
         self.assertIn("self.paint_stack.setSpacing(1)", source)
+        self.assertIn('force_two_columns=(key == "paint")', source)
         catalog = load_catalog()
         dock = {key: groups for key, _, groups in catalog
                 if key in ("paint", "weight")}
@@ -133,7 +136,7 @@ class SkinningPaintDockTests(unittest.TestCase):
         self.assertIn("for grid in self.grids:", source)
         self.assertIn("self.reflow_sections(force=True)", source)
         self.assertIn("self.workspace.setStretchFactor(0, 1)", source)
-        self.assertIn("self.workspace.setStretchFactor(2, 0)", source)
+        self.assertIn("self.workspace.setStretchFactor(1, 0)", source)
 
 
 if __name__ == "__main__":
