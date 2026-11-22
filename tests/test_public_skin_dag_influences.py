@@ -45,6 +45,10 @@ class FakeMaya:
         self.warning_messages = []
         self.connected = []
         self.native_active = ROOT
+        self.native_tree = None
+        self.native_items = [ROOT, CHILD, OTHER]
+        self.native_selected = [ROOT, CHILD]  # Replicate the Maya multi-selection bug.
+        self.native_events = []
         self.mel_calls = []
         self.weight_map = {ROOT: 0.25, CHILD: 0.75, OTHER: 0.0, EXTRA: 0.0}
 
@@ -104,6 +108,30 @@ class FakeMaya:
         if kw.get("edit"):
             self.active = kw["influence"]
 
+    def treeView(self, tree, **kw):
+        assert tree == self.native_tree
+        if kw.get("exists"):
+            return True
+        if kw.get("query") and kw.get("children") == "":
+            return list(self.native_items)
+        if kw.get("query") and kw.get("selectItem") is True:
+            return list(self.native_selected)
+        if kw.get("edit") and kw.get("clearSelection"):
+            self.native_selected = []
+            self.native_events.append("clear")
+            return
+        if kw.get("edit") and "selectItem" in kw:
+            name, state = kw["selectItem"]
+            assert name in self.native_items
+            if state:
+                if name not in self.native_selected:
+                    self.native_selected.append(name)
+            elif name in self.native_selected:
+                self.native_selected.remove(name)
+            self.native_events.append(("select", name, state))
+            return
+        raise AssertionError("Unexpected treeView call {}".format(kw))
+
     def select(self, *names, **kw):
         if kw.get("clear"):
             self.selected = []
@@ -118,7 +146,8 @@ FUNCTIONS = (
     "_SkinInfluencePaths", "_BoundJoint", "GetActivePaintJoint",
     "singleUnlock", "unlock", "UnlockJoints", "addUnlockUp",
     "addUnlockDown", "ActiveJoint", "switchJoint", "GetVertexWeights",
-    "UnlockTwoJoints", "UnlockInfluenceJoints", "SelectPaintInfluence"
+    "UnlockTwoJoints", "UnlockInfluenceJoints", "SelectPaintInfluence",
+    "_SelectNativePaintInfluence"
 )
 
 
@@ -144,6 +173,8 @@ def load_logic(fake):
     class MEL:
         def eval(self, statement):
             fake.mel_calls.append(statement)
+            if "$gArtSkinInfluencesList" in statement:
+                return fake.native_tree
             if statement.startswith("setSmoothSkinInfluence"):
                 fake.native_active = statement.split('"')[1]
 
@@ -203,7 +234,57 @@ class DagBoundInfluenceTests(unittest.TestCase):
         self.assertEqual(
             self.fake.mel_calls,
             ['setSmoothSkinInfluence "{}";'.format(CHILD),
-             'artSkinRevealSelected artAttrSkinPaintCtx;'])
+             'global string $gArtSkinInfluencesList; $gArtSkinInfluencesList;'])
+
+    def test_single_native_row_after_repeated_influence_clicks(self):
+        self.fake.native_tree = "artSkinInfluencesTree"
+        self.fake.native_items = [ROOT, CHILD, OTHER]
+        self.fake.native_selected = [ROOT, CHILD]
+        before_scene_selection = list(self.fake.selected)
+        self.assertTrue(self.logic["SelectPaintInfluence"]("|Body|Mesh", CHILD))
+        self.assertEqual(self.fake.native_selected, [CHILD])
+        self.assertEqual(self.fake.active, CHILD)
+        self.assertEqual(self.fake.native_events[-2:], [
+            "clear", ("select", CHILD, True)])
+        self.assertEqual(self.fake.selected, before_scene_selection)
+
+        self.assertTrue(self.logic["SelectPaintInfluence"]("|Body|Mesh", ROOT))
+        self.assertEqual(self.fake.native_selected, [ROOT])
+        self.assertEqual(self.fake.active, ROOT)
+        self.assertEqual(self.fake.selected, before_scene_selection)
+
+    def test_native_tree_resolves_partial_dag_item_without_confusing_names(self):
+        self.fake.native_tree = "artSkinInfluencesTree"
+        self.fake.native_items = ["joint1", "joint1|joint2"]
+        self.fake.native_selected = ["joint1"]
+        old_ls = self.fake.ls
+
+        def ls(path, **kwargs):
+            if path == "joint1":
+                return [ROOT]
+            if path == "joint1|joint2":
+                return [CHILD]
+            return old_ls(path, **kwargs)
+        self.fake.ls = ls
+        self.assertTrue(self.logic["SelectPaintInfluence"]("|Body|Mesh", CHILD))
+        self.assertEqual(self.fake.native_selected, ["joint1|joint2"])
+
+    def test_native_tree_refuses_ambiguous_item_without_multi_select(self):
+        self.fake.native_tree = "artSkinInfluencesTree"
+        self.fake.native_items = ["joint2", "joint1|joint2"]
+        self.fake.native_selected = ["joint2", "joint1|joint2"]
+        old_ls = self.fake.ls
+
+        def ls(path, **kwargs):
+            if path in self.fake.native_items:
+                return [CHILD]
+            return old_ls(path, **kwargs)
+        self.fake.ls = ls
+        self.assertFalse(self.logic["SelectPaintInfluence"]("|Body|Mesh", CHILD))
+        self.assertEqual(self.fake.native_selected,
+                         ["joint2", "joint1|joint2"])
+        self.assertTrue(any("cannot uniquely locate" in msg
+                            for msg in self.fake.warning_messages))
 
     def test_native_selection_rejects_unbound_duplicate_name(self):
         self.fake.native_active = ROOT
