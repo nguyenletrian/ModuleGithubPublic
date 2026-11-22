@@ -1,0 +1,29 @@
+name: Validate NLTA Public Maya Tools
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Compile all public Maya source files
+        run: python -m compileall -q AutoInstall.py Github.py RetargetTool.py Libs UIs tests
+      - name: Installer and updater regression tests
+        run: python -m unittest discover -s tests -p 'test_public_*.py' -v
+      - name: Verify no private server or token dependency shipped
+        shell: bash
+        run: |
+          test ! -e LicenseClient.py
+          test ! -d LicenseServer
+          ! grep -E 'MayaScriptBefore|NLTA_GITHUB_TOKEN|NLTA_LICENSE_KEY' AutoInstall.py Github.py
