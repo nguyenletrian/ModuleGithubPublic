@@ -24,15 +24,28 @@ class FakeCommands:
         self.skin_writes = []
         self.warnings = []
         self.refreshed = 0
+        self.brush_value = 0.5
 
     def artAttrSkinPaintCtx(self, context, **flags):
         assert context == "artAttrSkinContext"
         if flags.get("exists"):
             return self.exists
-        if flags.get("edit"):
+        if flags.get("query") and flags.get("value"):
+            return self.brush_value
+        if flags.get("edit") or flags.get("e"):
             self.context_edits.append(flags)
+            if "value" in flags:
+                self.brush_value = float(flags["value"])
         else:
             raise AssertionError("Unexpected paint flags " + str(flags))
+
+    def currentCtx(self):
+        return "artAttrSkinContext"
+
+    def contextInfo(self, context, **flags):
+        assert context == "artAttrSkinContext"
+        assert flags == {"c": True}
+        return "artAttrSkin"
 
     def warning(self, value):
         self.warnings.append(value)
@@ -83,7 +96,7 @@ def load_callbacks(cmds, mel):
     module = ast.parse(SOURCE.read_text(encoding="utf-8"))
     wanted = {
         "_skinPaintContext", "_setBrushValue", "ReplaceWeight",
-        "AddWeight", "smooth", "pickValue", "flood",
+        "AddWeight", "SwitchBrush", "smooth", "pickValue", "flood",
     }
     methods = [x for x in module.body if isinstance(x, ast.FunctionDef)
                and x.name in wanted]
@@ -159,6 +172,20 @@ class BrushContextTests(unittest.TestCase):
         self._assert_brush_only(0)
         self.assertEqual(
             [x["value"] for x in self.cmds.context_edits], [0.0, 1.0, 0.0])
+
+    def test_switch_brush_toggles_signed_value_without_editing_skin(self):
+        original = dict(self.cmds.weights)
+        self.brush["SwitchBrush"]()
+        self.assertEqual(self.cmds.brush_value, -0.5)
+        self.assertEqual(self.cmds.context_edits[0], {
+            "edit": True, "skinPaintMode": 1,
+            "selectedattroper": "additive", "value": -0.5,
+        })
+        self.brush["SwitchBrush"]()
+        self.assertEqual(self.cmds.brush_value, 0.5)
+        self.assertEqual(self.cmds.weights, original)
+        self.assertEqual(self.cmds.skin_writes, [])
+        self.assertEqual(self.mel.eval_calls, [])
 
     def test_uninitialized_context_does_not_touch_weights(self):
         original = dict(self.cmds.weights)
