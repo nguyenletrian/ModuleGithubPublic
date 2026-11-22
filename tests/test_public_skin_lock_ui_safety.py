@@ -45,6 +45,25 @@ class FakeItem:
         return False
 
 
+class FakeTimer:
+    def __init__(self, panel):
+        self.panel = panel
+        self.active = False
+
+    def start(self, delay):
+        assert delay == 0
+        self.active = True
+
+    def stop(self):
+        self.active = False
+
+    def fire(self):
+        assert self.active
+        assert not self.panel.in_emission, "Maya edits may only run after Qt signal"
+        self.active = False
+        self.panel._apply_pending_locks()
+
+
 class FakeTree:
     def __init__(self, panel):
         self.panel = panel
@@ -94,6 +113,7 @@ class FakeCmds:
         return self.locks[plug[:-4]]
 
     def setAttr(self, plug, value):
+        assert not self.panel.in_emission, "Maya setAttr called from Qt itemChanged"
         self.locks[plug[:-4]] = bool(value)
         # Simulate synchronous Maya scriptJob and Qt timer reentry on setAttr.
         self.reentrant_callbacks += 1
@@ -117,9 +137,12 @@ class FakePanel:
         self._populating = False
         self._syncing = False
         self._editing_locks = False
+        self._pending_locks = {}
+        self._pending_lock_skin = None
         self._active_joint = None
         self._live_ticks = 0
         self.in_emission = False
+        self._lock_timer = FakeTimer(self)
         self.tree = FakeTree(self)
         self.filter_count = 0
         self.sync_count = 0
@@ -148,8 +171,9 @@ def build_methods(cmds):
     cls = next(node for node in module.body if isinstance(node, ast.ClassDef)
                and node.name == "InfluencePanel")
     required = (
-        "change_item_lock", "change_locks", "change_active_influence",
-        "on_selection_changed", "sync_live", "sync_lock_states", "refresh",
+        "change_item_lock", "_apply_pending_locks", "change_locks",
+        "change_active_influence", "on_selection_changed", "sync_live",
+        "sync_lock_states", "refresh",
     )
     functions = [node for node in cls.body
                  if isinstance(node, ast.FunctionDef)
@@ -206,6 +230,9 @@ class LockUiSafetyTests(unittest.TestCase):
         self.assertFalse(item.deleted)
         self.assertIs(self.panel._items[name], item)
         self.assertEqual(self.panel.tree.cleared, 0)
+        # The click returned to Qt; now it is safe to invoke Maya setAttr.
+        self.assertTrue(self.panel._lock_timer.active)
+        self.panel._lock_timer.fire()
 
     def test_repeated_lock_and_unlock_never_delete_emitting_item(self):
         for i in range(20):
@@ -213,6 +240,32 @@ class LockUiSafetyTests(unittest.TestCase):
         self.assertEqual(self.panel.populate_count, 0)
         self.assertGreater(self.cmds.reentrant_callbacks, 0)
         self.assertGreater(self.panel.filter_count, 0)
+
+    def test_repeated_toggles_before_event_loop_apply_last_state(self):
+        # Two changes in one event turn must never make stale .liw updates.
+        item = self.panel._items[J1]
+        self.panel.in_emission = True
+        try:
+            item.setCheckState(1, 2)
+            item.setCheckState(1, 0)
+            item.setCheckState(1, 2)
+        finally:
+            self.panel.in_emission = False
+        self.assertFalse(self.cmds.locks[J1])
+        self.panel._lock_timer.fire()
+        self.assertTrue(self.cmds.locks[J1])
+        self.assertTrue(item.locked)
+        self.assertEqual(self.panel.tree.cleared, 0)
+
+    def test_batch_lock_cancels_stale_queued_checkbox(self):
+        item = self.panel._items[J1]
+        item.setCheckState(1, 2)
+        self.assertTrue(self.panel._lock_timer.active)
+        self.panel.change_locks("unlock", False)
+        self.assertFalse(self.panel._lock_timer.active)
+        self.assertFalse(self.panel._pending_locks)
+        self.assertFalse(self.cmds.locks[J1])
+        self.assertFalse(item.locked)
 
     def test_batch_reverse_and_lock_all_reuse_all_items(self):
         originals = dict(self.panel._items)
