@@ -391,6 +391,22 @@ class DagBoundInfluenceTests(unittest.TestCase):
         self.assertIsNone(
             self.logic["_BoundJoint"]("skinCluster1", "joint1|joint2"))
 
+    def test_native_tree_lock_refresh_resolves_relative_nested_paths(self):
+        self.fake.native_tree = "artSkinInfluencesTree"
+        self.fake.native_tree_children = {
+            "": ["joint1"],
+            "joint1": ["joint1|joint2"],
+            "joint1|joint2": [],
+        }
+        self.fake.locks[ROOT] = True
+        self.fake.locks[CHILD] = False
+        changed = self.logic["RefreshPaintInfluenceLocks"](self.fake.skin)
+        self.assertEqual(changed, 2)
+        self.assertEqual(
+            self.fake.native_lock_icons["joint1"], "buttonDown")
+        self.assertEqual(
+            self.fake.native_lock_icons["joint1|joint2"], "buttonUp")
+
     def test_native_paint_lock_does_not_reapply_unchanged_state(self):
         self.fake.locks[ROOT] = True
         self.assertFalse(self.logic["_SetPaintInfluenceLock"](ROOT, True))
