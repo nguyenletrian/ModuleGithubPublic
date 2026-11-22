@@ -239,7 +239,7 @@ class InfluenceLogicTests(unittest.TestCase):
         for expected in (
                 "class InfluencePanel(QtWidgets.QFrame):",
                 'self.workspace = QtWidgets.QSplitter(QtCore.Qt.Horizontal)',
-                'self.filter_box.addItems(("All", "Locked", "Unlocked"))',
+                'self.search.setPlaceholderText("Filter joint names...")',
                 'self.tree.setRootIsDecorated(True)',
                 'self.tree.setHeaderLabels(("Influence joint", "Lock"))',
                 'QtWidgets.QTreeWidgetItem(',
@@ -248,8 +248,7 @@ class InfluenceLogicTests(unittest.TestCase):
                 'self.tree.expandToDepth(1)',
                 'self._parents = _influence_hierarchy(self._rows)',
                 '"SkinningInfluenceTree"',
-                '"Lock All"', '"Unlock All"', '"Reverse All"',
-                '"Lock"', '"Unlock"', '"Reverse"',
+                'self.heading_label.setToolTip(',
                 'self.tree.itemChanged.connect(self.change_item_lock)',
                 'self.tree.itemDoubleClicked.connect(self.select_joint)',
                 'self.tree.currentItemChanged.connect(self.change_active_influence)',
