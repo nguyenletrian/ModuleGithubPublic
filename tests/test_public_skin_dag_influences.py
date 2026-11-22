@@ -324,6 +324,7 @@ class DagBoundInfluenceTests(unittest.TestCase):
         self.assertEqual(self.fake.native_lock_icons[CHILD], "buttonUp")
         self.assertEqual(self.fake.active, ROOT)
         self.assertEqual(self.fake.native_selected, [ROOT])
+        self.assertEqual(self.fake.native_display_joint, ROOT)
 
     def test_add_down_refreshes_native_lock_buttons_live(self):
         self.fake.native_tree = "artSkinInfluencesTree"
@@ -339,6 +340,8 @@ class DagBoundInfluenceTests(unittest.TestCase):
         self.assertEqual(self.fake.native_lock_icons[ROOT], "buttonUp")
         self.assertEqual(self.fake.native_lock_icons[CHILD], "buttonUp")
         self.assertEqual(self.fake.active, CHILD)
+        self.assertEqual(self.fake.native_selected, [CHILD])
+        self.assertEqual(self.fake.native_display_joint, CHILD)
 
     def test_native_lock_refresh_preserves_scene_and_selection(self):
         self.fake.native_tree = "artSkinInfluencesTree"
