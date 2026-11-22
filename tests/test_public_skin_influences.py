@@ -272,6 +272,7 @@ class InfluenceLogicTests(unittest.TestCase):
                 'self.heading_label.setToolTip(',
                 'self.tree.itemChanged.connect(self.change_item_lock)',
                 'self.tree.itemDoubleClicked.connect(self.select_joint)',
+                'self.tree.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)',
                 'self.tree.currentItemChanged.connect(self.change_active_influence)',
                 'self._live_timer.setInterval(300)',
                 'self._live_timer.timeout.connect(self.sync_live)',
