@@ -20,6 +20,7 @@ except ImportError:
 
 _BOARD = None
 _BRIDGE = "NLTA_SkinningCommandBridge"
+PAINT_WEIGHT_SECTIONS = frozenset(("paint", "weight"))
 
 
 def command_catalog(tools, distance_ui):
@@ -1000,11 +1001,31 @@ class SkinningBoard(QtWidgets.QWidget):
         self.scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
         self.workspace.addWidget(self.scroll)
+
+        # Paint/Brush and Weight Adjustments live beside the influence tree,
+        # using their existing action widgets and callbacks (not copies).
+        self.paint_scroll = QtWidgets.QScrollArea()
+        self.paint_scroll.setObjectName("SkinningPaintWeightScroll")
+        self.paint_scroll.setWidgetResizable(True)
+        self.paint_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.paint_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.paint_scroll.setMinimumWidth(235)
+        self.paint_scroll.setMaximumWidth(380)
+        paint_host = QtWidgets.QWidget()
+        paint_host.setObjectName("SkinningPaintWeightContent")
+        self.paint_stack = QtWidgets.QVBoxLayout(paint_host)
+        self.paint_stack.setContentsMargins(2, 2, 2, 4)
+        self.paint_stack.setSpacing(6)
+        self.paint_stack.addStretch()
+        self.paint_scroll.setWidget(paint_host)
+        self.workspace.addWidget(self.paint_scroll)
+
         self.influences = InfluencePanel(self.workspace)
         self.workspace.addWidget(self.influences)
         self.workspace.setStretchFactor(0, 1)
         self.workspace.setStretchFactor(1, 0)
-        self.workspace.setSizes([780, 280])
+        self.workspace.setStretchFactor(2, 0)
+        self.workspace.setSizes([610, 265, 300])
         inside = QtWidgets.QWidget()
         inside.setObjectName("SkinningContent")
         self.content = QtWidgets.QVBoxLayout(inside)
@@ -1099,6 +1120,8 @@ class SkinningBoard(QtWidgets.QWidget):
                 group_records.append((subheading, grid, entries))
             self.sections.append((section, section_title, group_records))
             self.section_visibility[section] = True
+            if key in PAINT_WEIGHT_SECTIONS:
+                self.paint_stack.insertWidget(self.paint_stack.count() - 1, section)
 
         self.content.addStretch()
         self.apply_style()
@@ -1157,7 +1180,9 @@ class SkinningBoard(QtWidgets.QWidget):
         available = max(1, self.scroll.viewport().width() - 3)
         region_width = max(210, min(440, self.max_width_value))
         visible = [record for record in self.sections
-                   if self.section_visibility.get(record[0], True)]
+                   if self.section_visibility.get(record[0], True)
+                   and record[0].objectName().replace(
+                       "SkinningSection_", "") not in PAINT_WEIGHT_SECTIONS]
         minimum = max(200, region_width - 20)
         columns = (max(1, min(len(visible), len(self.masonry_columns),
                               (available + 6) // (minimum + 6)))
@@ -1310,9 +1335,13 @@ class SkinningBoard(QtWidgets.QWidget):
                 background-color: #383838;
                 color: #E5E5E5;
             }
-            QScrollArea#SkinningBoardScroll {
+            QScrollArea#SkinningBoardScroll,
+            QScrollArea#SkinningPaintWeightScroll {
                 background-color: #383838;
                 border: none;
+            }
+            QWidget#SkinningPaintWeightContent {
+                background-color: #383838;
             }
             QWidget#SkinningMasonry, QWidget#SkinningContent,
             QWidget#SkinningToolColumn {
