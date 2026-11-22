@@ -269,13 +269,16 @@ def SelectPaintInfluence(mesh, joint):
         cmds.warning("Unable to set Paint Skin influence: {}".format(exc))
         return False
 
-    selected = _SelectNativePaintInfluence(bound)
-    if selected is False:
-        return False
+    # Finalize the skinCluster and context FIRST; Maya's native selection
+    # callback should be the last influence-changing action, otherwise the
+    # weight feedback it just rebuilt can become stale/black.
     if not ActiveJoint(mesh, bound):
         return False
     cmds.artAttrSkinPaintCtx(
         "artAttrSkinContext", edit=True, influence=bound)
+    selected = _SelectNativePaintInfluence(bound)
+    if selected is False:
+        return False
     _RefreshPaintInfluenceDisplay()
     return True
 
