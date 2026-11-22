@@ -300,6 +300,42 @@ class AnimationControlTests(unittest.TestCase):
         self.assertEqual(self.cmds.playback["min"], 47.0)
         self.assertEqual(self.cmds.playback["max"], 77.0)
 
+    def test_partial_key_failure_cleans_only_failed_driver_and_restores_selection(self):
+        original = self.cmds.setKeyframe
+
+        def sometimes_fail(node, **kwargs):
+            if "Arm_CTRL" in node and kwargs["attribute"] == "ry":
+                raise RuntimeError("simulated keying failure")
+            return original(node, **kwargs)
+
+        self.cmds.setKeyframe = sometimes_fail
+        drivers = self.create()
+        self.assertEqual(len(drivers), 1)
+        self.assertEqual(len(self.cmds.constraints), 1)
+        self.assertEqual(self.cmds.selected, [ROOT, ARM])
+        self.assertTrue(any("Cannot test" in m for m in self.cmds.warnings))
+        self.assertEqual(len(self.logic["_test_drivers"]()), 1)
+
+    def test_large_paint_vertex_selection_is_kept_as_component_range(self):
+        self.cmds.ctx = "artAttrSkinContext"
+        self.cmds.selected = [MESH + ".vtx[1:8000]"]
+        backend = types.ModuleType("NLTA_Skinning")
+        backend.EnsureSkinSession = lambda warn=False: {
+            "skinCluster": "skinCluster1", "mesh": MESH
+        }
+        backend.GetActivePaintJoint = lambda skin: JOINT
+        with mock.patch.dict(sys.modules, {"NLTA_Skinning": backend}):
+            drivers = self.create()
+        self.assertEqual(len(drivers), 1)
+        self.assertEqual(self.cmds.selected, [MESH + ".vtx[1:8000]"])
+
+    def test_helper_creation_does_not_select_new_maya_nodes(self):
+        self.create()
+        self.assertEqual(self.cmds.selected, [ROOT, ARM])
+        self.assertTrue(self.cmds.create_calls)
+        source = SOURCE.read_text(encoding="utf-8")
+        self.assertIn('"skipSelect": True', source)
+
     def test_delete_attr_keys_on_generated_test_removes_driver_not_control(self):
         self.cmds.selected = [ARM]
         self.create()
