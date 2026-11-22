@@ -146,7 +146,7 @@ class SkinningPaintDockTests(unittest.TestCase):
         self.assertIn('cmds.intSliderGrp(distance_ui, edit=True, value=value)',
                       source)
         self.assertIn('self.paint_stack.insertWidget(', source)
-        self.assertIn('grid.reflow(force=True)', source)
+        self.assertIn("grid.add_button(button)", source)
         self.assertIn('self.reflow_sections(force=True)', source)
         self.assertIn('self.workspace.setStretchFactor(0, 0)', source)
         self.assertIn('self.workspace.setStretchFactor(1, 1)', source)
