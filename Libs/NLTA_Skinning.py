@@ -730,6 +730,9 @@ def GetJointVertexs(mesh, joints, threshold=0.0001):
             result.append("{}.vtx[{}]".format(mesh, vertexId))
     return result
 
+_NLTA_ISOLATE_PANEL = None
+
+
 def IsolateEffectVertex(*args, **kwargs):
     """Isolate vertices of the explicit clicked influence or legacy active one."""
     mesh = kwargs.get("mesh")
@@ -768,9 +771,36 @@ def IsolateEffectVertex(*args, **kwargs):
             mel.eval("ToggleIsolateSelect;")
         else:
             mel.eval("ToggleIsolateSelect;")
+        global _NLTA_ISOLATE_PANEL
+        _NLTA_ISOLATE_PANEL = panelCurrent
     finally:
         cmds.select(mesh, replace=True)
         EnsurePaintContext(mesh)
+
+
+def UnIsolateEffectVertex(*args, **kwargs):
+    """Turn off Isolate Select in the same model panel as the last Isolate.
+
+    Does not change skin weights, influence locks, selection or Paint UI.
+    The fallback supports module reloads that clear the cached panel name.
+    """
+    global _NLTA_ISOLATE_PANEL
+    model_panels = cmds.getPanel(type="modelPanel") or []
+    if not model_panels:
+        return False
+    focused = cmds.getPanel(withFocus=True)
+    candidates = []
+    for panel in (_NLTA_ISOLATE_PANEL, focused):
+        if panel in model_panels and panel not in candidates:
+            candidates.append(panel)
+    candidates.extend(p for p in model_panels if p not in candidates)
+    for panel in candidates:
+        if cmds.isolateSelect(panel, query=True, state=True):
+            cmds.isolateSelect(panel, state=False)
+            _NLTA_ISOLATE_PANEL = None
+            return True
+    return False
+
 
 def clearMesh(*arr):
     for mesh in cmds.ls(selection=True):
