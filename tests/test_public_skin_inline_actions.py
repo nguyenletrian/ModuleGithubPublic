@@ -222,16 +222,16 @@ class InlineControlTests(unittest.TestCase):
     def test_button_geometry_fits_one_lock_column_without_overlap(self):
         slots = self.scope["_influence_cell_slots"](Rectangle(120, 10, 154, 44))
         self.assertEqual([x[0] for x in slots], [
-            "toggle_lock", "unlock", "add_unlock", "add_up", "add_down",
+            "toggle_lock", "add_unlock", "add_up", "add_down",
             "unlock_all", "lock_inverse", "isolate", "un_isolate"])
         top_y = slots[0][3].y()
-        bottom_y = slots[5][3].y()
-        self.assertEqual([rect.y() for _, _, _, rect in slots[:5]],
-                         [top_y] * 5)
-        self.assertEqual([rect.y() for _, _, _, rect in slots[5:]],
+        bottom_y = slots[4][3].y()
+        self.assertEqual([rect.y() for _, _, _, rect in slots[:4]],
+                         [top_y] * 4)
+        self.assertEqual([rect.y() for _, _, _, rect in slots[4:]],
                          [bottom_y] * 4)
         self.assertGreater(bottom_y, top_y + 18)
-        for row in (slots[:5], slots[5:]):
+        for row in (slots[:4], slots[4:]):
             for index, (_, _, _, rect) in enumerate(row):
                 self.assertTrue(rect.contains(Point(rect.x() + 1, rect.y() + 1)))
                 self.assertLessEqual(rect.x() + rect.width_, 274)
