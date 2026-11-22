@@ -32,7 +32,7 @@ PAINT_STRIP_WIDTH = 145  # Half of the former 290-px action strip.
 
 
 def command_catalog(tools, distance_ui):
-    """Declarative action map. The 105 original Skinning operations live here."""
+    """Declarative action map; brush presets set Value without editing weights."""
     b = tools["NLTA_Brush"]
     s = tools["NLTA_Skinning"]
     g = tools["NLTA_General"]
@@ -45,16 +45,13 @@ def command_catalog(tools, distance_ui):
     sets = tools["NLTA_Set"]
     bs = tools["NLTA_BlendShape"]
 
-    increments = (0.0001, 0.0005, 0.001, 0.005, 0.01, 0.03, 0.05, 0.1)
+    # These are Paint Skin brush value presets, not direct vertex edits.
     weight_commands = [
-        ("Set 0", partial(b.ReplaceWeight, 0), "Set Paint Skin brush Value to 0 without changing weights", "primary"),
-        ("Add +1", partial(b.AddWeight, 1), "Add weight by 1", ""),
+        ("Set 0", partial(b.ReplaceWeight, 0),
+         "Paint Skin: Replace brush Value = 0 (does not modify weights yet)", "primary"),
+        ("Set 1", partial(b.ReplaceWeight, 1),
+         "Paint Skin: Replace brush Value = 1 (does not modify weights yet)", "primary"),
     ]
-    for amount in increments:
-        weight_commands.extend((
-            ("-" + str(amount), partial(b.AddWeight, -amount), "Decrease weight", ""),
-            ("+" + str(amount), partial(b.AddWeight, amount), "Increase weight", ""),
-        ))
 
     animation_groups = []
     for key, space in (("local", "local"), ("world", "world")):
@@ -102,7 +99,7 @@ def command_catalog(tools, distance_ui):
             ]),
         ]),
         ("weight", "WEIGHT ADJUSTMENTS", [
-            ("increment", "Weight - / +", weight_commands),
+            ("increment", "Paint Value", weight_commands),
         ]),
         ("skin", "SKIN & JOINTS", [
             ("bind", "Skin and influences", [
@@ -358,23 +355,13 @@ class ResponsiveButtons(QtWidgets.QWidget):
         self.reflow()
 
 
-WEIGHT_STEPS = ("0.0001", "0.0005", "0.001", "0.005",
-                "0.01", "0.03", "0.05", "0.1")
-
-
 def weight_grid_position(name):
-    """Original layout: 0 above negative column; +1 after positive column."""
-    if name == "Set 0":
-        return 0, 0
-    if name == "Add +1":
-        return len(WEIGHT_STEPS) + 1, 1
-    if name[:1] in ("-", "+") and name[1:] in WEIGHT_STEPS:
-        return WEIGHT_STEPS.index(name[1:]) + 1, int(name[0] == "+")
-    return len(WEIGHT_STEPS) + 2, 0
+    """Keep Set 0 and Set 1 side-by-side in the compact Weight group."""
+    return (0, 1) if name == "Set 1" else (0, 0)
 
 
 class WeightPairButtons(ResponsiveButtons):
-    """Keep subtract/add steps paired in two columns at any window width."""
+    """Keep Set 0 / Set 1 paired in two columns at any window width."""
 
     def reflow(self, force=False):
         active = [button for button in self.items if not button.isHidden()]
