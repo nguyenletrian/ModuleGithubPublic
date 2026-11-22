@@ -107,10 +107,10 @@ class FakeTree:
         return self.header_widget
 
     def visualItemRect(self, item):
-        return Rectangle(0, 10, 324, 23)
+        return Rectangle(0, 10, 274, 44)
 
     def columnWidth(self, column):
-        return 204
+        return 154
 
 
 class FakeCmds:
@@ -220,21 +220,29 @@ class InlineControlTests(unittest.TestCase):
         self.panel._apply_influence_action()
 
     def test_button_geometry_fits_one_lock_column_without_overlap(self):
-        slots = self.scope["_influence_cell_slots"](Rectangle(120, 10, 204, 23))
+        slots = self.scope["_influence_cell_slots"](Rectangle(120, 10, 154, 44))
         self.assertEqual([x[0] for x in slots], [
-            "toggle_lock", "unlock", "lock_inverse", "unlock_all",
-            "add_unlock", "add_up", "add_down", "isolate"])
-        for index, (action, text, caption, rect) in enumerate(slots):
-            self.assertTrue(rect.contains(Point(rect.x() + 1, rect.y() + 1)))
-            if index:
-                prev = slots[index - 1][3]
-                self.assertGreaterEqual(rect.x(), prev.x() + prev.width_)
-        last = slots[-1][3]
-        self.assertLessEqual(last.x() + last.width_, 324)
+            "toggle_lock", "unlock", "add_unlock", "add_up", "add_down",
+            "unlock_all", "lock_inverse", "isolate", "un_isolate"])
+        top_y = slots[0][3].y()
+        bottom_y = slots[5][3].y()
+        self.assertEqual([rect.y() for _, _, _, rect in slots[:5]],
+                         [top_y] * 5)
+        self.assertEqual([rect.y() for _, _, _, rect in slots[5:]],
+                         [bottom_y] * 4)
+        self.assertGreater(bottom_y, top_y + 18)
+        for row in (slots[:5], slots[5:]):
+            for index, (_, _, _, rect) in enumerate(row):
+                self.assertTrue(rect.contains(Point(rect.x() + 1, rect.y() + 1)))
+                self.assertLessEqual(rect.x() + rect.width_, 274)
+                self.assertLessEqual(rect.y() + rect.height_, 54)
+                if index:
+                    prev = row[index - 1][3]
+                    self.assertGreaterEqual(rect.x(), prev.x() + prev.width_)
 
     def test_each_click_resolves_exact_joint_without_rebuilding_tree(self):
         before = dict(self.panel._items)
-        slots = self.scope["_influence_cell_slots"](Rectangle(120, 10, 204, 23))
+        slots = self.scope["_influence_cell_slots"](Rectangle(120, 10, 154, 44))
         for action, text, caption, rect in slots:
             hit = self.panel._inline_control_at(
                 Point(rect.x() + 1, rect.y() + 1))
@@ -283,7 +291,7 @@ class InlineControlTests(unittest.TestCase):
         self.assertEqual(self.panel.tree.cleared, 0)
 
     def test_inline_mouse_event_is_handled_without_selecting_tree(self):
-        slots = self.scope["_influence_cell_slots"](Rectangle(120, 10, 204, 23))
+        slots = self.scope["_influence_cell_slots"](Rectangle(120, 10, 154, 44))
         target = next(rect for action, _, _, rect in slots
                       if action == "lock_inverse")
         event = types.SimpleNamespace(
@@ -296,6 +304,18 @@ class InlineControlTests(unittest.TestCase):
         self.assertTrue(self.cmds.locks[CHILD])
         self.fire()
         self.assertFalse(self.cmds.locks[CHILD])
+
+    def test_un_isolate_uses_same_clicked_joint_without_changing_locks(self):
+        calls = []
+        previous = dict(self.cmds.locks)
+        fake = types.SimpleNamespace(
+            UnIsolateEffectVertex=lambda **kwargs: calls.append(kwargs))
+        with mock.patch.dict(sys.modules, {"NLTA_Skinning": fake}):
+            self.panel.queue_influence_action(CHILD, "un_isolate")
+            self.fire()
+        self.assertEqual(calls, [{"mesh": MESH, "joint": CHILD}])
+        self.assertEqual(self.cmds.locks, previous)
+        self.assertEqual(self.panel.tree.cleared, 0)
 
     def test_isolate_passes_explicit_joint_and_mesh(self):
         isolated = []
