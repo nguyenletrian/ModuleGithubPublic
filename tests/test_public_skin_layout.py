@@ -87,16 +87,18 @@ class SkinningPaintDockTests(unittest.TestCase):
                             isinstance(t, ast.Name) and t.id == "INFLUENCE_ROW_ACTIONS"
                             for t in node.targets))
         self.assertEqual(
-            [(name, key, caption) for name, key, caption, width
+            [(name, key, caption, row)
+             for name, key, caption, width, row
              in ast.literal_eval(controls.value)],
             [
-                ("Unlock", "unlock", "U"),
-                ("Lock Inverse", "lock_inverse", "Inv"),
-                ("Unlock All", "unlock_all", "All"),
-                ("Add Unlock", "add_unlock", "+"),
-                ("Add Up", "add_up", "↑"),
-                ("Add Down", "add_down", "↓"),
-                ("Isolate", "isolate", "Iso"),
+                ("Unlock", "unlock", "U", 0),
+                ("Add Unlock", "add_unlock", "+", 0),
+                ("Add Up", "add_up", "↑", 0),
+                ("Add Down", "add_down", "↓", 0),
+                ("Unlock All", "unlock_all", "All", 1),
+                ("Lock Inverse", "lock_inverse", "Inv", 1),
+                ("Isolate", "isolate", "Iso", 1),
+                ("Un Isolate", "un_isolate", "UnIso", 1),
             ])
         groups = {key: items
                   for section, _, section_groups in load_catalog()
@@ -104,6 +106,10 @@ class SkinningPaintDockTests(unittest.TestCase):
                   for key, _, items in section_groups}
         self.assertEqual([name for name, *_ in groups["locks"]],
                          ["Unlock 2 Joints"])
+        self.assertIn('INFLUENCE_CELL_HEIGHT = 44', source)
+        self.assertIn('self.tree.setUniformRowHeights(False)', source)
+        self.assertIn('QtCore.QSize(INFLUENCE_LOCK_WIDTH, INFLUENCE_CELL_HEIGHT)', source)
+        self.assertIn('def sizeHint(self, option, index):', source)
         self.assertIn('self.tree.setColumnWidth(1, INFLUENCE_LOCK_WIDTH)', source)
         self.assertIn('self.tree.setItemDelegateForColumn(1, self._influence_delegate)', source)
         self.assertIn('self.tree.viewport().installEventFilter(self)', source)
