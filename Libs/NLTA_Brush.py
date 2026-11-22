@@ -41,7 +41,8 @@ def _setBrushValue(value, operation):
         return False
     cmds.artAttrSkinPaintCtx(
         context, edit=True, skinPaintMode=1,
-        selectedattroper=operation, value=float(value))
+        selectedattroper=operation, minvalue=-1.0,
+        value=float(value), opacity=1.0)
     return True
 
 
@@ -51,43 +52,8 @@ def ReplaceWeight(value, *arr):
 
 
 def AddWeight(value, *arr):
-    """Add the supplied delta to selected vertex weights as in MayaScriptNew."""
-    context = _skinPaintContext()
-    if not context:
-        return False
-    value = float(value)
-    cmds.artAttrSkinPaintCtx(
-        context, edit=True, skinPaintMode=1,
-        selectedattroper="additive", value=value)
-
-    # Preserve the original MayaScriptNew Artisan selection edit when loaded.
-    if mel.eval('exists "artSkinSetSelectionValue"'):
-        mel.eval(
-            "artSkinSetSelectionValue {} false artAttrSkinPaintCtx artAttrSkin;"
-            .format(value))
-        return True
-
-    # Standalone NLTA must also work without showing Maya Tool Settings:
-    # apply the same relative change to the selected vertices only.
-    session = NLTA_Skinning.EnsureSkinSession(warn=False)
-    skin = session["skinCluster"] if session else None
-    influence = NLTA_Skinning.GetActivePaintJoint(skin) if skin else None
-    verts = [v for v in (cmds.ls(selection=True, long=True,
-                                 flatten=True) or []) if ".vtx[" in v]
-    if not skin or not influence or not verts:
-        cmds.warning("Add Weight: select vertices on a skinned mesh.")
-        return False
-    if cmds.objExists(influence + ".liw") and cmds.getAttr(influence + ".liw"):
-        cmds.warning("Add Weight: active influence is locked: " + influence)
-        return False
-    for vert in verts:
-        old_weight = float(cmds.skinPercent(
-            skin, vert, query=True, transform=influence))
-        new_weight = max(0.0, min(1.0, old_weight + value))
-        cmds.skinPercent(
-            skin, vert, transformValue=(influence, new_weight))
-    cmds.refresh(force=True)
-    return True
+    """Set Paint Skin Add operation and Value, without changing mesh weights."""
+    return _setBrushValue(value, "additive")
 
 
 def smooth(value, *arr):
