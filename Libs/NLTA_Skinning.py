@@ -53,6 +53,12 @@ def _BoundJoint(skin, joint, influences=None):
         return joint
     matches = cmds.ls(joint, long=True, type="joint") or []
     candidates = [name for name in bound if name in matches]
+    if not candidates:
+        # The native Paint Skin tree can use relative paths such as
+        # "joint9|joint2" while MFnSkinCluster returns "|root|joint9|joint2".
+        # Accept only a unique suffix; a repeated leaf name is ambiguous.
+        suffix = "|" + joint.lstrip("|")
+        candidates = [name for name in bound if name.endswith(suffix)]
     return candidates[0] if len(candidates) == 1 else None
 
 
@@ -443,6 +449,27 @@ def lockAll(*arr):
     mel.eval("artSkinInvLockInf artAttrSkinPaintCtx 1;")
     mel.eval("artSkinLockInf artAttrSkinPaintCtx 1;")
 
+def _SetPaintInfluenceLock(joint, locked):
+    """Use Maya's native lock action so an open Paint Skin tree updates live."""
+    attr = joint + ".liw"
+    if not cmds.objExists(attr):
+        return False
+    locked = bool(locked)
+    if bool(cmds.getAttr(attr)) == locked:
+        return False
+    # Maya itself invokes this procedure from the paint tool's influence
+    # menu. Unlike setAttr alone, it updates the native lock presentation.
+    name = joint.replace("\\", "\\\\").replace('"', '\\"')
+    try:
+        mel.eval('artSkinLockInfPassedIn "{}" {};'.format(name, int(locked)))
+    except RuntimeError:
+        pass
+    # Keep attribute truth authoritative if native UI isn't initialized.
+    if bool(cmds.getAttr(attr)) != locked:
+        cmds.setAttr(attr, int(locked))
+    return True
+
+
 def RefreshPaintInfluenceLocks(skin):
     """Update Maya Paint Skin's lock buttons from live .liw values."""
     try:
@@ -496,8 +523,7 @@ def singleUnlock(objs, *arr):
                      .format(skin))
         return []
     for joint in joints:
-        if cmds.objExists(joint + ".liw"):
-            cmds.setAttr(joint + ".liw", 0 if joint in unlock_set else 1)
+        _SetPaintInfluenceLock(joint, joint not in unlock_set)
     RefreshPaintInfluenceLocks(skin)
     return [joint for joint in joints if joint in unlock_set]
 
@@ -534,8 +560,7 @@ def UnlockJoints(mesh, jnts):
     if not targets:
         return
     for joint in joints:
-        if cmds.objExists(joint + ".liw"):
-            cmds.setAttr(joint + ".liw", 0 if joint in targets else 1)
+        _SetPaintInfluenceLock(joint, joint not in targets)
     RefreshPaintInfluenceLocks(skin)
 
 def addUnlock(*arr):
