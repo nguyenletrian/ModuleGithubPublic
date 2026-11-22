@@ -211,6 +211,31 @@ def _SelectNativePaintInfluence(joint):
         return False
 
 
+def _RefreshPaintInfluenceDisplay():
+    """Reveal the current influence's weights without selecting the joint DAG."""
+    context = "artAttrSkinContext"
+    try:
+        cmds.artAttrSkinPaintCtx(
+            context, edit=True, colorfeedback=True, xrayJoints=True)
+
+        # Color feedback needs shaded display; wireframe-only model panels
+        # show the skeleton/edges but not the joint's painted weight map.
+        model_panels = cmds.getPanel(type="modelPanel") or []
+        panel = cmds.getPanel(withFocus=True)
+        if panel not in model_panels:
+            visible = set(cmds.getPanel(visiblePanels=True) or [])
+            panel = next((name for name in model_panels if name in visible), None)
+        if panel and cmds.modelEditor(
+                panel, query=True, displayAppearance=True) == "wireframe":
+            cmds.modelEditor(
+                panel, edit=True, displayAppearance="smoothShaded")
+        cmds.refresh(force=True)
+        return True
+    except (RuntimeError, ValueError, TypeError) as exc:
+        cmds.warning("Paint Skin display refresh skipped: {}".format(exc))
+        return False
+
+
 def SelectPaintInfluence(mesh, joint):
     """Select exactly one influence in the custom and Maya native skin lists."""
     data = GetSkinData(mesh)
@@ -239,6 +264,7 @@ def SelectPaintInfluence(mesh, joint):
         return False
     cmds.artAttrSkinPaintCtx(
         "artAttrSkinContext", edit=True, influence=bound)
+    _RefreshPaintInfluenceDisplay()
     return True
 
 
