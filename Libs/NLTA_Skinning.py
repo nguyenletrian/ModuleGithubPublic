@@ -158,6 +158,9 @@ def EnsurePaintContext(mesh=None):
     context = "artAttrSkinContext"
     if not cmds.artAttrSkinPaintCtx(context, exists=True):
         cmds.artAttrSkinPaintCtx(context)
+        # Default solid stamp on a newly initialized Paint Skin context.
+        # Do not overwrite a brush profile that the artist later changes.
+        cmds.artAttrSkinPaintCtx(context, edit=True, stampProfile="solid")
     # Re-entering an already active Artisan context can reset the viewport's
     # color-feedback draw state. Only activate it if another tool is running.
     if cmds.currentCtx() != context:
