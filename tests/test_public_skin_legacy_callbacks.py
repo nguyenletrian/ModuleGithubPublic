@@ -695,7 +695,7 @@ class LegacyButtonContractTests(unittest.TestCase):
             action: (function, args) for action, function, args in LEGACY_CALLBACKS
             if action != "weight/increment/Add +1"
         }
-        expected["weight/increment/Set 1"] = ("NLTA_Brush.ReplaceWeight", [1])
+        expected["weight/increment/Set 1"] = ("NLTA_Brush.AddWeight", [1])
         self.assertEqual(len(actual), 105)
         self.assertEqual(set(actual), set(expected))
         for action, bound in expected.items():
