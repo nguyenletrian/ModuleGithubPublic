@@ -156,21 +156,24 @@ def _make_driver(control, space, kind, channels, initial_pose, origin):
         raise
 
 
-def _animate_driver(driver, kind, channels, start, end):
-    amplitude = 90 if kind == "rotate" else None
+def _animate_driver(driver, kind, channels, start, origin, finish):
+    """Legacy MayaScriptBefore rhythm: five keys per X, Y, then Z, 30f apart.
+
+    The five original keys for each axis are at +30..+150, +180..+300,
+    and +330..+450 relative to this control's start. The neutral anchors
+    at origin/finish keep unselected controls still during serial tests.
+    """
+    amount = 90 if kind == "rotate" else _distance
     original = {attr: cmds.getAttr(driver + "." + attr) for attr in channels}
     for attr in channels:
-        value = original[attr]
-        for frame in (start, end):
-            cmds.setKeyframe(driver, attribute=attr, time=frame, value=value)
-    for i, attr in enumerate(channels):
         base = original[attr]
-        amount = amplitude if amplitude is not None else _distance
-        at = start + (i * 4 * _STEP)
-        for index, offset in enumerate((0, -amount, 0, amount, 0)):
+        cmds.setKeyframe(driver, attribute=attr, time=origin, value=base)
+        offset = "xyz".index(attr[-1]) * 5 * _STEP
+        for index, delta in enumerate((0, -amount, 0, amount, 0), 1):
             cmds.setKeyframe(
-                driver, attribute=attr, time=at + index * _STEP,
-                value=base + offset)
+                driver, attribute=attr,
+                time=start + offset + index * _STEP, value=base + delta)
+        cmds.setKeyframe(driver, attribute=attr, time=finish, value=base)
 
 
 _distance = 5.0
@@ -222,7 +225,8 @@ def CreateKeyframe(keyInput, *arr):
         cmds.warning("Select a control (or an active Paint Skin influence) first.")
         return []
 
-    duration = 3 * 4 * _STEP
+    # Legacy timing: 5 keys × 30 frames × 3 axes = 450f per control.
+    duration = 3 * 5 * _STEP
     simultaneous = not keyInput.get("inturn", False)
     end = origin + (duration if simultaneous else duration * len(controls))
     generated = []
@@ -247,17 +251,7 @@ def CreateKeyframe(keyInput, *arr):
                 driver = _make_driver(
                     control, space, kind, available, initial_poses[control], origin)
                 start = origin if simultaneous else origin + i * duration
-                _animate_driver(driver, kind, available, start, start + duration)
-                if start > origin:
-                    for attr in available:
-                        neutral = cmds.getAttr(driver + "." + attr)
-                        cmds.setKeyframe(
-                            driver, attribute=attr, time=origin, value=neutral)
-                if start + duration < end:
-                    for attr in available:
-                        neutral = cmds.getAttr(driver + "." + attr)
-                        cmds.setKeyframe(
-                            driver, attribute=attr, time=end, value=neutral)
+                _animate_driver(driver, kind, available, start, origin, end)
                 generated.append(driver)
             except RuntimeError as exc:
                 if driver:
@@ -269,7 +263,9 @@ def CreateKeyframe(keyInput, *arr):
                 "drivers": generated, "controls": controls,
                 "start": origin, "end": end,
             })
-            cmds.playbackOptions(min=origin, max=end, ast=origin, aet=end)
+            # Keep frame 0 available, as in the original animation test UI.
+            cmds.playbackOptions(
+                min=min(0, origin), max=end, ast=min(0, origin), aet=end)
         else:
             cmds.warning("No controls could be animated.")
         return generated
