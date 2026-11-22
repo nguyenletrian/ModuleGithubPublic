@@ -48,10 +48,10 @@ class SkinningPaintDockTests(unittest.TestCase):
             for group, _, items in groups
             for label, callback, _, _ in items
         ]
-        self.assertEqual(len(actions), 105)
+        self.assertEqual(len(actions), 98)
         ids = {"/".join((key, group, label))
                for key, group, label, callback in actions}
-        self.assertEqual(len(ids), 105)
+        self.assertEqual(len(ids), 98)
         self.assertTrue(all(callable(callback) for _, _, _, callback in actions))
 
     def test_paint_and_weight_actions_stay_grouped(self):
@@ -65,7 +65,11 @@ class SkinningPaintDockTests(unittest.TestCase):
         self.assertIn("Flood", actions["paint"])
         self.assertIn("Switch Joint", actions["paint"])
         self.assertIn("Graph Skinning", actions["paint"])
-        self.assertIn("Unlock All", actions["paint"])
+        self.assertIn("Unlock 2 Joints", actions["paint"])
+        self.assertNotIn("Unlock All", actions["paint"])
+        self.assertNotIn("Add Up", actions["paint"])
+        self.assertNotIn("Add Down", actions["paint"])
+        self.assertNotIn("Isolate", actions["paint"])
         self.assertIn("Set 0", actions["weight"])
         expected = {"Set 0", "Set 1"}
         for delta in ("0.0001", "0.0005", "0.001", "0.005",
@@ -74,6 +78,32 @@ class SkinningPaintDockTests(unittest.TestCase):
         self.assertEqual(actions["weight"], expected)
         self.assertNotIn("Add +1", actions["weight"])
         self.assertEqual(len(actions["weight"]), 18)
+
+    def test_influence_context_menu_exposes_lock_inverse_and_unlock_two_only(self):
+        source = FILE.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        menu = next(node for node in tree.body
+                    if isinstance(node, ast.Assign) and any(
+                        isinstance(t, ast.Name) and t.id == "INFLUENCE_CONTEXT_ACTIONS"
+                        for t in node.targets))
+        self.assertEqual(ast.literal_eval(menu.value), (
+            ("Unlock", "unlock"),
+            ("Lock Inverse", "lock_inverse"),
+            ("Unlock All", "unlock_all"),
+            ("Add Unlock", "add_unlock"),
+            ("Add Up", "add_up"),
+            ("Add Down", "add_down"),
+            ("Isolate", "isolate"),
+        ))
+        groups = {key: items
+                  for section, _, section_groups in load_catalog()
+                  if section == "paint"
+                  for key, _, items in section_groups}
+        self.assertEqual([label for label, *_ in groups["locks"]],
+                         ["Unlock 2 Joints"])
+        self.assertIn('self.tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)', source)
+        self.assertIn('self.tree.customContextMenuRequested.connect(self.show_influence_menu)', source)
+        self.assertIn('self._context_timer.timeout.connect(self._apply_influence_action)', source)
 
     def test_dock_owns_original_widget_sections_in_adjacent_column(self):
         source = FILE.read_text(encoding="utf-8")
@@ -139,7 +169,7 @@ class SkinningPaintDockTests(unittest.TestCase):
                 if key in ("paint", "weight", "animation")}
         count = sum(len(items) for groups in dock.values()
                     for _, _, items in groups)
-        self.assertEqual(count, 51)
+        self.assertEqual(count, 44)
 
     def test_left_dock_follows_requested_animation_locks_helpers_weight_paint_order(self):
         source = FILE.read_text(encoding="utf-8")
@@ -178,8 +208,8 @@ class SkinningPaintDockTests(unittest.TestCase):
                    for section, _, groups in catalog
                    for group, _, items in groups
                    for label, *_ in items]
-        self.assertEqual(len(actions), 105)
-        self.assertEqual(len(set(actions)), 105)
+        self.assertEqual(len(actions), 98)
+        self.assertEqual(len(set(actions)), 98)
 
     def test_hot_reload_can_close_old_maya_widgets_without_super_errors(self):
         source = FILE.read_text(encoding="utf-8")
