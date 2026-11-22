@@ -187,7 +187,16 @@ def _SelectNativePaintInfluence(joint):
             'string $nltaPaintTree = $gArtSkinInfluencesList;')
         if not tree or not cmds.treeView(tree, exists=True):
             return None  # Tool Settings is not showing the native influence tree.
-        items = cmds.treeView(tree, query=True, children="") or []
+        pending = list(cmds.treeView(tree, query=True, children="") or [])
+        items = []
+        seen = set()
+        while pending:
+            item = pending.pop()
+            if item in seen:
+                continue
+            seen.add(item)
+            items.append(item)
+            pending.extend(cmds.treeView(tree, query=True, children=item) or [])
         matches = []
         for item in items:
             paths = cmds.ls(item, long=True, type="joint") or []
@@ -513,6 +522,7 @@ def unlock(*arr):
     cmds.select(session["mesh"], r=True)
     singleUnlock(joints)
     SelectPaintInfluence(session["mesh"], joints[0])
+    RefreshPaintInfluenceLocks(session["skinCluster"])
 
 def UnlockJoints(mesh, jnts):
     skin = GetSkinCluster(mesh)
@@ -555,6 +565,7 @@ def addUnlockUp(*arr):
 
     singleUnlock([jointActive, parentJoint])
     SelectPaintInfluence(session["mesh"], parentJoint)
+    RefreshPaintInfluenceLocks(session["skinCluster"])
 
 def UnlockTwoJoints(*arr):
     selection = cmds.ls(sl=True, fl=True) or []
@@ -590,6 +601,7 @@ def UnlockTwoJoints(*arr):
     jointB = _BoundJoint(skin, jointB, joints)
     cmds.select(mesh, r=True)
     SelectPaintInfluence(mesh, jointB)
+    RefreshPaintInfluenceLocks(skin)
     return jointA, jointB
 
 def UnlockInfluenceJoints(*arr):
@@ -644,6 +656,7 @@ def UnlockInfluenceJoints(*arr):
 
     cmds.select(mesh, r=True)
     SelectPaintInfluence(mesh, active)
+    RefreshPaintInfluenceLocks(skin)
 
     return unlocked
 
@@ -673,6 +686,7 @@ def addUnlockDown(*arr):
 
     singleUnlock([jointActive, childJoint])
     SelectPaintInfluence(session["mesh"], childJoint)
+    RefreshPaintInfluenceLocks(session["skinCluster"])
 
 def ActiveJoint(mesh, joint, *arr):
     data = GetSkinData(mesh)
