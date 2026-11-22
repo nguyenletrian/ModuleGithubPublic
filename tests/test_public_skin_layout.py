@@ -48,10 +48,10 @@ class SkinningPaintDockTests(unittest.TestCase):
             for group, _, items in groups
             for label, callback, _, _ in items
         ]
-        self.assertEqual(len(actions), 105)
+        self.assertEqual(len(actions), 89)
         ids = {"/".join((key, group, label))
                for key, group, label, callback in actions}
-        self.assertEqual(len(ids), 105)
+        self.assertEqual(len(ids), 89)
         self.assertTrue(all(callable(callback) for _, _, _, callback in actions))
 
     def test_paint_and_weight_actions_stay_grouped(self):
@@ -67,10 +67,9 @@ class SkinningPaintDockTests(unittest.TestCase):
         self.assertIn("Graph Skinning", actions["paint"])
         self.assertIn("Unlock All", actions["paint"])
         self.assertIn("Set 0", actions["weight"])
-        self.assertIn("Add +1", actions["weight"])
-        self.assertIn("-0.0001", actions["weight"])
-        self.assertIn("+0.1", actions["weight"])
-        self.assertEqual(len(actions["weight"]), 18)
+        self.assertEqual(actions["weight"], {"Set 0", "Set 1"})
+        self.assertNotIn("Add +1", actions["weight"])
+        self.assertEqual(len(actions["weight"]), 2)
 
     def test_dock_owns_original_widget_sections_in_adjacent_column(self):
         source = FILE.read_text(encoding="utf-8")
@@ -136,7 +135,7 @@ class SkinningPaintDockTests(unittest.TestCase):
                 if key in ("paint", "weight", "animation")}
         count = sum(len(items) for groups in dock.values()
                     for _, _, items in groups)
-        self.assertEqual(count, 51)
+        self.assertEqual(count, 35)
 
     def test_left_dock_follows_requested_animation_locks_helpers_weight_paint_order(self):
         source = FILE.read_text(encoding="utf-8")
@@ -175,8 +174,8 @@ class SkinningPaintDockTests(unittest.TestCase):
                    for section, _, groups in catalog
                    for group, _, items in groups
                    for label, *_ in items]
-        self.assertEqual(len(actions), 105)
-        self.assertEqual(len(set(actions)), 105)
+        self.assertEqual(len(actions), 89)
+        self.assertEqual(len(set(actions)), 89)
 
     def test_hot_reload_can_close_old_maya_widgets_without_super_errors(self):
         source = FILE.read_text(encoding="utf-8")
