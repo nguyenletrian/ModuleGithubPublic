@@ -81,13 +81,44 @@ class SkinningPaintDockTests(unittest.TestCase):
         self.assertIn('self.paint_scroll.setObjectName("SkinningPaintWeightScroll")',
                       source)
         self.assertIn("self.workspace.addWidget(self.scroll)", source)
-        self.assertIn("self.workspace.addWidget(self.paint_scroll)", source)
-        self.assertIn("self.workspace.addWidget(self.influences)", source)
+        # Order is core tool palette, joint hierarchy, then single action strip.
+        left = source.index("self.workspace.addWidget(self.scroll)")
+        middle = source.index("self.workspace.addWidget(self.influences)")
+        right = source.index("self.workspace.addWidget(self.paint_scroll)")
+        self.assertLess(left, middle)
+        self.assertLess(middle, right)
+        self.assertIn("self.paint_scroll.setMinimumWidth(140)", source)
+        self.assertIn("self.paint_scroll.setMaximumWidth(205)", source)
         self.assertIn("if key in PAINT_WEIGHT_SECTIONS:", source)
         self.assertIn("self.paint_stack.insertWidget(", source)
         self.assertIn("not in PAINT_WEIGHT_SECTIONS", source)
         self.assertIn("self.buttons[action_id] = (button, callback", source)
         self.assertIn("self.dispatch(key, fn)", source)
+
+    def test_every_paint_and_weight_action_is_one_vertical_button(self):
+        source = FILE.read_text(encoding="utf-8")
+        module = ast.parse(source)
+        caps = next(node for node in module.body
+                    if isinstance(node, ast.Assign) and
+                    any(isinstance(target, ast.Name) and
+                        target.id == "GROUP_MAX_COLUMNS"
+                        for target in node.targets))
+        settings = ast.literal_eval(caps.value)
+        self.assertEqual(settings[("paint", "quick")], 1)
+        self.assertEqual(settings[("paint", "locks")], 1)
+        self.assertEqual(settings[("paint", "helpers")], 1)
+        self.assertEqual(settings[("weight", "increment")], 1)
+        self.assertIn("grid = ResponsiveButtons(", source)
+        self.assertIn("max_columns=(1 if key in PAINT_WEIGHT_SECTIONS", source)
+        self.assertIn("weight_grid_position(item[0])", source)
+        self.assertIn("self.paint_stack.insertWidget(", source)
+        self.assertIn("self.paint_stack.setSpacing(1)", source)
+        catalog = load_catalog()
+        dock = {key: groups for key, _, groups in catalog
+                if key in ("paint", "weight")}
+        count = sum(len(items) for groups in dock.values()
+                    for _, _, items in groups)
+        self.assertEqual(count, 38)
 
     def test_main_search_and_density_still_use_one_button_collection(self):
         source = FILE.read_text(encoding="utf-8")
