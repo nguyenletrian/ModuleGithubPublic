@@ -674,7 +674,7 @@ def catalog():
 
 
 class LegacyButtonContractTests(unittest.TestCase):
-    def test_existing_actions_keep_legacy_callbacks_except_removed_weight_steps(self):
+    def test_all_105_actions_match_mayascriptnew_except_set_one_brush_preset(self):
         actual = {}
         for section, _, groups in catalog():
             for group, _, actions in groups:
@@ -689,16 +689,14 @@ class LegacyButtonContractTests(unittest.TestCase):
                         args = []
                     actual[action] = (base.nlta_name, args)
 
-        # The old 105-action list remains the historical callback baseline.
-        # Only the 16 +/- presets are removed. Old Add +1 is now Set 1
-        # (absolute brush value, not incremental/direct skin modification).
+        # Original MayaScriptNew +/- callbacks must stay intact. Only the
+        # original "Add +1" is replaced by the brush-only "Set 1".
         expected = {
             action: (function, args) for action, function, args in LEGACY_CALLBACKS
-            if not action.startswith("weight/increment/")
-            or action == "weight/increment/Set 0"
+            if action != "weight/increment/Add +1"
         }
         expected["weight/increment/Set 1"] = ("NLTA_Brush.ReplaceWeight", [1])
-        self.assertEqual(len(actual), 89)
+        self.assertEqual(len(actual), 105)
         self.assertEqual(set(actual), set(expected))
         for action, bound in expected.items():
             with self.subTest(action=action):
