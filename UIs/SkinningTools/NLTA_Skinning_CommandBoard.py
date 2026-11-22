@@ -21,6 +21,7 @@ except ImportError:
 _BOARD = None
 _BRIDGE = "NLTA_SkinningCommandBridge"
 PAINT_WEIGHT_SECTIONS = frozenset(("paint", "weight"))
+PAINT_STRIP_WIDTH = 145  # Half of the former 290-px action strip.
 
 
 def command_catalog(tools, distance_ui):
@@ -282,11 +283,13 @@ COMPACT_LABELS = {
 class ResponsiveButtons(QtWidgets.QWidget):
     """Responsive tool columns: read down each column before moving right."""
 
-    def __init__(self, parent=None, cell_width=86, compact=True, max_columns=2):
+    def __init__(self, parent=None, cell_width=86, compact=True,
+                 max_columns=2, force_two_columns=False):
         super(ResponsiveButtons, self).__init__(parent)
         self.items = []
         self.cell_width = cell_width
         self.max_columns = max_columns
+        self.force_two_columns = force_two_columns
         self.compact = compact
         self.columns = 0
         self.positions = ()
@@ -312,8 +315,10 @@ class ResponsiveButtons(QtWidgets.QWidget):
         width = max(1, self.width())
         gap = self.layout_grid.horizontalSpacing()
         min_width = self.cell_width if self.compact else self.cell_width + 28
-        columns = max(1, min(len(active), self.max_columns,
-                             (width + gap) // (min_width + gap)))
+        columns = (min(len(active), self.max_columns)
+                   if self.force_two_columns and active else
+                   max(1, min(len(active), self.max_columns,
+                              (width + gap) // (min_width + gap))))
         positions = tuple(active)
         # Refresh text even when the column count stays the same after resizing.
         cell_width = max(24, (width - max(0, columns - 1) * gap) // columns)
@@ -1010,8 +1015,7 @@ class SkinningBoard(QtWidgets.QWidget):
         self.paint_scroll.setWidgetResizable(True)
         self.paint_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         self.paint_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.paint_scroll.setMinimumWidth(205)
-        self.paint_scroll.setMaximumWidth(350)
+        self.paint_scroll.setFixedWidth(PAINT_STRIP_WIDTH)
         self.paint_scroll.setSizePolicy(
             QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
         paint_host = QtWidgets.QWidget()
@@ -1022,14 +1026,20 @@ class SkinningBoard(QtWidgets.QWidget):
         self.paint_stack.addStretch()
         self.paint_scroll.setWidget(paint_host)
 
-        # Horizontal order: other tools | skinned joints | one-button strip.
-        self.influences = InfluencePanel(self.workspace)
-        self.workspace.addWidget(self.influences)
-        self.workspace.addWidget(self.paint_scroll)
+        # Seamless dock: influence hierarchy + narrow two-column actions.
+        # The splitter now separates only the tool shelf from this dock.
+        self.influence_actions = QtWidgets.QFrame(self.workspace)
+        self.influence_actions.setObjectName("SkinningInfluenceActionsDock")
+        dock_layout = QtWidgets.QHBoxLayout(self.influence_actions)
+        dock_layout.setContentsMargins(0, 0, 0, 0)
+        dock_layout.setSpacing(0)
+        self.influences = InfluencePanel(self.influence_actions)
+        dock_layout.addWidget(self.influences, 1)
+        dock_layout.addWidget(self.paint_scroll, 0)
+        self.workspace.addWidget(self.influence_actions)
         self.workspace.setStretchFactor(0, 1)
         self.workspace.setStretchFactor(1, 0)
-        self.workspace.setStretchFactor(2, 0)
-        self.workspace.setSizes([500, 300, 290])
+        self.workspace.setSizes([440, 450])
         inside = QtWidgets.QWidget()
         inside.setObjectName("SkinningContent")
         self.content = QtWidgets.QVBoxLayout(inside)
@@ -1115,7 +1125,8 @@ class SkinningBoard(QtWidgets.QWidget):
                 grid = grid_type(
                     cell_width=GROUP_CELL_WIDTHS.get((key, group_key), 86),
                     compact=self.compact,
-                    max_columns=GROUP_MAX_COLUMNS.get((key, group_key), 2))
+                    max_columns=GROUP_MAX_COLUMNS.get((key, group_key), 2),
+                    force_two_columns=(key == "paint"))
                 self.grids.append(grid)
                 vertical.addWidget(grid)
                 entries = []
@@ -1346,13 +1357,22 @@ class SkinningBoard(QtWidgets.QWidget):
                 background-color: #383838;
                 color: #E5E5E5;
             }
-            QScrollArea#SkinningBoardScroll,
-            QScrollArea#SkinningPaintWeightScroll {
+            QScrollArea#SkinningBoardScroll {
                 background-color: #383838;
                 border: none;
             }
+            QFrame#SkinningInfluenceActionsDock {
+                background-color: #202020;
+                border: 1px solid #454545;
+                border-radius: 4px;
+            }
+            QScrollArea#SkinningPaintWeightScroll {
+                background-color: #202020;
+                border: none;
+                border-left: 1px solid #454545;
+            }
             QWidget#SkinningPaintWeightContent {
-                background-color: #383838;
+                background-color: #202020;
             }
             QWidget#SkinningMasonry, QWidget#SkinningContent,
             QWidget#SkinningToolColumn {
@@ -1369,9 +1389,9 @@ class SkinningBoard(QtWidgets.QWidget):
                 color: #999999;
             }
             QFrame#SkinningSection_paint, QFrame#SkinningSection_weight {
-                background-color: #202020;
+                background-color: transparent;
                 border: none;
-                border-radius: 2px;
+                border-radius: 0;
             }
             QFrame#SkinningSection_skin, QFrame#SkinningSection_files,
             QFrame#SkinningSection_proxy, QFrame#SkinningSection_animation,
@@ -1419,8 +1439,8 @@ class SkinningBoard(QtWidgets.QWidget):
             }
             QFrame#SkinningInfluencePanel {
                 background-color: #202020;
-                border: 1px solid #454545;
-                border-radius: 4px;
+                border: none;
+                border-radius: 0;
             }
             QLabel#SkinningInfluenceMesh, QLabel#SkinningInfluenceStatus,
             QLabel#SkinningInfluenceHint {
