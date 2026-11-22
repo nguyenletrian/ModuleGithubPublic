@@ -413,6 +413,23 @@ def _skin_from_selection():
     return None
 
 
+def _selected_unskinned_mesh():
+    """Distinguish a new unbound mesh from a joint selection."""
+    for component in cmds.ls(selection=True, long=True) or []:
+        node = component.split(".", 1)[0]
+        if not cmds.objExists(node):
+            continue
+        node_type = cmds.nodeType(node)
+        if node_type == "mesh":
+            return True
+        if node_type == "transform":
+            shapes = cmds.listRelatives(
+                node, shapes=True, noIntermediate=True, fullPath=True) or []
+            if any(cmds.nodeType(shape) == "mesh" for shape in shapes):
+                return True
+    return False
+
+
 def _skin_influence_rows(skin):
     """Rows contain (full DAG influence name, locked) for this skin only."""
     if not skin or not cmds.objExists(skin):
@@ -551,9 +568,11 @@ class InfluencePanel(QtWidgets.QFrame):
     def activate(self):
         if not self._jobs:
             for event in ("SelectionChanged", "SceneOpened", "NewSceneOpened"):
+                callback = (self.on_selection_changed if event == "SelectionChanged"
+                            else self.reset_scene)
                 try:
                     self._jobs.append(cmds.scriptJob(
-                        event=[event, self.on_selection_changed]))
+                        event=[event, callback]))
                 except RuntimeError:
                     pass
         self.refresh()
@@ -564,17 +583,20 @@ class InfluencePanel(QtWidgets.QFrame):
                 cmds.scriptJob(kill=job, force=True)
         self._jobs = []
 
+    def reset_scene(self):
+        self.skin = None
+        self.mesh = None
+        self.refresh(prefer_selection=False)
+
     def on_selection_changed(self):
         data = _skin_from_selection()
-        if data and (data["skinCluster"], data["mesh"]) != (
-                self.skin, self.mesh):
+        if data:
             self.skin = data["skinCluster"]
             self.mesh = data["mesh"]
             self.refresh(prefer_selection=False)
-        elif self.skin and not cmds.objExists(self.skin):
-            self.skin = None
-            self.mesh = None
-            self.refresh(prefer_selection=False)
+        elif _selected_unskinned_mesh() or (
+                self.skin and not cmds.objExists(self.skin)):
+            self.reset_scene()
 
     def refresh(self, prefer_selection=True):
         if prefer_selection:
@@ -582,6 +604,9 @@ class InfluencePanel(QtWidgets.QFrame):
             if data:
                 self.skin = data["skinCluster"]
                 self.mesh = data["mesh"]
+            elif _selected_unskinned_mesh():
+                self.skin = None
+                self.mesh = None
         if self.skin and not cmds.objExists(self.skin):
             self.skin = None
             self.mesh = None
@@ -602,9 +627,9 @@ class InfluencePanel(QtWidgets.QFrame):
             self.tree.clear()
             for joint, locked in self._rows:
                 short = joint.rsplit("|", 1)[-1]
-                item = QtWidgets.QTreeWidgetItem(
-                    (short, "Locked" if locked else "Unlocked"
-                     if locked is not None else "N/A"))
+                item = QtWidgets.QTreeWidgetItem([
+                    short, "Locked" if locked else "Unlocked"
+                    if locked is not None else "N/A"])
                 item.setData(0, QtCore.Qt.UserRole, joint)
                 item.setToolTip(0, joint)
                 if locked is not None:
@@ -988,7 +1013,10 @@ class SkinningBoard(QtWidgets.QWidget):
             return callback(maxInfluence=self.max_influences.value())
         if needs_paint and not self.activate_paint():
             return
-        return callback()
+        result = callback()
+        if action_id.startswith(("paint/locks/", "skin/bind/")):
+            self.influences.refresh()
+        return result
 
     def showEvent(self, event):
         super(SkinningBoard, self).showEvent(event)
