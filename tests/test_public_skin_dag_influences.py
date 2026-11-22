@@ -109,12 +109,16 @@ class FakeMaya:
         assert kw.get("force") is True
         self.active = source.rsplit(".", 1)[0]
         self.connected.append(source)
+        # Connecting paintTrans invalidates the previously rendered feedback.
+        self.native_display_joint = None
 
     def artAttrSkinPaintCtx(self, name, **kw):
         assert name == "artAttrSkinContext"
         if kw.get("edit"):
             if "influence" in kw:
                 self.active = kw["influence"]
+                # Calling this after native callback would erase the gradient.
+                self.native_display_joint = None
             if "colorfeedback" in kw:
                 self.paint_feedback = kw["colorfeedback"]
             if "xrayJoints" in kw:
