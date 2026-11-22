@@ -81,21 +81,22 @@ class SkinningPaintDockTests(unittest.TestCase):
         self.assertIn('self.paint_scroll.setObjectName("SkinningPaintWeightScroll")',
                       source)
         self.assertIn("self.workspace.addWidget(self.scroll)", source)
-        # Order is core tool palette, joint hierarchy, then single action strip.
+        # Order is core tools, influence hierarchy, then two-column Paint/Weight groups.
         left = source.index("self.workspace.addWidget(self.scroll)")
         middle = source.index("self.workspace.addWidget(self.influences)")
         right = source.index("self.workspace.addWidget(self.paint_scroll)")
         self.assertLess(left, middle)
         self.assertLess(middle, right)
-        self.assertIn("self.paint_scroll.setMinimumWidth(140)", source)
-        self.assertIn("self.paint_scroll.setMaximumWidth(205)", source)
+        self.assertIn("self.paint_scroll.setMinimumWidth(205)", source)
+        self.assertIn("self.paint_scroll.setMaximumWidth(350)", source)
+        self.assertIn("self.workspace.setSizes([500, 300, 290])", source)
         self.assertIn("if key in PAINT_WEIGHT_SECTIONS:", source)
         self.assertIn("self.paint_stack.insertWidget(", source)
         self.assertIn("not in PAINT_WEIGHT_SECTIONS", source)
         self.assertIn("self.buttons[action_id] = (button, callback", source)
         self.assertIn("self.dispatch(key, fn)", source)
 
-    def test_every_paint_and_weight_action_is_one_vertical_button(self):
+    def test_paint_and_weight_sections_each_use_two_columns(self):
         source = FILE.read_text(encoding="utf-8")
         module = ast.parse(source)
         caps = next(node for node in module.body
@@ -104,13 +105,16 @@ class SkinningPaintDockTests(unittest.TestCase):
                         target.id == "GROUP_MAX_COLUMNS"
                         for target in node.targets))
         settings = ast.literal_eval(caps.value)
-        self.assertEqual(settings[("paint", "quick")], 1)
-        self.assertEqual(settings[("paint", "locks")], 1)
-        self.assertEqual(settings[("paint", "helpers")], 1)
-        self.assertEqual(settings[("weight", "increment")], 1)
-        self.assertIn("grid = ResponsiveButtons(", source)
-        self.assertIn("max_columns=(1 if key in PAINT_WEIGHT_SECTIONS", source)
+        self.assertEqual(settings[("paint", "quick")], 2)
+        self.assertEqual(settings[("paint", "locks")], 2)
+        self.assertEqual(settings[("paint", "helpers")], 2)
+        self.assertEqual(settings[("weight", "increment")], 2)
+        self.assertIn("grid_type = WeightPairButtons if key == \"weight\" else ResponsiveButtons", source)
+        self.assertIn("grid = grid_type(", source)
+        self.assertIn("max_columns=GROUP_MAX_COLUMNS.get((key, group_key), 2)", source)
         self.assertIn("weight_grid_position(item[0])", source)
+        self.assertIn("row, column = weight_grid_position(button.full_label)", source)
+        self.assertIn("self.layout_grid.setColumnStretch(1, 1)", source)
         self.assertIn("self.paint_stack.insertWidget(", source)
         self.assertIn("self.paint_stack.setSpacing(1)", source)
         catalog = load_catalog()
