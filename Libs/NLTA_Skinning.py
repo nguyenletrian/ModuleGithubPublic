@@ -730,30 +730,47 @@ def GetJointVertexs(mesh, joints, threshold=0.0001):
             result.append("{}.vtx[{}]".format(mesh, vertexId))
     return result
 
-def IsolateEffectVertex(*args):
-    selection = cmds.ls(selection=True)
-    if selection:
-        mesh = selection[0]
+def IsolateEffectVertex(*args, **kwargs):
+    """Isolate vertices of the explicit clicked influence or legacy active one."""
+    mesh = kwargs.get("mesh")
+    jointActive = kwargs.get("joint")
+    if mesh is not None or jointActive is not None:
+        skin = GetSkinCluster(mesh) if mesh else None
+        jointActive = _BoundJoint(skin, jointActive) if skin and jointActive else None
+        if not jointActive:
+            cmds.warning("Isolate: clicked joint is not bound to this mesh.")
+            return
+    else:
+        selection = cmds.ls(selection=True)
+        if not selection:
+            return
+        mesh = selection[0].split(".", 1)[0]
         currentData = NLTA_General.GetSkinData(mesh)
         jointActive = currentData["jointActive"]
-        jointsUnlock = currentData["jointsUnlock"]
-        vertexs = GetJointVertexs(mesh,[jointActive])
-        cmds.setToolTo('selectSuperContext')
+    if not jointActive:
+        cmds.warning("Isolate: select an influence joint.")
+        return
+    vertexs = GetJointVertexs(mesh, [jointActive])
+    if not vertexs:
+        cmds.warning("Isolate: no vertices weighted to {}.".format(jointActive))
+        return
+    cmds.setToolTo("selectSuperContext")
+    try:
         cmds.select(clear=True)
         cmds.select(vertexs, add=True)
         panelCurrent = cmds.getPanel(withFocus=True)
+        if not panelCurrent:
+            cmds.warning("Isolate: no active model panel.")
+            return
         state = cmds.isolateSelect(panelCurrent, q=True, state=True)
         if state == 1:
-            mel.eval('ToggleIsolateSelect;')
-            mel.eval('ToggleIsolateSelect;')
-        elif state == 0:
-            mel.eval('ToggleIsolateSelect;')
-        cmds.select(clear=True)
-        cmds.select(mesh)
-        try:
-            EnsurePaintContext(mesh)
-        except:
-            pass
+            mel.eval("ToggleIsolateSelect;")
+            mel.eval("ToggleIsolateSelect;")
+        else:
+            mel.eval("ToggleIsolateSelect;")
+    finally:
+        cmds.select(mesh, replace=True)
+        EnsurePaintContext(mesh)
 
 def clearMesh(*arr):
     for mesh in cmds.ls(selection=True):
