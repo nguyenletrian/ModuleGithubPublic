@@ -123,6 +123,13 @@ class SkinningPaintDockTests(unittest.TestCase):
         self.assertIn("self.paint_stack.insertWidget(", source)
         self.assertIn("self.paint_stack.setSpacing(1)", source)
         self.assertIn('force_two_columns=(key in ("paint", "animation"))', source)
+        self.assertIn("height_reduction=2 if key in LEFT_DOCK_SECTIONS else 0", source)
+        self.assertEqual(
+            source.count("button.setFixedHeight((23 if self.compact else 29) - self.height_reduction)"),
+            2)
+        self.assertIn('button.setProperty("dock", "left" if left_dock else "main")', source)
+        self.assertIn('button.setMinimumHeight(20 if left_dock else 22)', source)
+        self.assertIn('QPushButton#SkinningAction[dock="left"]', source)
         catalog = load_catalog()
         dock = {key: groups for key, _, groups in catalog
                 if key in ("paint", "weight", "animation")}
