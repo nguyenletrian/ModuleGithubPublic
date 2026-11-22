@@ -470,6 +470,18 @@ def _set_influence_locks(skin, joints, mode):
     return changed
 
 
+def _influence_hierarchy(rows):
+    """Use the nearest bound DAG ancestor; omit non-skin influences."""
+    joints = {joint for joint, _ in rows}
+    parents = {}
+    for joint, _ in rows:
+        ancestor = joint.rsplit("|", 1)[0]
+        while ancestor and ancestor not in joints:
+            ancestor = ancestor.rsplit("|", 1)[0]
+        parents[joint] = ancestor if ancestor in joints else None
+    return parents
+
+
 class InfluencePanel(QtWidgets.QFrame):
     """Live influence list for the selected skinned mesh; no weight edits."""
 
@@ -481,6 +493,8 @@ class InfluencePanel(QtWidgets.QFrame):
         self.skin = None
         self.mesh = None
         self._rows = []
+        self._items = {}
+        self._parents = {}
         self._populating = False
         self._jobs = []
 
@@ -519,11 +533,17 @@ class InfluencePanel(QtWidgets.QFrame):
         self.tree = QtWidgets.QTreeWidget()
         self.tree.setObjectName("SkinningInfluenceTree")
         self.tree.setHeaderLabels(("Influence joint", "Lock"))
-        self.tree.setRootIsDecorated(False)
+        self.tree.setRootIsDecorated(True)
+        self.tree.setIndentation(14)
+        header = self.tree.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
+        self.tree.setColumnWidth(1, 52)
+        self.tree.headerItem().setTextAlignment(1, QtCore.Qt.AlignCenter)
         self.tree.setAlternatingRowColors(True)
         self.tree.setUniformRowHeights(True)
         self.tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-        self.tree.setColumnWidth(0, 170)
         self.tree.setToolTip(
             "Check Lock to prevent weight changes for that joint.\n"
             "Ctrl/Shift-click to select multiple rows; double-click to select in Maya.")
@@ -620,25 +640,45 @@ class InfluencePanel(QtWidgets.QFrame):
     def populate(self):
         selected = {item.data(0, QtCore.Qt.UserRole)
                     for item in self.tree.selectedItems()}
+        expanded = {joint for joint, item in self._items.items()
+                    if item.isExpanded()}
+        first_load = not self._items
+        self._parents = _influence_hierarchy(self._rows)
         self._populating = True
         self.tree.setUpdatesEnabled(False)
         self.tree.blockSignals(True)
         try:
             self.tree.clear()
-            for joint, locked in self._rows:
-                short = joint.rsplit("|", 1)[-1]
-                item = QtWidgets.QTreeWidgetItem([
-                    short, "Locked" if locked else "Unlocked"
-                    if locked is not None else "N/A"])
+            self._items = {}
+            for joint, locked in sorted(self._rows,
+                                        key=lambda entry: entry[0].casefold()):
+                item = QtWidgets.QTreeWidgetItem(
+                    [joint.rsplit("|", 1)[-1], ""])
                 item.setData(0, QtCore.Qt.UserRole, joint)
                 item.setToolTip(0, joint)
+                item.setTextAlignment(1, QtCore.Qt.AlignCenter)
                 if locked is not None:
                     item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
                     item.setCheckState(
                         1, QtCore.Qt.Checked if locked else QtCore.Qt.Unchecked)
-                self.tree.addTopLevelItem(item)
+                self._items[joint] = item
+
+            for joint in sorted(self._items, key=str.casefold):
+                item = self._items[joint]
+                parent = self._parents.get(joint)
+                if parent:
+                    self._items[parent].addChild(item)
+                else:
+                    self.tree.addTopLevelItem(item)
                 if joint in selected:
                     item.setSelected(True)
+
+            if first_load:
+                self.tree.expandToDepth(1)
+            else:
+                for joint in expanded:
+                    if joint in self._items:
+                        self._items[joint].setExpanded(True)
         finally:
             self.tree.blockSignals(False)
             self.tree.setUpdatesEnabled(True)
@@ -648,20 +688,34 @@ class InfluencePanel(QtWidgets.QFrame):
     def filter_rows(self, *_):
         phrase = self.search.text().strip().casefold()
         state = self.filter_box.currentText()
-        visible = 0
-        for index, (joint, locked) in enumerate(self._rows):
-            name = joint.rsplit("|", 1)[-1]
-            matches_name = phrase in joint.casefold() or phrase in name.casefold()
+        matched = set()
+        for joint, locked in self._rows:
+            matches_name = phrase in joint.casefold()
             matches_state = (state == "All" or
                              (state == "Locked" and locked is True) or
                              (state == "Unlocked" and locked is False))
-            shown = matches_name and matches_state
-            self.tree.topLevelItem(index).setHidden(not shown)
-            visible += int(shown)
+            if matches_name and matches_state:
+                matched.add(joint)
+
+        # Display ancestors for context, even if they do not match the filter.
+        visible = set(matched)
+        for joint in matched:
+            parent = self._parents.get(joint)
+            while parent:
+                visible.add(parent)
+                if phrase or state != "All":
+                    self._items[parent].setExpanded(True)
+                parent = self._parents.get(parent)
+
+        for joint, item in self._items.items():
+            item.setHidden(joint not in visible)
+            if joint not in visible:
+                item.setSelected(False)
+
         locked_count = sum(locked is True for _, locked in self._rows)
         unlocked_count = sum(locked is False for _, locked in self._rows)
-        self.status.setText("{} shown / {} joints  |  {} locked  |  {} unlocked".format(
-            visible, len(self._rows), locked_count, unlocked_count))
+        self.status.setText("{} matched / {} joints  |  {} locked  |  {} unlocked".format(
+            len(matched), len(self._rows), locked_count, unlocked_count))
 
     def change_item_lock(self, item, column):
         if self._populating or column != 1 or not self.skin:
@@ -677,7 +731,7 @@ class InfluencePanel(QtWidgets.QFrame):
             return
         if selected_only:
             joints = [item.data(0, QtCore.Qt.UserRole)
-                      for item in self.tree.selectedItems()]
+                      for item in self.tree.selectedItems() if not item.isHidden()]
             if not joints:
                 cmds.warning("Select influence rows in the table first")
                 return
