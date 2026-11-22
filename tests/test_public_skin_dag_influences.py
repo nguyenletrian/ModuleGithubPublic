@@ -50,6 +50,11 @@ class FakeMaya:
         self.native_selected = [ROOT, CHILD]  # Replicate the Maya multi-selection bug.
         self.native_events = []
         self.mel_calls = []
+        self.model_panel = "modelPanel4"
+        self.panel_shading = "wireframe"
+        self.paint_feedback = False
+        self.joints_xray = False
+        self.viewport_refreshes = 0
         self.weight_map = {ROOT: 0.25, CHILD: 0.75, OTHER: 0.0, EXTRA: 0.0}
 
     def ls(self, *args, **kwargs):
@@ -106,7 +111,32 @@ class FakeMaya:
     def artAttrSkinPaintCtx(self, name, **kw):
         assert name == "artAttrSkinContext"
         if kw.get("edit"):
-            self.active = kw["influence"]
+            if "influence" in kw:
+                self.active = kw["influence"]
+            if "colorfeedback" in kw:
+                self.paint_feedback = kw["colorfeedback"]
+            if "xrayJoints" in kw:
+                self.joints_xray = kw["xrayJoints"]
+
+    def getPanel(self, **kwargs):
+        if kwargs.get("type") == "modelPanel":
+            return [self.model_panel]
+        if kwargs.get("withFocus"):
+            return self.model_panel
+        if kwargs.get("visiblePanels"):
+            return [self.model_panel]
+        return []
+
+    def modelEditor(self, panel, **kwargs):
+        assert panel == self.model_panel
+        if kwargs.get("query"):
+            return self.panel_shading
+        if kwargs.get("edit"):
+            self.panel_shading = kwargs["displayAppearance"]
+
+    def refresh(self, **kwargs):
+        assert kwargs.get("force") is True
+        self.viewport_refreshes += 1
 
     def treeView(self, tree, **kw):
         assert tree == self.native_tree
@@ -147,7 +177,7 @@ FUNCTIONS = (
     "singleUnlock", "unlock", "UnlockJoints", "addUnlockUp",
     "addUnlockDown", "ActiveJoint", "switchJoint", "GetVertexWeights",
     "UnlockTwoJoints", "UnlockInfluenceJoints", "SelectPaintInfluence",
-    "_SelectNativePaintInfluence"
+    "_SelectNativePaintInfluence", "_RefreshPaintInfluenceDisplay"
 )
 
 
@@ -288,6 +318,24 @@ class DagBoundInfluenceTests(unittest.TestCase):
                          ["joint2", "joint1|joint2"])
         self.assertTrue(any("cannot uniquely locate" in msg
                             for msg in self.fake.warning_messages))
+
+    def test_select_joint_shows_weight_feedback_in_wireframe_viewport(self):
+        before = list(self.fake.selected)
+        self.assertTrue(self.logic["SelectPaintInfluence"](
+            "|Body|Mesh", CHILD))
+        self.assertTrue(self.fake.paint_feedback)
+        self.assertTrue(self.fake.joints_xray)
+        self.assertEqual(self.fake.panel_shading, "smoothShaded")
+        self.assertEqual(self.fake.viewport_refreshes, 1)
+        self.assertEqual(self.fake.selected, before)
+        self.assertEqual(self.fake.active, CHILD)
+
+    def test_refresh_keeps_existing_shaded_viewport_mode(self):
+        self.fake.panel_shading = "textured"
+        self.assertTrue(self.logic["SelectPaintInfluence"](
+            "|Body|Mesh", CHILD))
+        self.assertEqual(self.fake.panel_shading, "textured")
+        self.assertEqual(self.fake.viewport_refreshes, 1)
 
     def test_native_selection_rejects_unbound_duplicate_name(self):
         self.fake.native_active = ROOT
