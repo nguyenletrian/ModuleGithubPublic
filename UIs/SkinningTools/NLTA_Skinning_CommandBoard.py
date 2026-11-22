@@ -284,12 +284,13 @@ class ResponsiveButtons(QtWidgets.QWidget):
     """Responsive tool columns: read down each column before moving right."""
 
     def __init__(self, parent=None, cell_width=86, compact=True,
-                 max_columns=2, force_two_columns=False):
+                 max_columns=2, force_two_columns=False, height_reduction=0):
         super(ResponsiveButtons, self).__init__(parent)
         self.items = []
         self.cell_width = cell_width
         self.max_columns = max_columns
         self.force_two_columns = force_two_columns
+        self.height_reduction = height_reduction
         self.compact = compact
         self.columns = 0
         self.positions = ()
@@ -323,7 +324,7 @@ class ResponsiveButtons(QtWidgets.QWidget):
         # Refresh text even when the column count stays the same after resizing.
         cell_width = max(24, (width - max(0, columns - 1) * gap) // columns)
         for button in active:
-            button.setFixedHeight(23 if self.compact else 29)
+            button.setFixedHeight((23 if self.compact else 29) - self.height_reduction)
             label = (button.short_label if self.compact else button.full_label)
             button.setText(button.fontMetrics().elidedText(
                 label, QtCore.Qt.ElideRight, max(15, cell_width - 10)))
@@ -379,7 +380,7 @@ class WeightPairButtons(ResponsiveButtons):
             self.layout_grid.takeAt(0)
 
         for button in active:
-            button.setFixedHeight(23 if self.compact else 29)
+            button.setFixedHeight((23 if self.compact else 29) - self.height_reduction)
             label = button.short_label if self.compact else button.full_label
             button.setText(button.fontMetrics().elidedText(
                 label, QtCore.Qt.ElideRight, max(15, cell_width - 10)))
@@ -1027,7 +1028,8 @@ class SkinningBoard(QtWidgets.QWidget):
                     cell_width=GROUP_CELL_WIDTHS.get((key, group_key), 86),
                     compact=self.compact,
                     max_columns=GROUP_MAX_COLUMNS.get((key, group_key), 2),
-                    force_two_columns=(key in ("paint", "animation")))
+                    force_two_columns=(key in ("paint", "animation")),
+                    height_reduction=2 if key in LEFT_DOCK_SECTIONS else 0)
                 self.grids.append(grid)
                 vertical.addWidget(grid)
                 entries = []
@@ -1204,11 +1206,13 @@ class SkinningBoard(QtWidgets.QWidget):
         button = QtWidgets.QPushButton(label)
         button.setObjectName("SkinningAction")
         button.setProperty("role", role or "normal")
+        left_dock = action_id.split("/", 1)[0] in LEFT_DOCK_SECTIONS
+        button.setProperty("dock", "left" if left_dock else "main")
         button.setToolTip(label + ("\n" + tooltip if tooltip and tooltip != label else ""))
         button.full_label = label
         button.short_label = COMPACT_LABELS.get(label, label)
         button.setMinimumWidth(0)
-        button.setMinimumHeight(22)
+        button.setMinimumHeight(20 if left_dock else 22)
         button.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed)
         # Do not pass the Qt clicked(bool) to legacy Maya callbacks.
         button.clicked.connect(
@@ -1288,6 +1292,10 @@ class SkinningBoard(QtWidgets.QWidget):
                 border-radius: 3px;
                 padding: 1px 3px;
                 min-height: 21px;
+            }
+            QPushButton#SkinningAction[dock="left"] {
+                padding: 0px 3px;
+                min-height: 17px;
             }
             QPushButton#SkinningAction:hover {
                 background-color: #424242;
