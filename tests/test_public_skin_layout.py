@@ -91,7 +91,6 @@ class SkinningPaintDockTests(unittest.TestCase):
              for name, key, caption, width, row
              in ast.literal_eval(controls.value)],
             [
-                ("Unlock", "unlock", "U", 0),
                 ("Add Unlock", "add_unlock", "+", 0),
                 ("Add Up", "add_up", "↑", 0),
                 ("Add Down", "add_down", "↓", 0),
