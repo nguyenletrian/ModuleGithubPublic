@@ -1,4 +1,4 @@
-"""Offline layout contracts for Maya Skinning's side-by-side paint/weight dock."""
+"""Offline layout contracts for Maya Skinning's compact joint and action dock."""
 import ast
 from functools import partial
 from pathlib import Path
@@ -74,7 +74,7 @@ class SkinningPaintDockTests(unittest.TestCase):
 
     def test_dock_owns_original_widget_sections_in_adjacent_column(self):
         source = FILE.read_text(encoding="utf-8")
-        self.assertIn('PAINT_WEIGHT_SECTIONS = frozenset(("paint", "weight"))',
+        self.assertIn('LEFT_DOCK_SECTIONS = frozenset(("paint", "weight", "animation"))',
                       source)
         self.assertIn('self.workspace = QtWidgets.QSplitter(QtCore.Qt.Horizontal)',
                       source)
@@ -95,9 +95,9 @@ class SkinningPaintDockTests(unittest.TestCase):
         self.assertIn("PAINT_STRIP_WIDTH = 145", source)
         self.assertIn("self.paint_scroll.setFixedWidth(PAINT_STRIP_WIDTH)", source)
         self.assertIn("self.workspace.setSizes([450, 440])", source)
-        self.assertIn("if key in PAINT_WEIGHT_SECTIONS:", source)
+        self.assertIn("if key in LEFT_DOCK_SECTIONS:", source)
         self.assertIn("self.paint_stack.insertWidget(", source)
-        self.assertIn("not in PAINT_WEIGHT_SECTIONS", source)
+        self.assertIn("not in LEFT_DOCK_SECTIONS", source)
         self.assertIn("self.buttons[action_id] = (button, callback", source)
         self.assertIn("self.dispatch(key, fn)", source)
 
@@ -122,24 +122,38 @@ class SkinningPaintDockTests(unittest.TestCase):
         self.assertIn("self.layout_grid.setColumnStretch(1, 1)", source)
         self.assertIn("self.paint_stack.insertWidget(", source)
         self.assertIn("self.paint_stack.setSpacing(1)", source)
-        self.assertIn('force_two_columns=(key == "paint")', source)
+        self.assertIn('force_two_columns=(key in ("paint", "animation"))', source)
         catalog = load_catalog()
         dock = {key: groups for key, _, groups in catalog
-                if key in ("paint", "weight")}
+                if key in ("paint", "weight", "animation")}
         count = sum(len(items) for groups in dock.values()
                     for _, _, items in groups)
-        self.assertEqual(count, 38)
+        self.assertEqual(count, 51)
 
-    def test_main_search_and_density_still_use_one_button_collection(self):
+    def test_keyframes_on_left_and_marked_controls_removed(self):
         source = FILE.read_text(encoding="utf-8")
-        self.assertIn("for section, section_title, groups in self.sections:",
+        self.assertNotIn('self.filter_box = QtWidgets.QComboBox()', source)
+        self.assertNotIn('self.mesh_label = QtWidgets.QLabel(', source)
+        self.assertNotIn('selected = QtWidgets.QGridLayout()', source)
+        self.assertNotIn('all_buttons = QtWidgets.QGridLayout()', source)
+        self.assertNotIn('self.density = QtWidgets.QComboBox()', source)
+        self.assertNotIn('self.max_width_input = QtWidgets.QSpinBox()', source)
+        self.assertNotIn('self.paint_button = QtWidgets.QPushButton(', source)
+        self.assertNotIn('Search tools... Ctrl+F', source)
+        self.assertIn(
+            'search_shortcut.activated.connect(self.influences.search.setFocus)', source)
+        self.assertIn('spin.valueChanged.connect(', source)
+        self.assertIn('cmds.intSliderGrp(distance_ui, edit=True, value=value)',
                       source)
-        self.assertIn("self.action_visibility[button] = match", source)
-        self.assertIn("grid.reflow(force=True)", source)
-        self.assertIn("for grid in self.grids:", source)
-        self.assertIn("self.reflow_sections(force=True)", source)
-        self.assertIn("self.workspace.setStretchFactor(0, 1)", source)
-        self.assertIn("self.workspace.setStretchFactor(1, 1)", source)
+        self.assertIn('self.paint_stack.insertWidget(', source)
+        self.assertIn('grid.reflow(force=True)', source)
+        self.assertIn('self.reflow_sections(force=True)', source)
+        self.assertIn('self.workspace.setStretchFactor(0, 0)', source)
+        self.assertIn('self.workspace.setStretchFactor(1, 1)', source)
+        catalog = load_catalog()
+        animation = next(groups for key, _, groups in catalog
+                         if key == "animation")
+        self.assertEqual(sum(len(items) for _, _, items in animation), 13)
 
 
 if __name__ == "__main__":
