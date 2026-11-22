@@ -58,9 +58,9 @@ def command_catalog(tools, distance_ui):
                     "space": space, "type": "rotate", "inturn": True, "ui": distance_ui}), "", ""),
                 ("Translate", partial(k.CreateKeyframe, {
                     "space": space, "type": "translate", "inturn": True, "ui": distance_ui}), "", ""),
-                ("Rotate All", partial(k.CreateKeyframe, {
+                ("Rotate Together", partial(k.CreateKeyframe, {
                     "space": space, "type": "rotate", "inturn": False, "ui": distance_ui}), "", ""),
-                ("Move All", partial(k.CreateKeyframe, {
+                ("Translate Together", partial(k.CreateKeyframe, {
                     "space": space, "type": "translate", "inturn": False, "ui": distance_ui}), "", ""),
             ],
         ))
@@ -241,6 +241,8 @@ def column_major_position(index, count, columns):
 
 
 COMPACT_LABELS = {
+    "Rotate Together": "Rotate Tog",
+    "Translate Together": "Trans Tog",
     "Graph Skinning": "Graph",
     "Copy Weight": "Copy W",
     "Copy Ratio": "Copy Ratio",
@@ -1160,24 +1162,28 @@ class SkinningBoard(QtWidgets.QWidget):
         return bool(ensure())
 
     def dispatch(self, action_id, callback):
+        # Follow the legacy Skinning callbacks: joint switching and pair
+        # unlocking initialize their own paint context AFTER reading selection.
+        # Pre-activating Paint here can consume joint/vertex selection or cause
+        # Switch Joint to skip an influence.
         needs_paint = (
             action_id.startswith("weight/increment/") or
             action_id in {
                 "paint/quick/Smooth", "paint/quick/Flood",
                 "paint/quick/Pick Value", "paint/helpers/Switch Brush",
                 "paint/helpers/Prune", "paint/locks/Add Unlock",
-                "paint/locks/Unlock All", "paint/locks/Unlock",
-                "paint/locks/Add Up", "paint/locks/Add Down",
-                "paint/helpers/Switch Joint"
+                "paint/locks/Unlock All"
             }
         )
         if action_id == "skin/max/Check":
-            return callback(maxValue=self.max_influences.value())
-        if action_id == "skin/max/Fix":
-            return callback(maxInfluence=self.max_influences.value())
-        if needs_paint and not self.activate_paint():
-            return
-        result = callback()
+            result = callback(maxValue=self.max_influences.value())
+        elif action_id == "skin/max/Fix":
+            result = callback(maxInfluence=self.max_influences.value())
+        else:
+            if needs_paint and cmds.currentCtx() != "artAttrSkinContext":
+                if not self.activate_paint():
+                    return
+            result = callback()
         if action_id.startswith(("paint/locks/", "skin/bind/")):
             self.influences.refresh()
         return result
