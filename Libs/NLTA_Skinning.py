@@ -1471,7 +1471,7 @@ def removeUnneedJoint(*arr):
                     used[influenceIndex] = True
 
         removeJoints = [
-            influences[i].partialPathName()
+            influences[i].fullPathName()
             for i, isUsed in enumerate(used)
             if not isUsed
         ]
@@ -1510,13 +1510,13 @@ def AddMeshJoint(*arr):
         cmds.warning("Source has no skinCluster.")
         return
 
-    sourceJoints = set(cmds.skinCluster(sourceSkin, q=True, inf=True) or [])
+    sourceJoints = set(_SkinInfluencePaths(sourceSkin))
     for destination in destinations:
         destinationSkin = GetSkinCluster(destination)
         if not destinationSkin:
             continue
 
-        destinationJoints = set(cmds.skinCluster(destinationSkin, q=True, inf=True) or [])
+        destinationJoints = set(_SkinInfluencePaths(destinationSkin))
         jointsAdd = sorted(sourceJoints - destinationJoints)
         if jointsAdd:
             cmds.skinCluster(destinationSkin, e=True, addInfluence=jointsAdd, weight=0)
@@ -1548,8 +1548,8 @@ def AddJoint(*arr):
         skin = GetSkinCluster(mesh)
         if not skin:
             continue
-        existing = set(cmds.skinCluster(skin, q=True, inf=True) or [])
-        jointsAdd = [joint for joint in joints if joint not in existing and joint.split("|")[-1] not in existing]
+        existing = set(_SkinInfluencePaths(skin))
+        jointsAdd = [joint for joint in joints if joint not in existing]
         if jointsAdd:
             cmds.skinCluster(skin, e=True, addInfluence=jointsAdd, weight=0)
             print("Add Joint " + " - ".join(jointsAdd))
@@ -1584,9 +1584,8 @@ def RemoveJoint(*args):
             continue
 
         for joint in joints:
-            influences = cmds.skinCluster(skin, q=True, inf=True) or []
-            shortJoint = joint.split("|")[-1]
-            sourceName = joint if joint in influences else (shortJoint if shortJoint in influences else None)
+            influences = _SkinInfluencePaths(skin)
+            sourceName = _BoundJoint(skin, joint, influences)
             if sourceName is None:
                 continue
             if len(influences) <= 1:
@@ -1599,21 +1598,18 @@ def RemoveJoint(*args):
                 continue
 
             parent = parent[0]
-            parentShort = parent.split("|")[-1]
-            if parent not in influences and parentShort not in influences:
-                cmds.skinCluster(skin, e=True, addInfluence=parent, lockWeights=False, weight=0)
+            if _BoundJoint(skin, parent, influences) is None:
+                cmds.skinCluster(
+                    skin, e=True, addInfluence=parent, lockWeights=False, weight=0)
+            parentName = _BoundJoint(skin, parent)
 
             dagPath, skinFn, _ = GetSkinApi(mesh, skin)
             influencesApi = skinFn.influenceObjects()
-            names = [item.partialPathName() for item in influencesApi]
             fullNames = [item.fullPathName() for item in influencesApi]
-
-            sourceIndex = names.index(shortJoint) if shortJoint in names else (
-                fullNames.index(joint) if joint in fullNames else -1
-            )
-            parentIndex = names.index(parentShort) if parentShort in names else (
-                fullNames.index(parent) if parent in fullNames else -1
-            )
+            sourceIndex = (fullNames.index(sourceName)
+                           if sourceName in fullNames else -1)
+            parentIndex = (fullNames.index(parentName)
+                           if parentName in fullNames else -1)
             if sourceIndex < 0 or parentIndex < 0:
                 continue
 
