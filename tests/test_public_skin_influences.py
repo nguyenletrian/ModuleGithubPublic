@@ -274,6 +274,9 @@ class InfluenceLogicTests(unittest.TestCase):
                 'self.tree.itemDoubleClicked.connect(self.select_joint)',
                 'self.tree.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)',
                 'self.tree.currentItemChanged.connect(self.change_active_influence)',
+                '# Reapply even for the same row:',
+                'if joint not in self._items:',
+
                 'self._live_timer.setInterval(300)',
                 'self._live_timer.timeout.connect(self.sync_live)',
                 'self._live_timer.start()',
