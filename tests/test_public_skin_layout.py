@@ -81,17 +81,20 @@ class SkinningPaintDockTests(unittest.TestCase):
         self.assertIn('self.paint_scroll.setObjectName("SkinningPaintWeightScroll")',
                       source)
         self.assertIn("self.workspace.addWidget(self.scroll)", source)
-        # Left tools + integrated list/action dock; no third splitter pane.
-        left = source.index("self.workspace.addWidget(self.scroll)")
-        right = source.index("self.workspace.addWidget(self.influence_actions)")
-        self.assertLess(left, right)
-        self.assertIn("dock_layout.addWidget(self.influences, 1)", source)
-        self.assertIn("dock_layout.addWidget(self.paint_scroll, 0)", source)
+        # Left-to-right: paint buttons, influence list, remaining tool form.
+        dock = source.index("self.workspace.addWidget(self.influence_actions)")
+        tools = source.index("self.workspace.addWidget(self.scroll)")
+        self.assertLess(dock, tools)
+        paint = source.index("dock_layout.addWidget(self.paint_scroll, 0)")
+        influences = source.index("dock_layout.addWidget(self.influences, 1)")
+        self.assertLess(paint, influences)
+        self.assertIn("self.workspace.setStretchFactor(0, 0)", source)
+        self.assertIn("self.workspace.setStretchFactor(1, 1)", source)
         self.assertIn("dock_layout.setSpacing(0)", source)
         self.assertIn("dock_layout.setContentsMargins(0, 0, 0, 0)", source)
         self.assertIn("PAINT_STRIP_WIDTH = 145", source)
         self.assertIn("self.paint_scroll.setFixedWidth(PAINT_STRIP_WIDTH)", source)
-        self.assertIn("self.workspace.setSizes([440, 450])", source)
+        self.assertIn("self.workspace.setSizes([450, 440])", source)
         self.assertIn("if key in PAINT_WEIGHT_SECTIONS:", source)
         self.assertIn("self.paint_stack.insertWidget(", source)
         self.assertIn("not in PAINT_WEIGHT_SECTIONS", source)
@@ -136,7 +139,7 @@ class SkinningPaintDockTests(unittest.TestCase):
         self.assertIn("for grid in self.grids:", source)
         self.assertIn("self.reflow_sections(force=True)", source)
         self.assertIn("self.workspace.setStretchFactor(0, 1)", source)
-        self.assertIn("self.workspace.setStretchFactor(1, 0)", source)
+        self.assertIn("self.workspace.setStretchFactor(1, 1)", source)
 
 
 if __name__ == "__main__":
