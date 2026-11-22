@@ -20,7 +20,7 @@ except ImportError:
 
 _BOARD = None
 _BRIDGE = "NLTA_SkinningCommandBridge"
-PAINT_WEIGHT_SECTIONS = frozenset(("paint", "weight"))
+LEFT_DOCK_SECTIONS = frozenset(("paint", "weight", "animation"))
 PAINT_STRIP_WIDTH = 145  # Half of the former 290-px action strip.
 
 
@@ -591,7 +591,8 @@ class InfluencePanel(QtWidgets.QFrame):
         column.setSpacing(5)
 
         heading = QtWidgets.QHBoxLayout()
-        heading.addWidget(QtWidgets.QLabel("SKIN INFLUENCES"))
+        self.heading_label = QtWidgets.QLabel("SKIN INFLUENCES")
+        heading.addWidget(self.heading_label)
         heading.addStretch()
         refresh = QtWidgets.QPushButton("Refresh")
         refresh.setObjectName("SkinningInfluenceRefresh")
@@ -600,23 +601,12 @@ class InfluencePanel(QtWidgets.QFrame):
         heading.addWidget(refresh)
         column.addLayout(heading)
 
-        self.mesh_label = QtWidgets.QLabel("Select a skinned mesh or vertices")
-        self.mesh_label.setObjectName("SkinningInfluenceMesh")
-        self.mesh_label.setWordWrap(True)
-        column.addWidget(self.mesh_label)
-
         self.search = QtWidgets.QLineEdit()
         self.search.setObjectName("SkinningInfluenceSearch")
         self.search.setPlaceholderText("Filter joint names...")
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self.filter_rows)
         column.addWidget(self.search)
-
-        self.filter_box = QtWidgets.QComboBox()
-        self.filter_box.setObjectName("SkinningInfluenceStateFilter")
-        self.filter_box.addItems(("All", "Locked", "Unlocked"))
-        self.filter_box.currentTextChanged.connect(self.filter_rows)
-        column.addWidget(self.filter_box)
 
         self.tree = QtWidgets.QTreeWidget()
         self.tree.setObjectName("SkinningInfluenceTree")
@@ -643,36 +633,6 @@ class InfluencePanel(QtWidgets.QFrame):
         self.status = QtWidgets.QLabel("0 joints")
         self.status.setObjectName("SkinningInfluenceStatus")
         column.addWidget(self.status)
-
-        selected = QtWidgets.QGridLayout()
-        selected.setSpacing(3)
-        for index, (label, mode) in enumerate((
-                ("Lock", "lock"), ("Unlock", "unlock"),
-                ("Reverse", "reverse"))):
-            button = QtWidgets.QPushButton(label)
-            button.setToolTip("{} selected influence joints".format(label))
-            button.clicked.connect(
-                lambda checked=False, m=mode: self.change_locks(m, True))
-            selected.addWidget(button, 0, index)
-        column.addLayout(selected)
-
-        all_buttons = QtWidgets.QGridLayout()
-        all_buttons.setSpacing(3)
-        for index, (label, mode) in enumerate((
-                ("Lock All", "lock"), ("Unlock All", "unlock"),
-                ("Reverse All", "reverse"))):
-            button = QtWidgets.QPushButton(label)
-            button.setToolTip("{} influences bound to this skin".format(label))
-            button.clicked.connect(
-                lambda checked=False, m=mode: self.change_locks(m, False))
-            all_buttons.addWidget(button, 0, index)
-        column.addLayout(all_buttons)
-
-        hint = QtWidgets.QLabel(
-            "Select row: active paint influence  |  Checkbox: lock")
-        hint.setWordWrap(True)
-        hint.setObjectName("SkinningInfluenceHint")
-        column.addWidget(hint)
 
     def activate(self):
         if not self._jobs:
@@ -724,10 +684,9 @@ class InfluencePanel(QtWidgets.QFrame):
             self.skin = None
             self.mesh = None
         self._rows = _skin_influence_rows(self.skin)
-        caption = self.mesh.rsplit("|", 1)[-1] if self.mesh else "Select a skinned mesh or vertices"
-        self.mesh_label.setText(caption)
-        self.mesh_label.setToolTip(
-            "{}\nSkin: {}".format(self.mesh, self.skin) if self.skin else "")
+        self.heading_label.setToolTip(
+            "{}\nSkin: {}".format(self.mesh, self.skin) if self.skin
+            else "Select a skinned mesh or vertices")
         self.populate()
         self.sync_from_paint()
 
@@ -787,15 +746,8 @@ class InfluencePanel(QtWidgets.QFrame):
         blocked = self.tree.blockSignals(True)
         try:
             phrase = self.search.text().strip().casefold()
-            state = self.filter_box.currentText()
-            matched = set()
-            for joint, locked in self._rows:
-                matches_name = phrase in joint.casefold()
-                matches_state = (state == "All" or
-                                 (state == "Locked" and locked is True) or
-                                 (state == "Unlocked" and locked is False))
-                if matches_name and matches_state:
-                    matched.add(joint)
+            matched = {joint for joint, _ in self._rows
+                       if phrase in joint.casefold()}
     
             # Keep the live active influence visible even while filtering.
             visible = set(matched)
@@ -805,7 +757,7 @@ class InfluencePanel(QtWidgets.QFrame):
                 parent = self._parents.get(joint)
                 while parent:
                     visible.add(parent)
-                    if phrase or state != "All":
+                    if phrase:
                         self._items[parent].setExpanded(True)
                     parent = self._parents.get(parent)
     
@@ -940,61 +892,11 @@ class SkinningBoard(QtWidgets.QWidget):
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(5, 4, 5, 4)
         outer.setSpacing(3)
-        top = QtWidgets.QHBoxLayout()
-        top.setSpacing(5)
-
-        title = QtWidgets.QLabel("SKINNING")
-        title.setObjectName("SkinningBoardTitle")
-        top.addWidget(title)
-
-        self.search = QtWidgets.QLineEdit()
-        self.search.setPlaceholderText("Search tools... Ctrl+F")
-        self.search.setClearButtonEnabled(True)
-        self.search.setMinimumWidth(140)
-        self.search.textChanged.connect(self.filter_actions)
-        top.addWidget(self.search, 1)
-
-        self.density = QtWidgets.QComboBox()
-        self.density.setObjectName("SkinningDensity")
-        self.density.addItems(("Compact", "Comfort"))
-        self.density.setCurrentText("Compact" if self.compact else "Comfort")
-        self.density.setToolTip("Adjust button sizes and column counts in every group")
-        top.addWidget(self.density)
-
-        # Max Width sets the width of each region, not the Maya window.
-        # Narrower regions automatically produce more workspace columns.
+        # Small title only; global search/density/max width/paint toolbar removed.
+        self.title = QtWidgets.QLabel("SKINNING")
+        self.title.setObjectName("SkinningBoardTitle")
+        outer.addWidget(self.title)
         self.max_width_value = int(self.settings.value("max_region_width", 230))
-        self.max_width_label = QtWidgets.QLabel("Max W")
-        self.max_width_label.setToolTip("Maximum width of each tool region in pixels")
-        top.addWidget(self.max_width_label)
-        self.max_width_input = QtWidgets.QSpinBox()
-        self.max_width_input.setObjectName("SkinningMaxRegionWidth")
-        self.max_width_input.setRange(210, 440)
-        self.max_width_input.setSingleStep(10)
-        self.max_width_input.setSuffix(" px")
-        self.max_width_input.setValue(max(210, min(440, self.max_width_value)))
-        self.max_width_input.setToolTip(
-            "Lower values fit more regions across the window")
-        top.addWidget(self.max_width_input)
-        self.set_max_width = QtWidgets.QPushButton("Set")
-        self.set_max_width.setObjectName("SkinningSetMaxWidth")
-        self.set_max_width.setToolTip("Apply width and repack all tool regions")
-        self.set_max_width.clicked.connect(
-            lambda checked=False: self.apply_max_region_width())
-        top.addWidget(self.set_max_width)
-
-        self.paint_button = QtWidgets.QPushButton("Paint")
-        self.paint_button.setObjectName("SkinningPaintContextButton")
-        self.paint_button.setToolTip(
-            "Activate Maya skin painting without opening Tool Settings")
-        self.paint_button.clicked.connect(lambda checked=False: self.activate_paint())
-        top.addWidget(self.paint_button)
-
-        self.count = QtWidgets.QLabel("105")
-        self.count.setObjectName("SkinningBoardCount")
-        self.count.setToolTip("Number of available tools")
-        top.addWidget(self.count)
-        outer.addLayout(top)
 
         self.workspace = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self.workspace.setObjectName("SkinningWorkspaceSplitter")
@@ -1080,7 +982,7 @@ class SkinningBoard(QtWidgets.QWidget):
             section = QtWidgets.QFrame()
             section.setObjectName("SkinningSection_" + key)
             vertical = QtWidgets.QVBoxLayout(section)
-            if key in PAINT_WEIGHT_SECTIONS:
+            if key in LEFT_DOCK_SECTIONS:
                 vertical.setContentsMargins(3, 3, 3, 3)
             else:
                 vertical.setContentsMargins(7, 5, 7, 7)
@@ -1125,7 +1027,7 @@ class SkinningBoard(QtWidgets.QWidget):
                     cell_width=GROUP_CELL_WIDTHS.get((key, group_key), 86),
                     compact=self.compact,
                     max_columns=GROUP_MAX_COLUMNS.get((key, group_key), 2),
-                    force_two_columns=(key == "paint"))
+                    force_two_columns=(key in ("paint", "animation")))
                 self.grids.append(grid)
                 vertical.addWidget(grid)
                 entries = []
@@ -1141,20 +1043,19 @@ class SkinningBoard(QtWidgets.QWidget):
                 group_records.append((subheading, grid, entries))
             self.sections.append((section, section_title, group_records))
             self.section_visibility[section] = True
-            if key in PAINT_WEIGHT_SECTIONS:
+            if key in LEFT_DOCK_SECTIONS:
                 self.paint_stack.insertWidget(self.paint_stack.count() - 1, section)
 
         self.content.addStretch()
         self.apply_style()
         self.scroll.viewport().installEventFilter(self)
         self.reflow_sections(force=True)
-        self.density.currentTextChanged.connect(self.change_density)
-        self.count.setText("{} tools".format(len(self.buttons)))
         shortcut_cls = getattr(QtWidgets, "QShortcut", None) or QtGui.QShortcut
         search_shortcut = shortcut_cls(QtGui.QKeySequence("Ctrl+F"), self)
-        search_shortcut.activated.connect(self.search.setFocus)
-        clear_shortcut = shortcut_cls(QtGui.QKeySequence("Esc"), self.search)
-        clear_shortcut.activated.connect(self.search.clear)
+        search_shortcut.activated.connect(self.influences.search.setFocus)
+        clear_shortcut = shortcut_cls(
+            QtGui.QKeySequence("Esc"), self.influences.search)
+        clear_shortcut.activated.connect(self.influences.search.clear)
         self.shortcuts = (search_shortcut, clear_shortcut)
 
     def eventFilter(self, watched, event):
@@ -1162,12 +1063,6 @@ class SkinningBoard(QtWidgets.QWidget):
                 and event.type() == QtCore.QEvent.Resize):
             self.reflow_sections()
         return super(SkinningBoard, self).eventFilter(watched, event)
-
-    def apply_max_region_width(self):
-        """Apply user-controlled maximum region width and repack the board."""
-        self.max_width_value = self.max_width_input.value()
-        self.settings.setValue("max_region_width", self.max_width_value)
-        self.reflow_sections(force=True)
 
     def estimate_section_height(self, record, width):
         """Approximate card height to avoid large blank spaces below panels."""
@@ -1190,8 +1085,6 @@ class SkinningBoard(QtWidgets.QWidget):
             total += 19 + rows * (25 if self.compact else 31)
         if section.objectName() == "SkinningSection_skin":
             total += 36
-        if section.objectName() == "SkinningSection_animation":
-            total += 36
         return total
 
     def reflow_sections(self, force=False):
@@ -1203,7 +1096,7 @@ class SkinningBoard(QtWidgets.QWidget):
         visible = [record for record in self.sections
                    if self.section_visibility.get(record[0], True)
                    and record[0].objectName().replace(
-                       "SkinningSection_", "") not in PAINT_WEIGHT_SECTIONS]
+                       "SkinningSection_", "") not in LEFT_DOCK_SECTIONS]
         minimum = max(200, region_width - 20)
         columns = (max(1, min(len(visible), len(self.masonry_columns),
                               (available + 6) // (minimum + 6)))
@@ -1322,33 +1215,6 @@ class SkinningBoard(QtWidgets.QWidget):
             lambda checked=False, key=action_id, fn=callback: self.dispatch(key, fn))
         return button
 
-    def filter_actions(self, value):
-        term = value.strip().casefold()
-        visible_count = 0
-        for section, section_title, groups in self.sections:
-            section_count = 0
-            for label_widget, grid, entries in groups:
-                heading = label_widget.text()
-                show_all = bool(term) and term in (section_title + " " + heading).casefold()
-                group_count = 0
-                for action_id, button in entries:
-                    _, _, label, tooltip, _ = self.buttons[action_id]
-                    match = (not term or show_all or
-                             term in (label + " " + tooltip).casefold())
-                    self.action_visibility[button] = match
-                    button.setVisible(match)
-                    group_count += int(match)
-                label_widget.setVisible(group_count > 0)
-                grid.setVisible(group_count > 0)
-                grid.reflow(force=True)
-                section_count += group_count
-            self.section_visibility[section] = section_count > 0
-            section.setVisible(section_count > 0)
-            visible_count += section_count
-        self.reflow_sections(force=True)
-        self.count.setText("{} / {}".format(visible_count, len(self.buttons))
-                           if term else "{} tools".format(len(self.buttons)))
-
     def apply_style(self):
         """Neutral near-black UI: clear typography and separation, no tinted panels."""
         self.setStyleSheet("""
@@ -1387,14 +1253,14 @@ class SkinningBoard(QtWidgets.QWidget):
                 font-size: 10px;
                 color: #999999;
             }
-            QFrame#SkinningSection_paint, QFrame#SkinningSection_weight {
+            QFrame#SkinningSection_paint, QFrame#SkinningSection_weight,
+            QFrame#SkinningSection_animation {
                 background-color: transparent;
                 border: none;
                 border-radius: 0;
             }
             QFrame#SkinningSection_skin, QFrame#SkinningSection_files,
-            QFrame#SkinningSection_proxy, QFrame#SkinningSection_animation,
-            QFrame#SkinningSection_mesh {
+            QFrame#SkinningSection_proxy, QFrame#SkinningSection_mesh {
                 background-color: #202020;
                 border: 1px solid #454545;
                 border-radius: 4px;
@@ -1441,8 +1307,7 @@ class SkinningBoard(QtWidgets.QWidget):
                 border: none;
                 border-radius: 0;
             }
-            QLabel#SkinningInfluenceMesh, QLabel#SkinningInfluenceStatus,
-            QLabel#SkinningInfluenceHint {
+            QLabel#SkinningInfluenceStatus {
                 color: #B5B5B5;
                 font-size: 10px;
             }
