@@ -434,6 +434,45 @@ def lockAll(*arr):
     mel.eval("artSkinInvLockInf artAttrSkinPaintCtx 1;")
     mel.eval("artSkinLockInf artAttrSkinPaintCtx 1;")
 
+def RefreshPaintInfluenceLocks(skin):
+    """Update Maya Paint Skin's lock buttons from live .liw values."""
+    try:
+        tree = mel.eval(
+            'global string $gArtSkinInfluencesList; '
+            'string $nltaLockTree = $gArtSkinInfluencesList;')
+        if not tree or not cmds.treeView(tree, exists=True):
+            return 0
+        bound = _SkinInfluencePaths(skin)
+        if not bound:
+            return 0
+
+        # Maya's tree is hierarchical; query child rows recursively rather
+        # than updating only root joints.
+        pending = list(cmds.treeView(tree, query=True, children="") or [])
+        seen = set()
+        updated = 0
+        while pending:
+            item = pending.pop()
+            if item in seen:
+                continue
+            seen.add(item)
+            pending.extend(
+                cmds.treeView(tree, query=True, children=item) or [])
+            joint = _BoundJoint(skin, item, bound)
+            if not joint or not cmds.objExists(joint + ".liw"):
+                continue
+            locked = bool(cmds.getAttr(joint + ".liw"))
+            cmds.treeView(
+                tree, edit=True,
+                buttonState=(item, 1, "buttonDown" if locked else "buttonUp"))
+            updated += 1
+        return updated
+    except (RuntimeError, TypeError, ValueError) as exc:
+        cmds.warning("Paint Skin lock display could not refresh: {}"
+                     .format(exc))
+        return 0
+
+
 def singleUnlock(objs, *arr):
     session = EnsureSkinSession()
     if not session:
@@ -450,6 +489,7 @@ def singleUnlock(objs, *arr):
     for joint in joints:
         if cmds.objExists(joint + ".liw"):
             cmds.setAttr(joint + ".liw", 0 if joint in unlock_set else 1)
+    RefreshPaintInfluenceLocks(skin)
     return [joint for joint in joints if joint in unlock_set]
 
 def unlock(*arr):
@@ -486,6 +526,7 @@ def UnlockJoints(mesh, jnts):
     for joint in joints:
         if cmds.objExists(joint + ".liw"):
             cmds.setAttr(joint + ".liw", 0 if joint in targets else 1)
+    RefreshPaintInfluenceLocks(skin)
 
 def addUnlock(*arr):
     mel.eval("artSkinLockInf artAttrSkinPaintCtx 0;")    
