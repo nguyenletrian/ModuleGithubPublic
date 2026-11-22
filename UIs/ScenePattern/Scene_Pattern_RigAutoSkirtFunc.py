@@ -169,11 +169,16 @@ def liveFollicleSize(row, *args):
     return False
 
 
-def lineField(parent, label, initial, picker=True):
-    cmds.rowLayout(parent=parent, numberOfColumns=3, adjustableColumn=2, columnWidth3=(105, 160, 55))
+def lineField(parent, label, initial, picker=True, action=None):
+    cmds.rowLayout(parent=parent, numberOfColumns=3, adjustableColumn=2,
+                   columnWidth3=(105, 160, 92 if action else 55))
     cmds.text(label=label, align="left")
     widget = cmds.textField(text=str(initial))
-    if picker:
+    if action:
+        cmds.button(label="Create Sphere", width=90, height=24,
+                    annotation="Create and aim the NURBS sphere; rebuild U/V to 0-1",
+                    command=action)
+    elif picker:
         cmds.button(label="Pick", command=partial(pickSingle, widget))
     else:
         cmds.text(label="")
@@ -1199,6 +1204,129 @@ def rebuildSphereUVButton(*unused):
     return domains
 
 
+def createSphereFromRow(row, *args):
+    """Create the original AutoSkirt-style sphere as a standalone preview.
+
+    Use the nearest Driven for radius, aim the surface-origin normal at End,
+    tilt 20 degrees away from Driven centroid and rebuild U/V to 0-1.
+    No Parent/SphereFollow constraints: the Func builder adds those on Run.
+    """
+    sphere_name = cmds.textField(row["sphere"], query=True, text=True).strip()
+    start_name = cmds.textField(row["start"], query=True, text=True).strip()
+    end_name = cmds.textField(row["end"], query=True, text=True).strip()
+    if not sphere_name or not start_name or not end_name:
+        cmds.warning("AutoSkirt Create Sphere: set Sphere Name, Start and End")
+        return None
+    if cmds.objExists(sphere_name):
+        cmds.warning("AutoSkirt Create Sphere: already exists: " + sphere_name)
+        return None
+    try:
+        driven_names = getControls(row)
+    except ValueError as exc:
+        cmds.warning(str(exc))
+        return None
+
+    def unique_transform(name):
+        found = cmds.ls(name, long=True) or []
+        if len(found) != 1 or cmds.nodeType(found[0]) not in ("transform", "joint"):
+            raise ValueError("AutoSkirt Create Sphere: missing or ambiguous object: " + name)
+        return found[0]
+
+    start = unique_transform(start_name)
+    end = unique_transform(end_name)
+    drivens = [unique_transform(name) for name in driven_names]
+    start_p = [float(x) for x in cmds.xform(start, query=True, worldSpace=True, rotatePivot=True)]
+    end_p = [float(x) for x in cmds.xform(end, query=True, worldSpace=True, rotatePivot=True)]
+    pivots = [[float(x) for x in cmds.xform(node, query=True, worldSpace=True, rotatePivot=True)]
+              for node in drivens]
+
+    def vector_length(vector):
+        return math.sqrt(sum(x * x for x in vector))
+
+    def perpendicular(direction):
+        candidate = min(((0.0, 1.0, 0.0), (1.0, 0.0, 0.0),
+                         (0.0, 0.0, 1.0)),
+                        key=lambda vector: abs(sum(a*b for a, b in zip(vector, direction))))
+        dot = sum(a*b for a, b in zip(candidate, direction))
+        tangent = [a - dot*b for a, b in zip(candidate, direction)]
+        length = vector_length(tangent)
+        return [value / length for value in tangent]
+
+    direction = [b - a for a, b in zip(start_p, end_p)]
+    length = vector_length(direction)
+    if length < 1e-7:
+        raise ValueError("AutoSkirt Create Sphere: Start and End must differ")
+    radius = min(vector_length([a-b for a, b in zip(pivot, start_p)])
+                 for pivot in pivots)
+    if radius < 1e-6:
+        raise ValueError("AutoSkirt Create Sphere: Driven must be away from Start")
+    world_aim = [value / length for value in direction]
+    centroid = [sum(p[i] for p in pivots) / len(pivots) for i in range(3)]
+    toward = [centroid[i] - start_p[i] for i in range(3)]
+    projection = sum(a*b for a, b in zip(toward, world_aim))
+    sideways = [toward[i] - projection * world_aim[i] for i in range(3)]
+    side_length = vector_length(sideways)
+    if side_length < 1e-6:
+        sideways = perpendicular(world_aim)
+        side_length = vector_length(sideways)
+    away = [-value / side_length for value in sideways]
+    tilt = math.radians(20.0)  # Same default as RigAutoSkirt.
+    tilted = [math.cos(tilt)*world_aim[i] + math.sin(tilt)*away[i]
+              for i in range(3)]
+
+    selection = cmds.ls(selection=True, long=True) or []
+    context = cmds.currentCtx()
+    prefix = re.sub(r"[^A-Za-z0-9_]", "_", sphere_name.rsplit("|", 1)[-1])
+    sphere = None
+    cmds.undoInfo(openChunk=True, chunkName="AutoSkirt Create Sphere")
+    try:
+        sphere = cmds.sphere(name=sphere_name, radius=radius, axis=(0, 1, 0),
+                             polygon=0, constructionHistory=False)[0]
+        shape = skirtShape(sphere, "nurbsSurface")
+        domain = sphereUvDomain(sphere)
+        u = domain["U"][0] + (domain["U"][1] - domain["U"][0]) * 0.002
+        v = domain["V"][0] + (domain["V"][1] - domain["V"][0]) * 0.002
+        origin_normal = [float(x) for x in cmds.pointOnSurface(
+            shape, parameterU=u, parameterV=v, normalizedNormal=True)]
+        magnitude = vector_length(origin_normal)
+        if magnitude < 1e-7:
+            raise RuntimeError("AutoSkirt Create Sphere: cannot read surface-origin normal")
+        origin_normal = [x / magnitude for x in origin_normal]
+        cmds.xform(sphere, worldSpace=True, translation=start_p)
+        # Match the legacy surface-normal orientation, not the sphere's Z axis.
+        target = cmds.spaceLocator(name=prefix + "_PreviewAim#")[0]
+        try:
+            cmds.xform(target, worldSpace=True,
+                       translation=[start_p[i] + length * tilted[i] for i in range(3)])
+            aim = cmds.aimConstraint(
+                target, sphere, aimVector=origin_normal,
+                upVector=perpendicular(origin_normal), worldUpType="vector",
+                worldUpVector=perpendicular(tilted), maintainOffset=False)[0]
+            cmds.delete(aim)
+        finally:
+            cmds.delete(target)
+        # Freeze only rotation/scale: keep the Sphere pivot at Start. Func's
+        # existing poseReaderCore constrains this very transform on Run.
+        cmds.makeIdentity(sphere, apply=True, translate=False, rotate=True, scale=True)
+        normalizeSphereUv(sphere)
+    except Exception:
+        cmds.undoInfo(closeChunk=True)
+        cmds.undo()
+        raise
+    else:
+        cmds.undoInfo(closeChunk=True)
+    finally:
+        if selection:
+            cmds.select(selection, replace=True)
+        else:
+            cmds.select(clear=True)
+        if cmds.currentCtx() != context:
+            cmds.setToolTo(context)
+    print("AutoSkirt Create Sphere: {} | radius {:.4f} | UV 0-1".format(
+        sphere, radius))
+    return sphere
+
+
 def addRow(parent, record=None):
     record = record or {}
     raw_controls = record.get("joints", [])
@@ -1220,7 +1348,8 @@ def addRow(parent, record=None):
     system = cmds.textField(STATE["top"]["name"], query=True, text=True).strip()
     row["id"] = lineField(col, "Reader ID", rid, False)
     row["sphere"] = lineField(col, "Sphere Name",
-                                record.get("sphere") or system + "_" + rid + "_Sphere", False)
+                                record.get("sphere") or system + "_" + rid + "_Sphere",
+                                False, action=partial(createSphereFromRow, row))
     row["parent"] = lineField(col, "Parent", record.get("parent", ""))
     row["start"] = lineField(col, "Start", record.get("start", ""))
     row["end"] = lineField(col, "End", record.get("end", ""))
