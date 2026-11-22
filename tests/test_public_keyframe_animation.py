@@ -205,19 +205,19 @@ class AnimationControlTests(unittest.TestCase):
         self.assertTrue(all(x[0] == "orientConstraint"
                             for x in self.cmds.constraints.values()))
         self.assertEqual(self.cmds.parent_by_node[drivers[1]], ROOT)
-        self.assertEqual(self.cmds.playback["min"], 17.0)
-        self.assertEqual(self.cmds.playback["max"], 737.0)
+        self.assertEqual(self.cmds.playback["min"], 0.0)
+        self.assertEqual(self.cmds.playback["max"], 917.0)
         first = set(self.cmds.key_values[(drivers[0], "rx")])
         second = set(self.cmds.key_values[(drivers[1], "rx")])
         self.assertIn(47.0, first)
-        self.assertIn(407.0, second)
+        self.assertIn(497.0, second)
         self.assertNotIn((ARM, "rx"), self.cmds.key_values)
         self.assertNotIn((ROOT, "rx"), self.cmds.key_values)
 
     def test_together_world_translate_has_world_aligned_independent_drivers(self):
         drivers = self.create(space="world", kind="translate", serial=False)
         self.assertEqual(len(drivers), 2)
-        self.assertEqual(self.cmds.playback["max"], 377.0)
+        self.assertEqual(self.cmds.playback["max"], 467.0)
         self.assertEqual([self.cmds.parent_by_node[d] for d in drivers],
                          [None, None])
         self.assertTrue(all(x[0] == "pointConstraint"
@@ -226,9 +226,68 @@ class AnimationControlTests(unittest.TestCase):
                             for k in self.cmds.match_calls))
         a = self.cmds.key_values[(drivers[0], "tx")]
         b = self.cmds.key_values[(drivers[1], "tx")]
-        self.assertEqual(a[47.0], -6.0)
-        self.assertEqual(a[107.0], 6.0)
-        self.assertEqual(b[47.0], -6.0)
+        self.assertEqual(a[47.0], 0.0)
+        self.assertEqual(a[77.0], -6.0)
+        self.assertEqual(a[137.0], 6.0)
+        self.assertEqual(b[77.0], -6.0)
+
+    def test_exact_legacy_xyz_key_frames_at_zero_and_return_to_frame_zero(self):
+        self.cmds.currentTime(0)
+        self.cmds.selected = [ARM]
+        driver = self.create(kind="rotate", serial=True)[0]
+        self.assertEqual(self.cmds.time, 0)
+        expected = {
+            "rx": [0, 30, 60, 90, 120, 150, 450],
+            "ry": [0, 180, 210, 240, 270, 300, 450],
+            "rz": [0, 330, 360, 390, 420, 450],
+        }
+        for attr, frames in expected.items():
+            with self.subTest(axis=attr):
+                actual = self.cmds.key_values[(driver, attr)]
+                self.assertEqual(sorted(actual), frames)
+                self.assertEqual(
+                    [actual[t] for t in frames[1:-1]],
+                    [0, -90, 0, 90, 0])
+        self.assertEqual(self.cmds.playback["min"], 0)
+        self.assertEqual(self.cmds.playback["max"], 450)
+        self.assertEqual(self.cmds.selected, [ARM])
+
+    def test_serial_two_controls_start_second_at_480_after_first_xyz_ends(self):
+        self.cmds.currentTime(0)
+        a, b = self.create(kind="rotate", serial=True)
+        first = self.cmds.key_values[(a, "rx")]
+        second = self.cmds.key_values[(b, "rx")]
+        self.assertEqual([first[x] for x in (30, 60, 90, 120, 150)],
+                         [0, -90, 0, 90, 0])
+        self.assertEqual([second[x] for x in (480, 510, 540, 570, 600)],
+                         [0, -90, 0, 90, 0])
+        self.assertEqual(sorted(self.cmds.key_values[(b, "rz")]),
+                         [0, 780, 810, 840, 870, 900])
+        self.assertEqual(self.cmds.playback["max"], 900)
+        self.assertEqual(self.cmds.time, 0)
+
+    def test_together_controls_both_start_first_axis_at_30(self):
+        self.cmds.currentTime(0)
+        a, b = self.create(kind="rotate", serial=False)
+        for driver in (a, b):
+            self.assertEqual(
+                [self.cmds.key_values[(driver, "rx")][t]
+                 for t in (30, 60, 90, 120, 150)],
+                [0, -90, 0, 90, 0])
+        self.assertEqual(self.cmds.playback["max"], 450)
+        self.assertEqual(self.cmds.time, 0)
+
+    def test_locked_early_axes_preserve_original_z_slot_timing(self):
+        self.cmds.currentTime(0)
+        self.cmds.selected = [ARM]
+        self.cmds.locked.update({ARM + ".rx", ARM + ".ry"})
+        driver = self.create()[0]
+        self.assertEqual(
+            sorted(self.cmds.key_values[(driver, "rz")]),
+            [0, 330, 360, 390, 420, 450])
+        self.assertNotIn((driver, "rx"), self.cmds.key_values)
+        self.assertNotIn((driver, "ry"), self.cmds.key_values)
+        self.assertEqual(self.cmds.time, 0)
 
     def test_paint_skin_mode_uses_active_influence_and_keeps_mesh_selected(self):
         self.cmds.ctx = "artAttrSkinContext"
@@ -382,7 +441,7 @@ class AnimationControlTests(unittest.TestCase):
         self.create()
         self.logic["FitRangeAnim"]()
         self.assertEqual(self.cmds.playback["min"], 17.0)
-        self.assertEqual(self.cmds.playback["max"], 377.0)
+        self.assertEqual(self.cmds.playback["max"], 467.0)
         self.cmds.currentTime(53.0)
         self.logic["ZoomRangeAnim"]()
         self.assertEqual(self.cmds.playback["min"], 47.0)
