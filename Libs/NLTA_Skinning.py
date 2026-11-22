@@ -27,6 +27,35 @@ skinSession = {
 }
 
 
+def _SkinInfluencePaths(skin):
+    """Actual bound joint DAG paths from the skinCluster API."""
+    if not skin or not cmds.objExists(skin):
+        return []
+    selection = om.MSelectionList()
+    selection.add(skin)
+    fn = oma.MFnSkinCluster(selection.getDependNode(0))
+    return [dag.fullPathName() for dag in fn.influenceObjects()
+            if dag.hasFn(om.MFn.kJoint)]
+
+
+def _BoundJoint(skin, joint, influences=None):
+    """Resolve a joint by DAG identity; never guess between duplicate names."""
+    if not joint:
+        return None
+    if isinstance(joint, (list, tuple)):
+        if len(joint) != 1:
+            return None
+        joint = joint[0]
+    if not isinstance(joint, str):
+        return None
+    bound = _SkinInfluencePaths(skin) if influences is None else influences
+    if joint in bound:
+        return joint
+    matches = cmds.ls(joint, long=True, type="joint") or []
+    candidates = [name for name in bound if name in matches]
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def ResetSkinSession():
     skinSession.update({"mesh": None, "skinCluster": None, "joints": []})
     return skinSession
@@ -38,7 +67,7 @@ def _SetSkinSession(mesh, skin):
     skinSession.update({
         "mesh": mesh,
         "skinCluster": skin,
-        "joints": cmds.skinCluster(skin, q=True, inf=True) or [],
+        "joints": _SkinInfluencePaths(skin),
     })
     return skinSession
 
@@ -76,7 +105,7 @@ def GetSkinData(node=None):
     return {
         "mesh": mesh,
         "skinCluster": skin,
-        "joints": cmds.skinCluster(skin, q=True, inf=True) or [],
+        "joints": _SkinInfluencePaths(skin),
     }
 
 
@@ -146,17 +175,15 @@ def EnsurePaintContext(mesh=None):
 
 
 def GetActivePaintJoint(skinCluster=None):
-    session = EnsureSkinSession(warn=False)
-    skinCluster = skinCluster or (session["skinCluster"] if session else None)
+    if skinCluster is None:
+        session = EnsureSkinSession(warn=False)
+        skinCluster = session["skinCluster"] if session else None
     if not skinCluster or not cmds.objExists(skinCluster):
         return None
 
-    source = cmds.connectionInfo(skinCluster + ".paintTrans", sourceFromDestination=True) or ""
-    if not source:
-        return None
-
-    joint = source.split(".", 1)[0]
-    return joint if cmds.objExists(joint) and cmds.nodeType(joint) == "joint" else None
+    source = cmds.connectionInfo(
+        skinCluster + ".paintTrans", sourceFromDestination=True) or ""
+    return _BoundJoint(skinCluster, source.split(".", 1)[0]) if source else None
 
 
 def GetSkinApi(mesh, skinCluster=None):
@@ -300,8 +327,14 @@ def singleUnlock(objs, *arr):
     if not session:
         return []
 
-    joints = session["joints"] or []
-    unlock_set = set(objs or [])
+    skin = session["skinCluster"]
+    joints = _SkinInfluencePaths(skin)
+    unlock_set = {joint for name in (objs or [])
+                  for joint in [_BoundJoint(skin, name, joints)] if joint}
+    if not unlock_set:
+        cmds.warning("None of the requested joints are influences of {}."
+                     .format(skin))
+        return []
     for joint in joints:
         if cmds.objExists(joint + ".liw"):
             cmds.setAttr(joint + ".liw", 0 if joint in unlock_set else 1)
@@ -318,7 +351,9 @@ def unlock(*arr):
         mel.eval("artSkinInvLockInf artAttrSkinPaintCtx 1;")
         return
 
-    joints = [joint for joint in selected_joints if joint in (session["joints"] or [])]
+    joints = [joint for joint in
+              (_BoundJoint(session["skinCluster"], name) for name in selected_joints)
+              if joint]
     if not joints:
         cmds.warning("Selected joints are not influences of the active skinCluster.")
         return
@@ -330,11 +365,17 @@ def unlock(*arr):
     cmds.artAttrSkinPaintCtx("artAttrSkinContext", edit=True, influence=joints[0])
 
 def UnlockJoints(mesh, jnts):
-    skinJnts = GetSkinData(mesh)["joints"] or []
-    target = set(jnts or [])
-    for jnt in skinJnts:
-        if cmds.objExists(jnt + ".liw"):
-            cmds.setAttr(jnt + ".liw", 0 if jnt in target else 1)
+    skin = GetSkinCluster(mesh)
+    if not skin:
+        return
+    joints = _SkinInfluencePaths(skin)
+    targets = {joint for name in (jnts or [])
+               for joint in [_BoundJoint(skin, name, joints)] if joint}
+    if not targets:
+        return
+    for joint in joints:
+        if cmds.objExists(joint + ".liw"):
+            cmds.setAttr(joint + ".liw", 0 if joint in targets else 1)
 
 def addUnlock(*arr):
     mel.eval("artSkinLockInf artAttrSkinPaintCtx 0;")    
@@ -472,10 +513,13 @@ def ActiveJoint(mesh, joint, *arr):
     if not skinCluster:
         cmds.warning("No skinCluster found on {}.".format(mesh))
         return False
-    if joint not in (data["joints"] or []):
-        cmds.warning("{} is not an influence of {}.".format(joint, skinCluster))
+    bound = _BoundJoint(skinCluster, joint, data["joints"])
+    if not bound:
+        cmds.warning("{} is not an unambiguous influence of {}."
+                     .format(joint, skinCluster))
         return False
-    cmds.connectAttr(joint + ".message", skinCluster + ".paintTrans", f=True)
+    cmds.connectAttr(
+        bound + ".message", skinCluster + ".paintTrans", force=True)
     skinSession.update(data)
     return True
 
@@ -491,16 +535,17 @@ def switchJoint(*arr):
         cmds.warning("No skinCluster found.")
         return
 
-    joints = data["joints"] or []
-    unlocked = [joint for joint in joints if cmds.objExists(joint + ".liw") and not cmds.getAttr(joint + ".liw")]
+    joints = _SkinInfluencePaths(skinName)
+    unlocked = [joint for joint in joints
+                if cmds.objExists(joint + ".liw")
+                and not cmds.getAttr(joint + ".liw")]
     if not unlocked:
         cmds.warning("No unlocked influences found.")
         return
 
     jointActive = GetActivePaintJoint(skinName)
     index = (unlocked.index(jointActive) + 1) % len(unlocked) if jointActive in unlocked else 0
-    if EnsurePaintContext(data["mesh"]):
-        ActiveJoint(data["mesh"], unlocked[index])
+    if EnsurePaintContext(data["mesh"]) and ActiveJoint(data["mesh"], unlocked[index]):
         cmds.artAttrSkinPaintCtx("artAttrSkinContext", edit=True,
                                  influence=unlocked[index])
 
