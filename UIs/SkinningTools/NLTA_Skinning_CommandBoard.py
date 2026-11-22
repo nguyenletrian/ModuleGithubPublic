@@ -210,9 +210,10 @@ GROUP_CELL_WIDTHS = {
 # Each action group reads top-to-bottom in columns, like the original UI.
 # Cap the column count so a wide window does not turn a group into one long row.
 GROUP_MAX_COLUMNS = {
-    ("paint", "quick"): 2,
-    ("paint", "locks"): 2,
-    ("paint", "helpers"): 2,
+    ("paint", "quick"): 1,
+    ("paint", "locks"): 1,
+    ("paint", "helpers"): 1,
+    ("weight", "increment"): 1,
     ("skin", "bind"): 3,
     ("skin", "max"): 2,
     ("skin", "sets"): 2,
@@ -1002,30 +1003,33 @@ class SkinningBoard(QtWidgets.QWidget):
         self.scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
         self.workspace.addWidget(self.scroll)
 
-        # Paint/Brush and Weight Adjustments live beside the influence tree,
-        # using their existing action widgets and callbacks (not copies).
+        # One compact Paint/Weight button strip to the RIGHT of the joint tree.
+        # Reuse original action widgets/callbacks without duplicating commands.
         self.paint_scroll = QtWidgets.QScrollArea()
         self.paint_scroll.setObjectName("SkinningPaintWeightScroll")
         self.paint_scroll.setWidgetResizable(True)
         self.paint_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         self.paint_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.paint_scroll.setMinimumWidth(235)
-        self.paint_scroll.setMaximumWidth(380)
+        self.paint_scroll.setMinimumWidth(140)
+        self.paint_scroll.setMaximumWidth(205)
+        self.paint_scroll.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
         paint_host = QtWidgets.QWidget()
         paint_host.setObjectName("SkinningPaintWeightContent")
         self.paint_stack = QtWidgets.QVBoxLayout(paint_host)
-        self.paint_stack.setContentsMargins(2, 2, 2, 4)
-        self.paint_stack.setSpacing(6)
+        self.paint_stack.setContentsMargins(1, 1, 1, 3)
+        self.paint_stack.setSpacing(1)
         self.paint_stack.addStretch()
         self.paint_scroll.setWidget(paint_host)
-        self.workspace.addWidget(self.paint_scroll)
 
+        # Horizontal order: other tools | skinned joints | one-button strip.
         self.influences = InfluencePanel(self.workspace)
         self.workspace.addWidget(self.influences)
+        self.workspace.addWidget(self.paint_scroll)
         self.workspace.setStretchFactor(0, 1)
         self.workspace.setStretchFactor(1, 0)
         self.workspace.setStretchFactor(2, 0)
-        self.workspace.setSizes([610, 265, 300])
+        self.workspace.setSizes([590, 310, 165])
         inside = QtWidgets.QWidget()
         inside.setObjectName("SkinningContent")
         self.content = QtWidgets.QVBoxLayout(inside)
@@ -1067,7 +1071,10 @@ class SkinningBoard(QtWidgets.QWidget):
             section = QtWidgets.QFrame()
             section.setObjectName("SkinningSection_" + key)
             vertical = QtWidgets.QVBoxLayout(section)
-            vertical.setContentsMargins(7, 5, 7, 7)
+            if key in PAINT_WEIGHT_SECTIONS:
+                vertical.setContentsMargins(3, 3, 3, 3)
+            else:
+                vertical.setContentsMargins(7, 5, 7, 7)
             vertical.setSpacing(2)
             header = QtWidgets.QLabel(section_title)
             header.setObjectName("SkinningSectionTitle")
@@ -1103,15 +1110,20 @@ class SkinningBoard(QtWidgets.QWidget):
                     distance_row.addStretch()
                     vertical.addLayout(distance_row)
 
-                grid_type = WeightPairButtons if key == "weight" else ResponsiveButtons
-                grid = grid_type(
+                # Sidebar buttons always form one vertical column.
+                # All 105 original callbacks and tool actions remain intact.
+                grid = ResponsiveButtons(
                     cell_width=GROUP_CELL_WIDTHS.get((key, group_key), 86),
                     compact=self.compact,
-                    max_columns=GROUP_MAX_COLUMNS.get((key, group_key), 2))
+                    max_columns=(1 if key in PAINT_WEIGHT_SECTIONS else
+                                 GROUP_MAX_COLUMNS.get((key, group_key), 2)))
                 self.grids.append(grid)
                 vertical.addWidget(grid)
                 entries = []
-                for label, callback, tooltip, role in items:
+                ordered_items = (sorted(
+                    items, key=lambda item: weight_grid_position(item[0]))
+                    if key == "weight" else items)
+                for label, callback, tooltip, role in ordered_items:
                     action_id = "/".join((key, group_key, label))
                     button = self.make_button(label, callback, tooltip, role, action_id)
                     grid.add_button(button)
@@ -1357,7 +1369,11 @@ class SkinningBoard(QtWidgets.QWidget):
                 font-size: 10px;
                 color: #999999;
             }
-            QFrame#SkinningSection_paint, QFrame#SkinningSection_weight,
+            QFrame#SkinningSection_paint, QFrame#SkinningSection_weight {
+                background-color: #202020;
+                border: none;
+                border-radius: 2px;
+            }
             QFrame#SkinningSection_skin, QFrame#SkinningSection_files,
             QFrame#SkinningSection_proxy, QFrame#SkinningSection_animation,
             QFrame#SkinningSection_mesh {
