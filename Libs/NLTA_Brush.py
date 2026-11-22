@@ -79,7 +79,14 @@ def _setSelectedWeights(value, operation):
 
 
 def ReplaceWeight(value, *arr):
-    return _setSelectedWeights(value, "absolute")
+    """Set the Paint Skin brush Value only; never modify vertex weights."""
+    context = _skinPaintContext()
+    if not context:
+        return False
+    cmds.artAttrSkinPaintCtx(
+        context, edit=True, skinPaintMode=1,
+        selectedattroper="absolute", value=float(value))
+    return True
 
 
 def AddWeight(value, *arr):
