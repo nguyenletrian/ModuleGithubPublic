@@ -674,7 +674,7 @@ def catalog():
 
 
 class LegacyButtonContractTests(unittest.TestCase):
-    def test_all_105_actions_match_mayascriptnew_except_set_one_brush_preset(self):
+    def test_98_action_buttons_keep_legacy_callbacks_after_lock_menu_move(self):
         actual = {}
         for section, _, groups in catalog():
             for group, _, actions in groups:
@@ -689,14 +689,17 @@ class LegacyButtonContractTests(unittest.TestCase):
                         args = []
                     actual[action] = (base.nlta_name, args)
 
-        # Original MayaScriptNew +/- callbacks must stay intact. Only the
-        # original "Add +1" is replaced by the brush-only "Set 1".
+        # All legacy callbacks remain unchanged except seven joint actions
+        # moved from the dock to the right-click influence context menu.
+        # The brush-only Set 1 keeps the original AddWeight callback.
         expected = {
             action: (function, args) for action, function, args in LEGACY_CALLBACKS
-            if action != "weight/increment/Add +1"
+            if action != "weight/increment/Add +1" and (
+                not action.startswith("paint/locks/")
+                or action == "paint/locks/Unlock 2 Joints")
         }
         expected["weight/increment/Set 1"] = ("NLTA_Brush.AddWeight", [1])
-        self.assertEqual(len(actual), 105)
+        self.assertEqual(len(actual), 98)
         self.assertEqual(set(actual), set(expected))
         for action, bound in expected.items():
             with self.subTest(action=action):
@@ -745,12 +748,8 @@ class PaintContextDispatchTests(unittest.TestCase):
 
     def test_joint_operations_read_selection_first_and_return_to_skin(self):
         direct_actions = (
-            "paint/locks/Unlock",
-            "paint/locks/Add Up",
-            "paint/locks/Add Down",
             "paint/helpers/Switch Joint",
             "paint/locks/Unlock 2 Joints",
-            "paint/locks/Unlock Joints",
             "paint/quick/Copy Weight",
             "paint/quick/Copy Ratio",
             "animation/local/Rotate",
@@ -772,8 +771,7 @@ class PaintContextDispatchTests(unittest.TestCase):
         for action in (
             "paint/quick/Smooth", "paint/quick/Flood",
             "paint/quick/Pick Value", "paint/helpers/Switch Brush",
-            "paint/helpers/Prune", "paint/locks/Add Unlock",
-            "paint/locks/Unlock All", "weight/increment/Set 0",
+            "paint/helpers/Prune", "weight/increment/Set 0",
             "weight/increment/Set 1",
         ):
             with self.subTest(action=action):
