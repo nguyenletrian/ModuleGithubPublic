@@ -34,7 +34,6 @@ PAINT_STRIP_WIDTH = 145  # Half of the former 290-px action strip.
 
 # These buttons operate on the joint currently highlighted in the hierarchy.
 INFLUENCE_LOCK_ACTIONS = {
-    "Lock State": "toggle_lock",
     "Unlock": "unlock",
     "Add Unlock": "add_unlock",
     "Add Up": "add_up",
@@ -76,6 +75,8 @@ def command_catalog(tools, distance_ui):
             ("+" + str(amount), partial(b.AddWeight, amount),
              "Add brush Value +{} · Opacity 1".format(amount), ""),
         ))
+    weight_commands.append(("Switch Brush", b.SwitchBrush,
+                            "Switch the active Paint Skin brush", ""))
 
     animation_groups = []
     for key, space in (("local", "local"), ("world", "world")):
@@ -105,7 +106,8 @@ def command_catalog(tools, distance_ui):
             ]),
             ("locks", "Influence locks", [
                 # Rebound to the list selection when SkinningBoard builds buttons.
-                ("Lock State", s.unlock, "Toggle this joint's lock state", ""),
+                ("Switch Joint", s.switchJoint,
+                 "Advance to the next unlocked influence on the selected skin", ""),
                 ("Unlock", s.unlock, "Unlock only this joint; lock all other influences", ""),
                 ("Add Unlock", s.addUnlock, "Unlock this joint without changing the others", ""),
                 ("Add Up", s.addUnlockUp, "Unlock this joint and its bound parent", ""),
@@ -118,8 +120,6 @@ def command_catalog(tools, distance_ui):
                  "Select one vertex: unlock its top two weighted influences", ""),
             ]),
             ("helpers", "Paint helpers", [
-                ("Switch Joint", s.switchJoint, "Advance to the next unlocked influence on the selected skin", ""),
-                ("Switch Brush", b.SwitchBrush, "", ""),
                 ("Middle Weight", s.setMiddleWeight, "", ""),
                 ("Prune", s.pruneSmallWeights, "", ""),
                 ("Transfer", t.CreateUI, "Open transfer tool", ""),
@@ -393,6 +393,8 @@ def weight_grid_position(name):
         return 0, 0
     if name == "Set 1":
         return len(WEIGHT_STEPS) + 1, 1
+    if name == "Switch Brush":
+        return len(WEIGHT_STEPS) + 1, 0
     if name[:1] in ("-", "+") and name[1:] in WEIGHT_STEPS:
         return WEIGHT_STEPS.index(name[1:]) + 1, int(name[0] == "+")
     return len(WEIGHT_STEPS) + 2, 0
@@ -1485,8 +1487,7 @@ class SkinningBoard(QtWidgets.QWidget):
             action_id.startswith("weight/increment/") or
             action_id in {
                 "paint/quick/Smooth", "paint/quick/Flood",
-                "paint/quick/Pick Value", "paint/helpers/Switch Brush",
-                "paint/helpers/Prune"
+                "paint/quick/Pick Value", "paint/helpers/Prune"
             }
         )
         run_callback = True
