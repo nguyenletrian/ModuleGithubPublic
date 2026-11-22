@@ -25,23 +25,25 @@ LEFT_DOCK_SECTIONS = frozenset(("paint", "weight", "animation"))
 LEFT_DOCK_GROUP_ORDER = (
     ("animation", "local"), ("animation", "world"),
     ("animation", "timeline"),
-    ("paint", "locks"), ("paint", "helpers"),
+    ("paint", "helpers"),
     ("weight", "increment"), ("paint", "quick"),
 )
-# Small, painted controls in two rows per joint; no QWidget per influence.
-# (label, action, caption, width, row), with 0 = top / 1 = bottom.
-INFLUENCE_ROW_ACTIONS = (
-    ("Add Unlock", "add_unlock", "+", 23, 0),
-    ("Add Up", "add_up", "↑", 23, 0),
-    ("Add Down", "add_down", "↓", 23, 0),
-    ("Unlock All", "unlock_all", "All", 28, 1),
-    ("Lock Inverse", "lock_inverse", "Inv", 30, 1),
-    ("Isolate", "isolate", "Iso", 29, 1),
-    ("Un Isolate", "un_isolate", "UnIso", 43, 1),
-)
-INFLUENCE_LOCK_WIDTH = 154
-INFLUENCE_CELL_HEIGHT = 44
+INFLUENCE_LOCK_WIDTH = 48  # Native checkbox only.
+INFLUENCE_CELL_HEIGHT = 24
 PAINT_STRIP_WIDTH = 145  # Half of the former 290-px action strip.
+
+# These buttons operate on the joint currently highlighted in the hierarchy.
+INFLUENCE_LOCK_ACTIONS = {
+    "Lock State": "toggle_lock",
+    "Unlock": "unlock",
+    "Add Unlock": "add_unlock",
+    "Add Up": "add_up",
+    "Add Down": "add_down",
+    "Unlock All": "unlock_all",
+    "Lock Inverse": "lock_inverse",
+    "Isolate": "isolate",
+    "Un Isolate": "un_isolate",
+}
 
 
 def command_catalog(tools, distance_ui):
@@ -102,6 +104,16 @@ def command_catalog(tools, distance_ui):
                 ("Pick Value", b.pickValue, "Sample a skin weight", ""),
             ]),
             ("locks", "Influence locks", [
+                # Rebound to the list selection when SkinningBoard builds buttons.
+                ("Lock State", s.unlock, "Toggle this joint's lock state", ""),
+                ("Unlock", s.unlock, "Unlock only this joint; lock all other influences", ""),
+                ("Add Unlock", s.addUnlock, "Unlock this joint without changing the others", ""),
+                ("Add Up", s.addUnlockUp, "Unlock this joint and its bound parent", ""),
+                ("Add Down", s.addUnlockDown, "Unlock this joint and its bound child", ""),
+                ("Unlock All", s.unlockAll, "Unlock all influences in the current skin", ""),
+                ("Lock Inverse", s.unlock, "Keep only this joint unlocked; lock all others", ""),
+                ("Isolate", s.IsolateEffectVertex, "Isolate vertices weighted to this joint", ""),
+                ("Un Isolate", s.UnIsolateEffectVertex, "Restore the isolated viewport", ""),
                 ("Unlock 2 Joints", s.UnlockTwoJoints,
                  "Select one vertex: unlock its top two weighted influences", ""),
             ]),
@@ -519,7 +531,7 @@ def _influence_action_plan(skin, joint, action):
         cmds.warning("The clicked joint is no longer bound to this skinCluster.")
         return None
     bound = set(available)
-    if action == "lock_inverse":
+    if action in ("unlock", "lock_inverse"):
         # Exclusive: clicked joint unlocked; every other bound influence locked.
         return True, [joint], joint
     if action == "unlock_all":
@@ -622,58 +634,6 @@ def _influence_hierarchy(rows):
     return parents
 
 
-def _influence_cell_slots(rect):
-    """Two-row hit boxes reused for delegate painting, tooltips and clicks."""
-    top = rect.y() + max(0, (rect.height() - 39) // 2)
-    row_y = (top, top + 21)
-    first_x = rect.x() + 3
-    slots = [("toggle_lock", "Lock State", "",
-              QtCore.QRect(first_x, row_y[0], 19, 18))]
-    x = [first_x + 22, first_x]
-    for label, action, caption, width, row in INFLUENCE_ROW_ACTIONS:
-        slots.append((action, label, caption,
-                      QtCore.QRect(x[row], row_y[row], width, 18)))
-        x[row] += width + 2
-    return slots
-
-
-class InfluenceCellDelegate(QtWidgets.QStyledItemDelegate):
-    """Paint lightweight two-row controls without per-joint QWidget objects."""
-
-    def sizeHint(self, option, index):
-        hint = QtWidgets.QStyledItemDelegate.sizeHint(self, option, index)
-        if index.column() == 1:
-            hint.setHeight(max(hint.height(), INFLUENCE_CELL_HEIGHT))
-        return hint
-
-    def paint(self, painter, option, index):
-        if index.column() != 1:
-            return QtWidgets.QStyledItemDelegate.paint(self, painter, option, index)
-        style = option.widget.style() if option.widget else QtWidgets.QApplication.style()
-        painter.save()
-        try:
-            style.drawPrimitive(QtWidgets.QStyle.PE_PanelItemViewItem,
-                                option, painter, option.widget)
-            state = index.data(QtCore.Qt.CheckStateRole)
-            for action, label, caption, bounds in _influence_cell_slots(option.rect):
-                button = QtWidgets.QStyleOptionButton()
-                button.rect = bounds
-                button.state = QtWidgets.QStyle.State_Enabled
-                if action == "toggle_lock":
-                    button.state |= (QtWidgets.QStyle.State_On
-                                     if state == QtCore.Qt.Checked
-                                     else QtWidgets.QStyle.State_Off)
-                    style.drawControl(QtWidgets.QStyle.CE_CheckBox,
-                                      button, painter, option.widget)
-                else:
-                    button.state |= QtWidgets.QStyle.State_Raised
-                    button.text = caption
-                    style.drawControl(QtWidgets.QStyle.CE_PushButton,
-                                      button, painter, option.widget)
-        finally:
-            painter.restore()
-
-
 class InfluencePanel(QtWidgets.QFrame):
     """Live influence list for the selected skinned mesh; no weight edits."""
 
@@ -739,27 +699,28 @@ class InfluencePanel(QtWidgets.QFrame):
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
         self.tree.setColumnWidth(1, INFLUENCE_LOCK_WIDTH)
-        self._influence_delegate = InfluenceCellDelegate(self.tree)
-        self.tree.setItemDelegateForColumn(1, self._influence_delegate)
         self.tree.headerItem().setTextAlignment(1, QtCore.Qt.AlignCenter)
         self.tree.setAlternatingRowColors(True)
-        self.tree.setUniformRowHeights(False)  # Two painted rows per influence
+        self.tree.setUniformRowHeights(True)
         self.tree.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.tree.setToolTip(
             "The blue row is the active influence in Maya Paint Skin Weights.\n"
             "A black mesh can mean this joint has no weight in the viewed area.\n"
-            "The Lock checkbox is independent.")
+            "Use the Lock checkbox to change this joint\'s lock state.")
         self.tree.itemChanged.connect(self.change_item_lock)
         self.tree.currentItemChanged.connect(self.change_active_influence)
         self.tree.itemDoubleClicked.connect(self.select_joint)
-        # Intercept only inline control clicks; name clicks still activate the
-        # influence. No QMenu, setItemWidget or Qt object per joint.
-        self.tree.viewport().installEventFilter(self)
         column.addWidget(self.tree, 1)
 
         self.status = QtWidgets.QLabel("0 joints")
         self.status.setObjectName("SkinningInfluenceStatus")
         column.addWidget(self.status)
+
+        # Influence Locks is permanently attached below the joint list.
+        self.lock_area = QtWidgets.QVBoxLayout()
+        self.lock_area.setContentsMargins(0, 2, 0, 0)
+        self.lock_area.setSpacing(0)
+        column.addLayout(self.lock_area)
 
     def activate(self):
         if not self._jobs:
@@ -937,56 +898,25 @@ class InfluencePanel(QtWidgets.QFrame):
         finally:
             self.tree.blockSignals(blocked)
 
-    def _inline_control_at(self, position):
-        """Resolve one painted control by row, not by Maya's current influence."""
-        if not self.skin or self._populating:
-            return None
-        row = self.tree.itemAt(position)
-        if row is None:
-            return None
-        joint = row.data(0, QtCore.Qt.UserRole)
+    def run_selected_action(self, action):
+        """Apply Influence Locks buttons to the highlighted bound joint."""
+        if not self.skin or not cmds.objExists(self.skin):
+            cmds.warning("Choose a skinned mesh first")
+            return
+        if action == "unlock_all":
+            self.change_locks("unlock", False)
+            return
+        current = self.tree.currentItem()
+        joint = current.data(0, QtCore.Qt.UserRole) if current else None
         if joint not in self._items:
-            return None
-        header = self.tree.header()
-        rect = QtCore.QRect(
-            header.sectionViewportPosition(1),
-            self.tree.visualItemRect(row).y(),
-            self.tree.columnWidth(1),
-            self.tree.visualItemRect(row).height())
-        if not rect.contains(position):
-            return None
-        for action, label, caption, bounds in _influence_cell_slots(rect):
-            if bounds.contains(position):
-                return joint, action, label
-        return None
-
-    def eventFilter(self, watched, event):
-        if watched is self.tree.viewport():
-            event_type = event.type()
-            if event_type == QtCore.QEvent.ToolTip:
-                control = self._inline_control_at(event.pos())
-                if control:
-                    QtWidgets.QToolTip.showText(
-                        event.globalPos(),
-                        "{}: {}".format(control[2], control[0].rsplit("|", 1)[-1]),
-                        self.tree)
-                    return True
-            if event_type in (
-                    QtCore.QEvent.MouseButtonPress,
-                    QtCore.QEvent.MouseButtonRelease,
-                    QtCore.QEvent.MouseButtonDblClick):
-                if event.button() == QtCore.Qt.LeftButton:
-                    control = self._inline_control_at(event.pos())
-                    if control:
-                        if event_type == QtCore.QEvent.MouseButtonRelease:
-                            joint, action, label = control
-                            if action == "toggle_lock":
-                                self.queue_inline_lock(joint)
-                            else:
-                                self.queue_influence_action(joint, action)
-                        # Do not select/rebuild the row during mouse handling.
-                        return True
-        return QtWidgets.QFrame.eventFilter(self, watched, event)
+            joint = self._active_joint if self._active_joint in self._items else None
+        if joint is None:
+            cmds.warning("Select an influence joint in the list first")
+            return
+        if action == "toggle_lock":
+            self.queue_inline_lock(joint)
+        else:
+            self.queue_influence_action(joint, action)
 
     def queue_inline_lock(self, joint):
         """Preview checkbox state now, defer the Maya setAttr until Qt is idle."""
@@ -1407,6 +1337,9 @@ class SkinningBoard(QtWidgets.QWidget):
                     items, key=lambda item: weight_grid_position(item[0]))
                     if key == "weight" else items)
                 for label, callback, tooltip, role in ordered_items:
+                    if (key, group_key) == ("paint", "locks") and label in INFLUENCE_LOCK_ACTIONS:
+                        callback = partial(self.influences.run_selected_action,
+                                           INFLUENCE_LOCK_ACTIONS[label])
                     action_id = "/".join((key, group_key, label))
                     button = self.make_button(label, callback, tooltip, role, action_id)
                     grid.add_button(button)
@@ -1414,7 +1347,10 @@ class SkinningBoard(QtWidgets.QWidget):
                     entries.append((action_id, button))
                 group_records.append((subheading, grid, entries))
                 if left_dock:
-                    left_groups[(key, group_key)] = group_frame
+                    if (key, group_key) == ("paint", "locks"):
+                        self.influences.lock_area.addWidget(group_frame)
+                    else:
+                        left_groups[(key, group_key)] = group_frame
             if not left_dock:
                 self.sections.append((section, section_title, group_records))
                 self.section_visibility[section] = True
@@ -1550,8 +1486,7 @@ class SkinningBoard(QtWidgets.QWidget):
             action_id in {
                 "paint/quick/Smooth", "paint/quick/Flood",
                 "paint/quick/Pick Value", "paint/helpers/Switch Brush",
-                "paint/helpers/Prune", "paint/locks/Add Unlock",
-                "paint/locks/Unlock All"
+                "paint/helpers/Prune"
             }
         )
         run_callback = True
@@ -1706,6 +1641,10 @@ class SkinningBoard(QtWidgets.QWidget):
                 background-color: #202020;
                 border: none;
                 border-radius: 0;
+            }
+            QFrame#SkinningDockGroup_paint_locks {
+                background-color: #202020;
+                border-top: 1px solid #454545;
             }
             QLabel#SkinningInfluenceStatus {
                 color: #B5B5B5;
