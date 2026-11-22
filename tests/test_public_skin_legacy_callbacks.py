@@ -126,7 +126,7 @@ LEGACY_CALLBACKS = [
   ],
   [
     "animation/timeline/Fit Range",
-    "NLTA_General.FitRangeAnim",
+    "NLTA_Keyframes.FitRangeAnim",
     []
   ],
   [
