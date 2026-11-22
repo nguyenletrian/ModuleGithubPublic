@@ -51,8 +51,43 @@ def ReplaceWeight(value, *arr):
 
 
 def AddWeight(value, *arr):
-    """Change the additive brush Value only (used by Switch Brush)."""
-    return _setBrushValue(value, "additive")
+    """Add the supplied delta to selected vertex weights as in MayaScriptNew."""
+    context = _skinPaintContext()
+    if not context:
+        return False
+    value = float(value)
+    cmds.artAttrSkinPaintCtx(
+        context, edit=True, skinPaintMode=1,
+        selectedattroper="additive", value=value)
+
+    # Preserve the original MayaScriptNew Artisan selection edit when loaded.
+    if mel.eval('exists "artSkinSetSelectionValue"'):
+        mel.eval(
+            "artSkinSetSelectionValue {} false artAttrSkinPaintCtx artAttrSkin;"
+            .format(value))
+        return True
+
+    # Standalone NLTA must also work without showing Maya Tool Settings:
+    # apply the same relative change to the selected vertices only.
+    session = NLTA_Skinning.EnsureSkinSession(warn=False)
+    skin = session["skinCluster"] if session else None
+    influence = NLTA_Skinning.GetActivePaintJoint(skin) if skin else None
+    verts = [v for v in (cmds.ls(selection=True, long=True,
+                                 flatten=True) or []) if ".vtx[" in v]
+    if not skin or not influence or not verts:
+        cmds.warning("Add Weight: select vertices on a skinned mesh.")
+        return False
+    if cmds.objExists(influence + ".liw") and cmds.getAttr(influence + ".liw"):
+        cmds.warning("Add Weight: active influence is locked: " + influence)
+        return False
+    for vert in verts:
+        old_weight = float(cmds.skinPercent(
+            skin, vert, query=True, transform=influence))
+        new_weight = max(0.0, min(1.0, old_weight + value))
+        cmds.skinPercent(
+            skin, vert, transformValue=(influence, new_weight))
+    cmds.refresh(force=True)
+    return True
 
 
 def smooth(value, *arr):
@@ -112,8 +147,8 @@ def SwitchBrush(*arr):
     if cmds.contextInfo(ctx, c=True) == "artAttrSkin":
         value = cmds.artAttrSkinPaintCtx(ctx,q=True,value=True)
         newValue =  value * (-1)
-        AddWeight(newValue)
-        cmds.artAttrSkinPaintCtx(ctx,e=True,value=newValue)        
+        # Switch Brush changes the paint value, not the selected skin weights.
+        _setBrushValue(newValue, "additive")        
         
 def CopyRatio(*arr):
     sels = cmds.ls(orderedSelection=True,flatten=True)
