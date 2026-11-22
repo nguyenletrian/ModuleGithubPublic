@@ -1,6 +1,6 @@
 """Callback contract captured from MayaScriptBefore/modules/UIs/Skinning.py.
 
-This test pins all 105 legacy button-to-function bindings and the meaningful
+This test records all 105 legacy bindings, verifying retained callbacks and the
 partial arguments. Labels may be compacted, but must not silently change the
 command they invoke. The reference repository is not fetched in CI.
 """
@@ -674,7 +674,7 @@ def catalog():
 
 
 class LegacyButtonContractTests(unittest.TestCase):
-    def test_all_105_buttons_still_call_the_legacy_function_and_arguments(self):
+    def test_existing_actions_keep_legacy_callbacks_except_removed_weight_steps(self):
         actual = {}
         for section, _, groups in catalog():
             for group, _, actions in groups:
@@ -689,11 +689,20 @@ class LegacyButtonContractTests(unittest.TestCase):
                         args = []
                     actual[action] = (base.nlta_name, args)
 
-        self.assertEqual(set(actual), {row[0] for row in LEGACY_CALLBACKS})
-        self.assertEqual(len(actual), 105)
-        for action, expected_fn, expected_args in LEGACY_CALLBACKS:
+        # The old 105-action list remains the historical callback baseline.
+        # Only the 16 +/- presets are removed. Old Add +1 is now Set 1
+        # (absolute brush value, not incremental/direct skin modification).
+        expected = {
+            action: (function, args) for action, function, args in LEGACY_CALLBACKS
+            if not action.startswith("weight/increment/")
+            or action == "weight/increment/Set 0"
+        }
+        expected["weight/increment/Set 1"] = ("NLTA_Brush.ReplaceWeight", [1])
+        self.assertEqual(len(actual), 89)
+        self.assertEqual(set(actual), set(expected))
+        for action, bound in expected.items():
             with self.subTest(action=action):
-                self.assertEqual(actual[action], (expected_fn, expected_args))
+                self.assertEqual(actual[action], bound)
 
 
 class PaintContextDispatchTests(unittest.TestCase):
@@ -766,7 +775,8 @@ class PaintContextDispatchTests(unittest.TestCase):
             "paint/quick/Smooth", "paint/quick/Flood",
             "paint/quick/Pick Value", "paint/helpers/Switch Brush",
             "paint/helpers/Prune", "paint/locks/Add Unlock",
-            "paint/locks/Unlock All", "weight/increment/-0.01",
+            "paint/locks/Unlock All", "weight/increment/Set 0",
+            "weight/increment/Set 1",
         ):
             with self.subTest(action=action):
                 dispatch, maya = self.load_dispatch("selectSuperContext")
@@ -798,7 +808,7 @@ class PaintContextDispatchTests(unittest.TestCase):
     def test_failed_pre_activation_never_runs_weight_operation(self):
         dispatch, maya = self.load_dispatch("selectSuperContext")
         board = self.make_board(maya, paint_succeeds=False)
-        dispatch(board, "weight/increment/-0.1",
+        dispatch(board, "weight/increment/Set 1",
                  lambda: board.events.append("callback"))
         self.assertEqual(board.events, ["activate_paint"])
 
