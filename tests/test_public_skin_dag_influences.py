@@ -1,0 +1,246 @@
+"""Offline regression for Maya Skinning joint names shared by different DAG branches."""
+import ast
+from pathlib import Path
+import types
+import unittest
+
+SOURCE = Path(__file__).resolve().parents[1] / "Libs/NLTA_Skinning.py"
+ROOT = "|Rig|joint1"
+CHILD = "|Rig|joint1|joint2"
+OTHER = "|OtherRig|joint2"
+EXTRA = "|Rig|joint1|joint3"
+
+
+class FakeDag:
+    def __init__(self, path):
+        self.path = path
+
+    def fullPathName(self):
+        return self.path
+
+    def hasFn(self, kind):
+        return kind == "joint"
+
+
+class SelectionList:
+    def __init__(self):
+        self.node = None
+
+    def add(self, name):
+        self.node = name
+
+    def getDependNode(self, index):
+        assert index == 0
+        return self.node
+
+
+class FakeMaya:
+    def __init__(self, influences=None):
+        self.skin = "skinCluster1"
+        self.influences = list(influences or [ROOT, CHILD])
+        self.scene_joints = [ROOT, CHILD, OTHER, EXTRA]
+        self.active = ROOT
+        self.selected = ["|Body|Mesh"]
+        self.locks = {path: True for path in self.scene_joints}
+        self.warning_messages = []
+        self.connected = []
+
+    def ls(self, *args, **kwargs):
+        if kwargs.get("sl") or kwargs.get("selection"):
+            if kwargs.get("type") == "joint":
+                return [x for x in self.selected if x in self.scene_joints]
+            return list(self.selected)
+        if not args:
+            return []
+        node = args[0]
+        if isinstance(node, (tuple, list)):
+            return [x for x in node if x in self.scene_joints]
+        if kwargs.get("type") == "joint":
+            return [x for x in self.scene_joints
+                    if x == node or ("|" not in node and
+                                     x.rsplit("|", 1)[-1] == node)]
+        return [node]
+
+    def objExists(self, node):
+        if node == self.skin:
+            return True
+        if node.endswith(".liw"):
+            return node[:-4] in self.locks
+        return node in self.scene_joints
+
+    def getAttr(self, attr):
+        return self.locks[attr[:-4]]
+
+    def setAttr(self, attr, value):
+        self.locks[attr[:-4]] = bool(value)
+
+    def listRelatives(self, name, **kw):
+        if kw.get("children"):
+            return [CHILD, EXTRA] if name == ROOT else []
+        if kw.get("parent"):
+            return [ROOT] if name in (CHILD, EXTRA) else []
+        return []
+
+    def connectionInfo(self, attr, **kw):
+        assert attr == self.skin + ".paintTrans"
+        return self.active + ".message"
+
+    def connectAttr(self, source, dest, **kw):
+        assert dest == self.skin + ".paintTrans"
+        assert kw.get("force") is True
+        self.active = source.rsplit(".", 1)[0]
+        self.connected.append(source)
+
+    def artAttrSkinPaintCtx(self, name, **kw):
+        assert name == "artAttrSkinContext"
+        if kw.get("edit"):
+            self.active = kw["influence"]
+
+    def select(self, *names, **kw):
+        if kw.get("clear"):
+            self.selected = []
+        elif names:
+            self.selected = [names[0]] if isinstance(names[0], str) else list(names[0])
+
+    def warning(self, text):
+        self.warning_messages.append(text)
+
+
+FUNCTIONS = (
+    "_SkinInfluencePaths", "_BoundJoint", "GetActivePaintJoint",
+    "singleUnlock", "unlock", "UnlockJoints", "addUnlockUp",
+    "addUnlockDown", "ActiveJoint", "switchJoint"
+)
+
+
+def load_logic(fake):
+    tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
+    nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+             and node.name in FUNCTIONS]
+    assert len(nodes) == len(FUNCTIONS)
+    class OM:
+        MSelectionList = SelectionList
+        MFn = types.SimpleNamespace(kJoint="joint")
+
+    class SkinFn:
+        def __init__(self, skin):
+            assert skin == fake.skin
+
+        def influenceObjects(self):
+            return [FakeDag(name) for name in fake.influences]
+
+    class OMA:
+        MFnSkinCluster = SkinFn
+
+    session = {"mesh": "|Body|Mesh", "skinCluster": fake.skin,
+               "joints": list(fake.influences)}
+    scope = {"cmds": fake, "om": OM, "oma": OMA, "skinSession": session}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), "exec"),
+         scope)
+    scope["EnsureSkinSession"] = lambda **kw: session
+    scope["EnsurePaintContext"] = lambda *args, **kw: True
+    scope["GetSkinData"] = lambda mesh=None: {
+        "mesh": "|Body|Mesh", "skinCluster": fake.skin,
+        "joints": scope["_SkinInfluencePaths"](fake.skin)}
+    return scope
+
+
+class DagBoundInfluenceTests(unittest.TestCase):
+    def setUp(self):
+        self.fake = FakeMaya()
+        self.logic = load_logic(self.fake)
+
+    def test_api_returns_only_the_exact_bound_paths(self):
+        self.assertEqual(
+            self.logic["_SkinInfluencePaths"](self.fake.skin), [ROOT, CHILD])
+        self.assertEqual(
+            self.logic["_BoundJoint"](self.fake.skin, "joint2"), CHILD)
+        self.assertIsNone(
+            self.logic["_BoundJoint"](self.fake.skin, OTHER))
+
+    def test_short_joint_names_are_never_guessed_if_both_are_bound(self):
+        self.fake.influences = [ROOT, CHILD, OTHER]
+        self.assertIsNone(self.logic["_BoundJoint"](self.fake.skin, "joint2"))
+        self.assertEqual(
+            self.logic["_BoundJoint"](self.fake.skin, CHILD), CHILD)
+        self.assertEqual(
+            self.logic["_BoundJoint"](self.fake.skin, OTHER), OTHER)
+
+    def test_add_down_activates_actual_bound_child_and_locks_only_other_influences(self):
+        self.logic["addUnlockDown"]()
+        self.assertEqual(self.fake.active, CHILD)
+        self.assertFalse(self.fake.locks[ROOT])
+        self.assertFalse(self.fake.locks[CHILD])
+        self.assertTrue(self.fake.locks[OTHER])
+        self.assertFalse(any("not an influence" in text
+                             for text in self.fake.warning_messages))
+
+    def test_add_up_returns_to_actual_parent(self):
+        self.fake.active = CHILD
+        self.logic["addUnlockUp"]()
+        self.assertEqual(self.fake.active, ROOT)
+        self.assertFalse(self.fake.locks[ROOT])
+        self.assertFalse(self.fake.locks[CHILD])
+        self.assertTrue(self.fake.locks[OTHER])
+
+    def test_add_down_selects_first_bound_child_and_does_not_use_unbound_child(self):
+        self.fake.influences = [ROOT, EXTRA]
+        self.logic["addUnlockDown"]()
+        self.assertEqual(self.fake.active, EXTRA)
+        self.assertTrue(self.fake.locks[CHILD])
+        self.assertFalse(self.fake.locks[EXTRA])
+
+    def test_add_down_with_unbound_children_leaves_skin_locks_unchanged(self):
+        self.fake.influences = [ROOT]
+        before = dict(self.fake.locks)
+        self.logic["addUnlockDown"]()
+        self.assertEqual(self.fake.active, ROOT)
+        self.assertEqual(self.fake.locks, before)
+        self.assertIn("No child", self.fake.warning_messages[-1])
+
+    def test_active_joint_can_resolve_short_influence_name_without_wrong_branch(self):
+        self.assertTrue(self.logic["ActiveJoint"]("|Body|Mesh", "joint2"))
+        self.assertEqual(self.fake.active, CHILD)
+        self.fake.active = ROOT
+        self.assertFalse(self.logic["ActiveJoint"]("|Body|Mesh", OTHER))
+        self.assertEqual(self.fake.active, ROOT)
+
+    def test_switch_joint_cycles_through_actual_unlocked_full_paths(self):
+        self.fake.locks[ROOT] = False
+        self.fake.locks[CHILD] = False
+        self.logic["switchJoint"]()
+        self.assertEqual(self.fake.active, CHILD)
+        self.logic["switchJoint"]()
+        self.assertEqual(self.fake.active, ROOT)
+
+    def test_unlock_joint_uses_selected_full_path_not_identical_leaf_names(self):
+        self.fake.selected = [OTHER]
+        self.logic["unlock"]()
+        self.assertEqual(self.fake.active, ROOT)
+        self.assertTrue(all(self.fake.locks.values()))
+        self.assertIn("not influences", self.fake.warning_messages[-1])
+
+    def test_single_unlock_rejects_unbound_short_name_and_keeps_all_locks(self):
+        self.fake.influences = [ROOT, CHILD, OTHER]
+        before = dict(self.fake.locks)
+        self.assertEqual(self.logic["singleUnlock"](["joint2"]), [])
+        self.assertEqual(before, self.fake.locks)
+
+    def test_other_skin_joint_actions_use_canonical_membership(self):
+        source = SOURCE.read_text(encoding="utf-8")
+        for fragment in (
+            "sourceJoints = set(_SkinInfluencePaths(sourceSkin))",
+            "destinationJoints = set(_SkinInfluencePaths(destinationSkin))",
+            "existing = set(_SkinInfluencePaths(skin))",
+            "sourceName = _BoundJoint(skin, joint, influences)",
+            "sourceIndex = (fullNames.index(sourceName)",
+            "parentIndex = (fullNames.index(parentName)",
+            "influences[i].fullPathName()",
+            "skinJoints = _SkinInfluencePaths(skinCluster)",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, source)
+
+
+if __name__ == "__main__":
+    unittest.main()
