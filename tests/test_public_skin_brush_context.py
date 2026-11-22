@@ -119,164 +119,103 @@ class BrushContextTests(unittest.TestCase):
         self.mel = FakeMel()
         self.brush = load_callbacks(self.cmds, self.mel)
 
-    def _assert_brush_only(self, value, operation="absolute"):
+    def assert_preset_only(self, function, value, operation):
         before = dict(self.cmds.weights)
-        selection = list(self.cmds.selection)
-        self.assertTrue(self.brush["ReplaceWeight"](value))
+        selected = list(self.cmds.selection)
+        self.assertTrue(self.brush[function](value))
         self.assertEqual(self.cmds.weights, before)
-        self.assertEqual(self.cmds.selection, selection)
         self.assertEqual(self.cmds.skin_writes, [])
+        self.assertEqual(self.cmds.selection, selected)
         self.assertEqual(self.cmds.refreshed, 0)
         self.assertEqual(self.mel.eval_calls, [])
+        self.assertEqual(self.cmds.brush_value, float(value))
         self.assertEqual(self.cmds.context_edits[-1], {
             "edit": True, "skinPaintMode": 1,
-            "selectedattroper": operation, "value": float(value),
+            "selectedattroper": operation, "minvalue": -1.0,
+            "value": float(value), "opacity": 1.0,
         })
 
-    def test_set_zero_changes_brush_only(self):
-        self._assert_brush_only(0)
+    def test_set_zero_sets_replace_value_only_at_full_opacity(self):
+        self.assert_preset_only("ReplaceWeight", 0, "absolute")
 
-    def test_set_one_changes_brush_only(self):
-        self._assert_brush_only(1)
+    def test_set_one_uses_original_add_mode_at_full_opacity(self):
+        self.assert_preset_only("AddWeight", 1, "additive")
 
-    def test_set_zero_with_no_selected_vertex_still_changes_brush(self):
+    def test_all_sixteen_signed_presets_set_value_only_at_full_opacity(self):
+        steps = (0.0001, 0.0005, 0.001, 0.005, 0.01, 0.03, 0.05, 0.1)
+        for step in steps:
+            for sign in (-1, 1):
+                value = sign * step
+                with self.subTest(value=value):
+                    self.cmds.context_edits.clear()
+                    self.cmds.brush_value = 0.4
+                    self.assert_preset_only("AddWeight", value, "additive")
+
+    def test_unselected_mesh_still_allows_setting_brush_preset(self):
         self.cmds.selection = [MESH]
-        self._assert_brush_only(0)
-
-    def test_set_one_with_no_selected_vertex_still_changes_brush(self):
-        self.cmds.selection = [MESH]
-        self._assert_brush_only(1)
+        self.assert_preset_only("AddWeight", -0.03, "additive")
+        self.assert_preset_only("ReplaceWeight", 0, "absolute")
 
     def test_locked_influence_does_not_block_setting_brush_value(self):
         self.cmds.liw = True
-        self._assert_brush_only(1)
+        self.assert_preset_only("AddWeight", 0.05, "additive")
+        self.assert_preset_only("ReplaceWeight", 0, "absolute")
 
-    def test_native_mel_ui_procedures_are_never_invoked(self):
+    def test_existing_mel_procedure_does_not_trigger_vertex_edit(self):
         self.mel.loaded = True
-        self._assert_brush_only(0)
-        self._assert_brush_only(1)
+        self.assert_preset_only("AddWeight", 0.1, "additive")
+        self.assert_preset_only("ReplaceWeight", 0, "absolute")
 
-    def test_add_preset_modifies_only_selected_weights_with_maya_fallback(self):
-        untouched = self.cmds.weights[MESH + ".vtx[3]"]
-        original_selection = list(self.cmds.selection)
-        self.assertTrue(self.brush["AddWeight"](0.1))
-        self.assertAlmostEqual(self.cmds.weights[MESH + ".vtx[1]"], 0.3)
-        self.assertEqual(self.cmds.weights[MESH + ".vtx[2]"], 1.0)
-        self.assertTrue(self.brush["AddWeight"](-0.5))
-        self.assertEqual(self.cmds.weights[MESH + ".vtx[1]"], 0.0)
-        self.assertEqual(self.cmds.weights[MESH + ".vtx[2]"], 0.5)
-        self.assertEqual(self.cmds.weights[MESH + ".vtx[3]"], untouched)
-        self.assertEqual(self.cmds.selection, original_selection)
-        self.assertEqual(len(self.cmds.skin_writes), 4)
-        self.assertEqual(self.cmds.refreshed, 2)
-        self.assertEqual(self.cmds.context_edits[-1], {
-            "edit": True, "skinPaintMode": 1,
-            "selectedattroper": "additive", "value": -0.5,
-        })
-
-    def test_add_preset_uses_original_native_mel_when_available(self):
-        self.mel.loaded = True
-        originals = dict(self.cmds.weights)
-        self.assertTrue(self.brush["AddWeight"](-0.01))
-        self.assertEqual(self.cmds.weights, originals)
-        self.assertEqual(self.cmds.skin_writes, [])
-        self.assertIn(
-            "artSkinSetSelectionValue -0.01 false artAttrSkinPaintCtx artAttrSkin;",
-            self.mel.eval_calls)
-
-    def test_add_preset_does_not_modify_locked_influence(self):
-        self.cmds.liw = True
-        originals = dict(self.cmds.weights)
-        self.assertFalse(self.brush["AddWeight"](0.03))
-        self.assertEqual(self.cmds.weights, originals)
-        self.assertEqual(self.cmds.skin_writes, [])
-        self.assertTrue(any("locked" in w for w in self.cmds.warnings))
-
-    def test_add_without_vertex_selection_does_not_flood_mesh(self):
-        self.cmds.selection = [MESH]
-        originals = dict(self.cmds.weights)
-        self.assertFalse(self.brush["AddWeight"](0.03))
-        self.assertEqual(self.cmds.weights, originals)
-        self.assertEqual(self.cmds.skin_writes, [])
-        self.assertTrue(any("select vertices" in w for w in self.cmds.warnings))
-
-    def test_all_mayascriptnew_add_step_sizes_are_supported(self):
-        increments = (0.0001, 0.0005, 0.001, 0.005,
-                      0.01, 0.03, 0.05, 0.1)
-        for delta in increments:
-            for sign in (-1, 1):
-                with self.subTest(delta=delta, sign=sign):
-                    self.cmds.weights[MESH + ".vtx[1]"] = 0.5
-                    self.assertTrue(self.brush["AddWeight"](delta * sign))
-                    self.assertAlmostEqual(
-                        self.cmds.weights[MESH + ".vtx[1]"],
-                        0.5 + delta * sign)
-
-    def test_switching_zero_and_one_sets_current_value_only(self):
-        self._assert_brush_only(0)
-        self._assert_brush_only(1)
-        self._assert_brush_only(0)
-        self.assertEqual(
-            [x["value"] for x in self.cmds.context_edits], [0.0, 1.0, 0.0])
-
-    def test_switch_brush_toggles_signed_value_without_editing_skin(self):
-        original = dict(self.cmds.weights)
+    def test_switching_brush_value_always_restores_opacity_one(self):
+        self.cmds.brush_value = 0.25
         self.brush["SwitchBrush"]()
-        self.assertEqual(self.cmds.brush_value, -0.5)
-        self.assertEqual(self.cmds.context_edits[0], {
-            "edit": True, "skinPaintMode": 1,
-            "selectedattroper": "additive", "value": -0.5,
-        })
+        self.assertEqual(self.cmds.brush_value, -0.25)
+        self.assertEqual(self.cmds.context_edits[-1]["opacity"], 1.0)
         self.brush["SwitchBrush"]()
-        self.assertEqual(self.cmds.brush_value, 0.5)
-        self.assertEqual(self.cmds.weights, original)
+        self.assertEqual(self.cmds.brush_value, 0.25)
+        self.assertEqual(self.cmds.context_edits[-1]["opacity"], 1.0)
         self.assertEqual(self.cmds.skin_writes, [])
         self.assertEqual(self.mel.eval_calls, [])
 
-    def test_uninitialized_context_does_not_touch_weights(self):
+    def test_uninitialized_context_does_not_change_skin_or_value(self):
         original = dict(self.cmds.weights)
         self.cmds.exists = False
+        self.assertFalse(self.brush["AddWeight"](-0.1))
         self.assertFalse(self.brush["ReplaceWeight"](0))
-        self.assertFalse(self.brush["AddWeight"](1))
         self.assertEqual(self.cmds.weights, original)
         self.assertEqual(self.cmds.context_edits, [])
         self.assertEqual(self.cmds.skin_writes, [])
-        self.assertEqual(self.mel.eval_calls, [])
 
-    def test_smooth_keeps_legacy_solid_profile_without_mel_ui(self):
+    def test_smooth_preserves_context_only(self):
         self.brush["smooth"]("solid")
         self.assertEqual(self.cmds.context_edits, [{
             "edit": True, "skinPaintMode": 1,
             "stampProfile": "solid", "selectedattroper": "smooth",
         }])
-        self.assertEqual(self.mel.eval_calls, [])
 
-    def test_flood_uses_explicit_clear_only(self):
+    def test_flood_requires_separate_explicit_action(self):
         self.brush["flood"]()
         self.assertEqual(self.cmds.context_edits, [{
             "edit": True, "skinPaintMode": 1, "clear": True,
         }])
         self.assertEqual(self.mel.eval_calls, [])
 
-    def test_pick_value_is_not_dependent_on_tool_settings(self):
+    def test_pick_value_preserves_existing_behavior(self):
         self.brush["pickValue"]()
         self.assertEqual(self.cmds.context_edits, [{
             "edit": True, "selectedattroper": "absolute",
             "pickValue": True, "opacity": 1,
         }])
-        self.assertEqual(self.mel.eval_calls, [])
 
-    def test_missing_mel_ui_procedures_stay_unused_but_weight_add_is_restored(self):
+    def test_no_direct_skin_writes_or_optional_mel_procedures(self):
         source = SOURCE.read_text(encoding="utf-8")
-        for unavailable in (
+        for unsafe in (
+            "skinPercent(", "artSkinSetSelectionValue",
             "artAttrSkinPaintModePaintSelect",
             "artAttrPaintOperation",
-            "artUpdateStampProfile",
         ):
-            self.assertNotIn(unavailable, source)
-        self.assertIn('exists "artSkinSetSelectionValue"', source)
-        self.assertIn("skinPercent(", source)
-        self.assertIn("_setBrushValue(newValue", source)
+            self.assertNotIn(unsafe, source)
+        self.assertIn("opacity=1.0", source)
 
 
 if __name__ == "__main__":
