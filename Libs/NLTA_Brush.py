@@ -25,31 +25,88 @@ def ChangeOpacityValue(ui,value,*arr):
     cmds.floatSliderGrp(ui,edit=True,value=value)
     ChangeOpacity(ui)      
     
-def ReplaceWeight(value,*arr):
-    pm.mel.eval("artAttrSkinPaintModePaintSelect 1 artAttrSkinPaintCtx;")
-    pm.mel.eval("artAttrPaintOperation artAttrSkinPaintCtx Replace;")
-    pm.mel.eval("artSkinSetSelectionValue "+str(value)+" false artAttrSkinPaintCtx artAttrSkin;")
-    
-def AddWeight(value,*arr):
-    pm.mel.eval("artAttrSkinPaintModePaintSelect 1 artAttrSkinPaintCtx;")
-    pm.mel.eval("artAttrPaintOperation artAttrSkinPaintCtx Add;")
-    pm.mel.eval("artSkinSetSelectionValue "+str(value)+" false artAttrSkinPaintCtx artAttrSkin;")
+def _skinPaintContext():
+    """Use the existing Artisan paint context without opening Tool Settings."""
+    context = "artAttrSkinContext"
+    if not cmds.artAttrSkinPaintCtx(context, exists=True):
+        cmds.warning("Skinning: Paint Skin context is not initialized.")
+        return None
+    return context
 
-def smooth(value,*arr):
-    pm.mel.eval("artAttrSkinPaintModePaintSelect 1 artAttrSkinPaintCtx;")
-    pm.mel.eval("artUpdateStampProfile "+value+" artAttrSkinPaintCtx;")
-    pm.mel.eval("artAttrPaintOperation artAttrSkinPaintCtx Smooth;")
+
+def _setSelectedWeights(value, operation):
+    """Apply to selected components, keeping the original Replace/Add behavior."""
+    context = _skinPaintContext()
+    if not context:
+        return False
+    value = float(value)
+    cmds.artAttrSkinPaintCtx(
+        context, edit=True, skinPaintMode=1, selectedattroper=operation,
+        value=value)
+    # Optional native MEL procedure may not be loaded when the standalone
+    # NLTA Command Board uses Paint Skin without opening Tool Settings.
+    if mel.eval('exists "artSkinSetSelectionValue"'):
+        mel.eval(
+            "artSkinSetSelectionValue {} false artAttrSkinPaintCtx artAttrSkin;"
+            .format(value))
+        return True
+
+    # Fallback only touches explicitly selected vertices, never the whole mesh.
+    verts = [item for item in (cmds.ls(selection=True, long=True,
+                                      flatten=True) or [])
+             if ".vtx[" in item]
+    session = NLTA_Skinning.EnsureSkinSession(warn=False)
+    skin = session["skinCluster"] if session else None
+    influence = NLTA_Skinning.GetActivePaintJoint(skin) if skin else None
+    if not verts or not influence:
+        cmds.warning(
+            "Skinning: select skinned vertices to adjust weights. "
+            "The Paint Skin Tool Settings window is not required.")
+        return False
+    if cmds.objExists(influence + ".liw") and cmds.getAttr(influence + ".liw"):
+        cmds.warning("Skinning: active influence is locked: " + influence)
+        return False
+    for vert in verts:
+        target = value
+        if operation == "additive":
+            current = cmds.skinPercent(skin, vert, query=True,
+                                       transform=influence)
+            target = float(current) + value
+        cmds.skinPercent(
+            skin, vert, transformValue=(influence, max(0.0, min(1.0, target))))
+    cmds.refresh(force=True)
+    return True
+
+
+def ReplaceWeight(value, *arr):
+    return _setSelectedWeights(value, "absolute")
+
+
+def AddWeight(value, *arr):
+    return _setSelectedWeights(value, "additive")
+
+
+def smooth(value, *arr):
+    context = _skinPaintContext()
+    if context:
+        cmds.artAttrSkinPaintCtx(context, edit=True, skinPaintMode=1,
+                                 stampProfile=value, selectedattroper="smooth")
+
 
 def pickValue(*arr):
-    pm.mel.eval("artAttrPaintOperation artAttrSkinPaintCtx Replace;")
-    pm.mel.eval("artAttrSkinPaintCtx -e -pickValue `currentCtx`;")
-    ctx = cmds.currentCtx()
-    cmds.artAttrSkinPaintCtx(ctx, e=True, opacity=1)   
+    context = _skinPaintContext()
+    if context:
+        cmds.artAttrSkinPaintCtx(context, edit=True, selectedattroper="absolute",
+                                 pickValue=True, opacity=1)
+
 
 def flood(*arr):
-    pm.mel.eval("artAttrSkinPaintModePaintSelect 1 artAttrSkinPaintCtx;")
-    pm.mel.eval('artAttrSkinPaintCtx -e -clear `currentCtx`;')
-    
+    context = _skinPaintContext()
+    if context:
+        cmds.artAttrSkinPaintCtx(context, edit=True, skinPaintMode=1,
+                                 clear=True)
+
+
 def CopyWeight(*arr):
     mel.eval(r'''
         if (!`exists NLTA_CopyWeight`)
