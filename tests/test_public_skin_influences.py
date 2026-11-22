@@ -57,7 +57,8 @@ class FakeCmds:
 def load_logic(cmds):
     parsed = ast.parse(BOARD.read_text(encoding="utf-8"))
     names = ("_skin_from_selection", "_selected_unskinned_mesh",
-             "_skin_influence_rows", "_set_influence_locks")
+             "_skin_influence_rows", "_influence_hierarchy",
+             "_set_influence_locks")
     nodes = [node for node in parsed.body
              if isinstance(node, ast.FunctionDef) and node.name in names]
     assert len(nodes) == len(names)
@@ -82,6 +83,39 @@ class InfluenceLogicTests(unittest.TestCase):
         self.cmds.locks.pop("|Rig|Extra_JNT")
         self.assertEqual(self.logic["_skin_influence_rows"]("skin1")[-1],
                          ("|Rig|Extra_JNT", None))
+
+    def test_skin_influence_hierarchy_skips_unbound_ancestors(self):
+        hierarchy = self.logic["_influence_hierarchy"]
+        rows = [
+            ("|Rig|Root|Spine|Shoulder|Arm", False),
+            ("|Rig|Root", True),
+            ("|Rig|Root|Spine|Shoulder|Arm|Hand", False),
+            ("|Rig|Other|Finger", True),
+            ("|Rig|Root|Spine", False),
+        ]
+        self.assertEqual(hierarchy(rows), {
+            "|Rig|Root|Spine|Shoulder|Arm": "|Rig|Root|Spine",
+            "|Rig|Root": None,
+            "|Rig|Root|Spine|Shoulder|Arm|Hand":
+                "|Rig|Root|Spine|Shoulder|Arm",
+            "|Rig|Other|Finger": None,
+            "|Rig|Root|Spine": "|Rig|Root",
+        })
+        self.assertEqual(hierarchy([("UnqualifiedJoint", False)]),
+                         {"UnqualifiedJoint": None})
+
+    def test_hierarchy_not_confused_by_similarly_named_nodes(self):
+        hierarchy = self.logic["_influence_hierarchy"]
+        rows = [
+            ("|Character|Left|Arm", True),
+            ("|Character|Right|Arm", False),
+            ("|Character|Left", False),
+            ("|OtherCharacter|Left", True),
+        ]
+        parents = hierarchy(rows)
+        self.assertEqual(parents["|Character|Left|Arm"], "|Character|Left")
+        self.assertIsNone(parents["|Character|Right|Arm"])
+        self.assertIsNone(parents["|OtherCharacter|Left"])
 
     def test_reverse_all_and_lock_unlock_selected_only(self):
         change = self.logic["_set_influence_locks"]
@@ -127,6 +161,13 @@ class InfluenceLogicTests(unittest.TestCase):
                 "class InfluencePanel(QtWidgets.QFrame):",
                 'self.workspace = QtWidgets.QSplitter(QtCore.Qt.Horizontal)',
                 'self.filter_box.addItems(("All", "Locked", "Unlocked"))',
+                'self.tree.setRootIsDecorated(True)',
+                'self.tree.setHeaderLabels(("Influence joint", "Lock"))',
+                'QtWidgets.QTreeWidgetItem(',
+                '[joint.rsplit("|", 1)[-1], ""]',
+                'self._items[parent].addChild(item)',
+                'self.tree.expandToDepth(1)',
+                'self._parents = _influence_hierarchy(self._rows)',
                 '"SkinningInfluenceTree"',
                 '"Lock All"', '"Unlock All"', '"Reverse All"',
                 '"Lock"', '"Unlock"', '"Reverse"',
