@@ -163,9 +163,13 @@ class CreateSphereTests(unittest.TestCase):
         # End aims along +Y. Driven centroid is on +X, so tilt away => -X.
         aimed = [xyz for name, xyz in self.maya.xforms
                  if name == aim_target][-1]
-        self.assertAlmostEqual(aimed[0], 1 - 2 * math.sin(math.radians(20)))
+        # Centroid from both Driven A (+3 X) and Driven B (+5 Z).
+        sideways_length = math.sqrt(1.5 ** 2 + 2.5 ** 2)
+        self.assertAlmostEqual(
+            aimed[0], 1 - 2 * math.sin(math.radians(20)) * 1.5 / sideways_length)
         self.assertAlmostEqual(aimed[1], 2 + 2 * math.cos(math.radians(20)))
-        self.assertAlmostEqual(aimed[2], 3)
+        self.assertAlmostEqual(
+            aimed[2], 3 - 2 * math.sin(math.radians(20)) * 2.5 / sideways_length)
         self.assertFalse(any("parentConstraint" in str(record)
                              for record in self.maya.aims))
 
@@ -211,9 +215,11 @@ class CreateSphereTests(unittest.TestCase):
         builder = next(n for n in module.body
                        if isinstance(n, ast.FunctionDef)
                        and n.name == "buildAutoSkirtSystem")
-        self.assertIn('label="Create Sphere"', ast.get_source_segment(code, line_field))
-        self.assertIn("action=partial(createSphereFromRow, row)",
-                      ast.get_source_segment(code, add_row))
+        self.assertIn('cmds.button(label="Pick"', ast.get_source_segment(code, line_field))
+        add_row_source = ast.get_source_segment(code, add_row)
+        self.assertIn('label="Create Sphere"', add_row_source)
+        self.assertIn("command=partial(createSphereFromRow, row)", add_row_source)
+        self.assertIn('columnWidth4=(90, 90, 90, 90)', add_row_source)
         self.assertNotIn("createSphereFromRow", ast.get_source_segment(code, exporter))
         self.assertNotIn("createSphereFromRow", ast.get_source_segment(code, builder))
         self.assertIn("normalizeSphereUv(sphere)",
