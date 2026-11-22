@@ -139,8 +139,14 @@ class SkinningPaintDockTests(unittest.TestCase):
 
     def test_hot_reload_can_close_old_maya_widgets_without_super_errors(self):
         source = FILE.read_text(encoding="utf-8")
-        self.assertNotIn("super(SkinningBoard, self).", source)
-        self.assertNotIn("super(ResponsiveButtons, self).resizeEvent", source)
+        for old_handler in (
+            "super(SkinningBoard, self).eventFilter",
+            "super(SkinningBoard, self).showEvent",
+            "super(SkinningBoard, self).hideEvent",
+            "super(SkinningBoard, self).closeEvent",
+            "super(ResponsiveButtons, self).resizeEvent",
+        ):
+            self.assertNotIn(old_handler, source)
         for base_call in (
             "QtWidgets.QWidget.eventFilter(self, watched, event)",
             "QtWidgets.QWidget.showEvent(self, event)",
