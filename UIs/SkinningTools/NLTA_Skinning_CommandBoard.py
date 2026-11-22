@@ -21,6 +21,13 @@ except ImportError:
 _BOARD = None
 _BRIDGE = "NLTA_SkinningCommandBridge"
 LEFT_DOCK_SECTIONS = frozenset(("paint", "weight", "animation"))
+# Visual order only: preserve each group's existing action ID and callback.
+LEFT_DOCK_GROUP_ORDER = (
+    ("animation", "local"), ("animation", "world"),
+    ("animation", "timeline"),
+    ("paint", "locks"), ("paint", "helpers"),
+    ("weight", "increment"), ("paint", "quick"),
+)
 PAINT_STRIP_WIDTH = 145  # Half of the former 290-px action strip.
 
 
@@ -1077,23 +1084,40 @@ class SkinningBoard(QtWidgets.QWidget):
             column.hide()
         self.masonry_row.addStretch()
 
+        left_groups = {}
         for key, section_title, groups in catalog:
-            section = QtWidgets.QFrame()
-            section.setObjectName("SkinningSection_" + key)
-            vertical = QtWidgets.QVBoxLayout(section)
-            if key in LEFT_DOCK_SECTIONS:
-                vertical.setContentsMargins(3, 3, 3, 3)
-            else:
+            left_dock = key in LEFT_DOCK_SECTIONS
+            if not left_dock:
+                section = QtWidgets.QFrame()
+                section.setObjectName("SkinningSection_" + key)
+                vertical = QtWidgets.QVBoxLayout(section)
                 vertical.setContentsMargins(7, 5, 7, 7)
-            vertical.setSpacing(2)
-            header = QtWidgets.QLabel(section_title)
-            header.setObjectName("SkinningSectionTitle")
-            vertical.addWidget(header)
+                vertical.setSpacing(2)
+                header = QtWidgets.QLabel(section_title)
+                header.setObjectName("SkinningSectionTitle")
+                vertical.addWidget(header)
             group_records = []
             for group_key, heading, items in groups:
+                # Build each left group directly in its permanent container.
+                # This avoids reparenting Qt widgets after creation (important
+                # for Maya hot reload and QTreeWidget signal stability).
+                if left_dock:
+                    group_frame = QtWidgets.QFrame()
+                    group_frame.setObjectName(
+                        "SkinningDockGroup_{}_{}".format(key, group_key))
+                    group_vertical = QtWidgets.QVBoxLayout(group_frame)
+                    group_vertical.setContentsMargins(3, 3, 3, 3)
+                    group_vertical.setSpacing(2)
+                    if (key, group_key) in (
+                            ("animation", "local"), ("weight", "increment")):
+                        heading_label = QtWidgets.QLabel(section_title)
+                        heading_label.setObjectName("SkinningSectionTitle")
+                        group_vertical.addWidget(heading_label)
+                else:
+                    group_vertical = vertical
                 subheading = QtWidgets.QLabel(heading)
                 subheading.setObjectName("SkinningSubheading")
-                vertical.addWidget(subheading)
+                group_vertical.addWidget(subheading)
                 if key == "skin" and group_key == "max":
                     spin_row = QtWidgets.QHBoxLayout()
                     spin_label = QtWidgets.QLabel("Limit / vertex")
@@ -1106,7 +1130,7 @@ class SkinningBoard(QtWidgets.QWidget):
                         lambda value: self.settings.setValue("max_influences", value))
                     spin_row.addWidget(self.max_influences)
                     spin_row.addStretch()
-                    vertical.addLayout(spin_row)
+                    group_vertical.addLayout(spin_row)
                 if key == "animation" and group_key == "local":
                     distance_row = QtWidgets.QHBoxLayout()
                     distance_row.addWidget(QtWidgets.QLabel("Distance"))
@@ -1118,7 +1142,7 @@ class SkinningBoard(QtWidgets.QWidget):
                         lambda value: cmds.intSliderGrp(distance_ui, edit=True, value=value))
                     distance_row.addWidget(spin)
                     distance_row.addStretch()
-                    vertical.addLayout(distance_row)
+                    group_vertical.addLayout(distance_row)
 
                 # Two columns per Paint group; +/- weights retain paired rows.
                 grid_type = WeightPairButtons if key == "weight" else ResponsiveButtons
@@ -1129,7 +1153,7 @@ class SkinningBoard(QtWidgets.QWidget):
                     force_two_columns=(key in ("paint", "animation")),
                     height_reduction=2 if key in LEFT_DOCK_SECTIONS else 0)
                 self.grids.append(grid)
-                vertical.addWidget(grid)
+                group_vertical.addWidget(grid)
                 entries = []
                 ordered_items = (sorted(
                     items, key=lambda item: weight_grid_position(item[0]))
@@ -1141,10 +1165,19 @@ class SkinningBoard(QtWidgets.QWidget):
                     self.buttons[action_id] = (button, callback, label, tooltip, role)
                     entries.append((action_id, button))
                 group_records.append((subheading, grid, entries))
-            self.sections.append((section, section_title, group_records))
-            self.section_visibility[section] = True
-            if key in LEFT_DOCK_SECTIONS:
-                self.paint_stack.insertWidget(self.paint_stack.count() - 1, section)
+                if left_dock:
+                    left_groups[(key, group_key)] = group_frame
+            if not left_dock:
+                self.sections.append((section, section_title, group_records))
+                self.section_visibility[section] = True
+
+        # Requested top-to-bottom order, independent of the legacy catalog
+        # and without touching any Paint Skin influence item or callback.
+        if set(left_groups) != set(LEFT_DOCK_GROUP_ORDER):
+            raise ValueError("Skinning left dock groups must match the display order")
+        for group_id in LEFT_DOCK_GROUP_ORDER:
+            self.paint_stack.insertWidget(
+                self.paint_stack.count() - 1, left_groups[group_id])
 
         self.content.addStretch()
         self.apply_style()
