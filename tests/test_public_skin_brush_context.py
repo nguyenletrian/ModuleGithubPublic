@@ -30,7 +30,7 @@ class FakeCommands:
         assert context == "artAttrSkinContext"
         if flags.get("exists"):
             return self.exists
-        if flags.get("query") and flags.get("value"):
+        if (flags.get("query") or flags.get("q")) and flags.get("value"):
             return self.brush_value
         if flags.get("edit") or flags.get("e"):
             self.context_edits.append(flags)
