@@ -32,7 +32,7 @@ PAINT_STRIP_WIDTH = 145  # Half of the former 290-px action strip.
 
 
 def command_catalog(tools, distance_ui):
-    """Declarative action map; brush presets set Value without editing weights."""
+    """Declarative action map; preset buttons set brush Value and opacity 1."""
     b = tools["NLTA_Brush"]
     s = tools["NLTA_Skinning"]
     g = tools["NLTA_General"]
@@ -45,21 +45,21 @@ def command_catalog(tools, distance_ui):
     sets = tools["NLTA_Set"]
     bs = tools["NLTA_BlendShape"]
 
-    # MayaScriptNew: +/- presets add weights to selected vertices.
-    # Set 0 and Set 1 only configure the Paint Skin brush Value.
+    # MayaScriptNew brush operations: 0 = Replace, +/- and 1 = Add.
+    # Every preset only sets the Paint Skin brush Value with opacity 1.
     increments = (0.0001, 0.0005, 0.001, 0.005, 0.01, 0.03, 0.05, 0.1)
     weight_commands = [
         ("Set 0", partial(b.ReplaceWeight, 0),
-         "Paint Skin: set brush Value to 0 (no vertex edit)", "primary"),
-        ("Set 1", partial(b.ReplaceWeight, 1),
-         "Paint Skin: set brush Value to 1 (no vertex edit)", "primary"),
+         "Replace brush Value 0 · Opacity 1", "primary"),
+        ("Set 1", partial(b.AddWeight, 1),
+         "Add brush Value 1 · Opacity 1", "primary"),
     ]
     for amount in increments:
         weight_commands.extend((
             ("-" + str(amount), partial(b.AddWeight, -amount),
-             "Subtract {} from selected vertex weights".format(amount), ""),
+             "Add brush Value -{} · Opacity 1".format(amount), ""),
             ("+" + str(amount), partial(b.AddWeight, amount),
-             "Add {} to selected vertex weights".format(amount), ""),
+             "Add brush Value +{} · Opacity 1".format(amount), ""),
         ))
 
     animation_groups = []
