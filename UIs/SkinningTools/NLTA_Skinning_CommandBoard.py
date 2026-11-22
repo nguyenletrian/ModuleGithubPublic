@@ -521,9 +521,12 @@ def _influence_menu_plan(skin, joint, action):
     if action == "add_unlock":
         return False, [joint], joint
     if action in ("add_up", "add_down"):
-        relatives = cmds.listRelatives(
-            joint, parent=action == "add_up", children=action == "add_down",
-            type="joint", fullPath=True) or []
+        if action == "add_up":
+            relatives = cmds.listRelatives(
+                joint, parent=True, type="joint", fullPath=True) or []
+        else:
+            relatives = cmds.listRelatives(
+                joint, children=True, type="joint", fullPath=True) or []
         linked = [candidate for name in relatives
                   for candidate in [_resolve_skin_influence(skin, name, bound)]
                   if candidate]
