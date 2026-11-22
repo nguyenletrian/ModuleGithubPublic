@@ -1,138 +1,281 @@
-import importlib
+"""Temporary animation tests for Maya controls and Paint Skin influences.
+
+Generated keys live on disposable driver transforms rather than on the rig.
+Delete Keys removes only these drivers (and supported legacy test helpers).
+"""
 import maya.cmds as cmds
 
-import NLTA_General
-for module in [NLTA_General]:
+_TEST_SOURCE = "NLTA_TestAnimSource"
+_TEST_CONSTRAINT = "NLTA_TestAnimConstraint"
+_STEP = 30
+session = {"drivers": [], "controls": [], "start": None, "end": None}
+
+
+def _selection_controls():
+    """Preserve selection order and DAG identities; mesh selections are not controls."""
+    result = []
+    for value in cmds.ls(selection=True, long=True, flatten=True) or []:
+        node = value.split(".", 1)[0]
+        if not cmds.objExists(node) or cmds.nodeType(node) not in ("transform", "joint"):
+            continue
+        if cmds.listRelatives(node, shapes=True, type="mesh") or []:
+            continue
+        if node not in result:
+            result.append(node)
+    return result
+
+
+def _paint_control():
+    """Use the active bound influence when a mesh is selected for Paint Skin."""
+    if cmds.currentCtx() != "artAttrSkinContext":
+        return None
+    import NLTA_Skinning
+    data = NLTA_Skinning.EnsureSkinSession(warn=False)
+    if not data or not data.get("skinCluster"):
+        return None
+    return NLTA_Skinning.GetActivePaintJoint(data["skinCluster"])
+
+
+def _test_drivers():
+    return cmds.ls("*." + _TEST_SOURCE, objectsOnly=True, long=True) or []
+
+
+def _driver_for_control(control):
+    drivers = []
+    for driver in _test_drivers():
+        if cmds.objExists(driver + "." + _TEST_SOURCE):
+            if cmds.getAttr(driver + "." + _TEST_SOURCE) == control:
+                drivers.append(driver)
+    return drivers
+
+
+def _remove_drivers(drivers):
+    removed = 0
+    for driver in drivers:
+        if not cmds.objExists(driver):
+            continue
+        if cmds.objExists(driver + "." + _TEST_CONSTRAINT):
+            constraint = cmds.getAttr(driver + "." + _TEST_CONSTRAINT)
+            if constraint and cmds.objExists(constraint):
+                cmds.delete(constraint)
+        cmds.delete(driver)
+        removed += 1
+    return removed
+
+
+def _available_channels(control, kind):
+    prefix = "r" if kind == "rotate" else "t"
+    channels = []
+    for axis in "xyz":
+        attr = prefix + axis
+        plug = control + "." + attr
+        if not cmds.getAttr(plug, lock=True) and not (
+                cmds.listConnections(plug, source=True, destination=False) or []):
+            channels.append(attr)
+    return channels
+
+
+def _make_driver(control, space, kind, channels):
+    parent = (cmds.listRelatives(control, parent=True, fullPath=True) or [None])[0]
+    name = "NLTA_TestAnim_" + control.rsplit("|", 1)[-1].replace(":", "_") + "_DRV"
+    kwargs = {"name": name}
+    if space == "local" and parent:
+        kwargs["parent"] = parent
+    driver = cmds.createNode("transform", **kwargs)
+    if space == "local":
+        cmds.matchTransform(driver, control, position=True, rotation=True)
+    else:
+        cmds.matchTransform(driver, control, position=True)
+    skip = [axis for axis in "xyz" if kind[0] + axis not in channels]
+    if kind == "rotate":
+        constraint = cmds.orientConstraint(
+            driver, control, maintainOffset=True, skip=skip)[0]
+    else:
+        constraint = cmds.pointConstraint(
+            driver, control, maintainOffset=True, skip=skip)[0]
+
+    cmds.addAttr(driver, longName=_TEST_SOURCE, dataType="string")
+    cmds.setAttr(driver + "." + _TEST_SOURCE, control, type="string")
+    cmds.addAttr(driver, longName=_TEST_CONSTRAINT, dataType="string")
+    cmds.setAttr(driver + "." + _TEST_CONSTRAINT, constraint, type="string")
+    cmds.setAttr(driver + ".visibility", 0)
+    return driver
+
+
+def _animate_driver(driver, kind, channels, start, end):
+    amplitude = 90 if kind == "rotate" else None
+    original = {attr: cmds.getAttr(driver + "." + attr) for attr in channels}
+    for attr in channels:
+        value = original[attr]
+        for frame in (start, end):
+            cmds.setKeyframe(driver, attribute=attr, time=frame, value=value)
+    for i, attr in enumerate(channels):
+        base = original[attr]
+        amount = amplitude if amplitude is not None else _distance
+        at = start + (i * 4 * _STEP)
+        for index, offset in enumerate((0, -amount, 0, amount, 0)):
+            cmds.setKeyframe(
+                driver, attribute=attr, time=at + index * _STEP,
+                value=base + offset)
+
+
+_distance = 5.0
+
+
+def _animation_nodes():
+    selected = _selection_controls()
+    found = []
+    for control in selected:
+        found.extend(_driver_for_control(control))
+    if found:
+        return found
+    if selected:
+        return selected
+    drivers = [name for name in session.get("drivers", []) if cmds.objExists(name)]
+    return drivers or _test_drivers()
+
+
+def _key_times():
+    nodes = _animation_nodes()
+    if not nodes:
+        return []
+    times = cmds.keyframe(nodes, query=True, timeChange=True) or []
+    return sorted(set(times))
+
+
+def CreateKeyframe(keyInput, *arr):
+    """Local/world rotating or translating tests, serial or simultaneous.
+
+    In Paint Skin mode, an active influence is used when no control is selected.
+    Control chains are safe because drivers are constrained per-control without
+    touching the original animation curves or creating child-joint chains.
+    """
+    global _distance
+    kind = keyInput.get("type")
+    space = keyInput.get("space")
+    if kind not in ("rotate", "translate") or space not in ("local", "world"):
+        cmds.warning("Animation test requires Rotate/Translate and Local/World.")
+        return []
+    _distance = float(cmds.intSliderGrp(keyInput["ui"], query=True, value=True))
+    origin = cmds.currentTime(query=True)
+    selection = cmds.ls(selection=True, long=True, flatten=True) or []
+    controls = _selection_controls()
+    if not controls:
+        active = _paint_control()
+        if active:
+            controls = [active]
+    if not controls:
+        cmds.warning("Select a control (or an active Paint Skin influence) first.")
+        return []
+
+    duration = 3 * 4 * _STEP
+    simultaneous = not keyInput.get("inturn", False)
+    end = origin + (duration if simultaneous else duration * len(controls))
+    generated = []
     try:
-        importlib.reload(module)
-    except:
-        reload(module)
+        for control in controls:
+            _remove_drivers(_driver_for_control(control))
+        for i, control in enumerate(controls):
+            available = _available_channels(control, kind)
+            if not available:
+                cmds.warning("{} has no free {} channels; skipped."
+                             .format(control, kind))
+                continue
+            driver = _make_driver(control, space, kind, available)
+            generated.append(driver)
+            start = origin if simultaneous else origin + i * duration
+            _animate_driver(driver, kind, available, start, start + duration)
+            if start > origin:
+                for attr in available:
+                    neutral = cmds.getAttr(driver + "." + attr)
+                    cmds.setKeyframe(
+                        driver, attribute=attr, time=origin, value=neutral)
+            if start + duration < end:
+                for attr in available:
+                    neutral = cmds.getAttr(driver + "." + attr)
+                    cmds.setKeyframe(
+                        driver, attribute=attr, time=end, value=neutral)
 
-
-
-session = {}
-
-### KEYFRAMES
-def CreateKeyframe(keyInput,*arr):
-    animationDistance = cmds.intSliderGrp(
-        keyInput["ui"],
-        query=True,
-        value=True,
-    )
-
-    originTime = cmds.currentTime(query=True)
-    currentTool = cmds.currentCtx()
-    if currentTool == 'artAttrSkinContext':
-        objs = [cmds.connectionInfo(skinSession['skinCluster']+".paintTrans",sourceFromDestination=True).split(".")[0]]
-    else:
-        objs = cmds.ls(selection=True)
-    if objs:
-        jointAddKey = []        
-        keySpace = keyInput['space']
-        keyType = keyInput['type']
-        keyInturn = keyInput['inturn']           
-        for obj in objs:
-            parent = cmds.listRelatives(obj,parent=True)
-            if parent:
-                parent = parent[0]
+        if generated:
+            session.update({
+                "drivers": generated, "controls": controls,
+                "start": origin, "end": end,
+            })
+            cmds.playbackOptions(min=origin, max=end, ast=origin, aet=end)
+        else:
+            cmds.warning("No controls could be animated.")
+        return generated
+    finally:
+        cmds.currentTime(origin)
+        if selection:
+            cmds.select(selection, replace=True)
+        else:
             cmds.select(clear=True)
-            jointSpace = cmds.joint()
-            cmds.addAttr(jointSpace,longName="NLTA_worldKeyframe",dt='string')
-            cmds.setAttr(jointSpace+'.overrideEnabled',1)
-            cmds.setAttr(jointSpace+'.overrideVisibility',0)
-            cmds.setAttr(jointSpace+'.hiddenInOutliner',True)
-            if parent:
-                cmds.parent(jointSpace,parent)
-            jointChild = cmds.joint()
-            if not cmds.attributeQuery("NLTA_SourceJoint",node=obj, exists=True):
-              cmds.addAttr(obj,longName="NLTA_SourceJoint",dt='string')
-            cmds.setAttr(obj+".NLTA_SourceJoint",jointSpace, type="string")
-      
-            jointAddKey.append(jointChild)
-            if keySpace == 'world':
-                cmds.matchTransform(jointSpace,obj,pos=True)
-            elif keySpace == 'local':
-                cmds.matchTransform(jointSpace,obj,pos=True,rot=True)
-            constraint = cmds.parentConstraint(jointChild,obj,mo=True)
-            cmds.setAttr(jointSpace+'.visibility',0)
-        if keyType == 'rotate':
-            keyData = {
-                "rx":[0,-90,0,90,0],
-                "ry":[0,-90,0,90,0],
-                "rz":[0,-90,0,90,0],
-            }
-        elif keyType == 'translate':
-            keyData = {
-                    "tx":[0,animationDistance*(-1),0,animationDistance,0],
-                    "ty":[0,animationDistance*(-1),0,animationDistance,0],
-                    "tz":[0,animationDistance*(-1),0,animationDistance,0],
-            }
-        for jointChild in jointAddKey:
-            if keyInput['inturn'] == False:
-                currentTime = originTime
-            else:
-                currentTime = cmds.currentTime(query=True)
-            for key in keyData:
-                keyArray = keyData[key]
-                for keyValue in keyArray:
-                    currentTime += 30
-                    cmds.currentTime(currentTime)              
-                    cmds.setKeyframe(jointChild, attribute=key,value=keyValue)
 
-    cmds.select(jointAddKey)
-    NLTA_General.FitRangeAnim()
-    cmds.currentTime(originTime)
-    cmds.playbackOptions(min=0)
-    if currentTool == 'artAttrSkinContext':
-        cmds.select(skinSession['mesh'])
-    else:
-        cmds.select(objs)
- 
-    
+
 def ZoomRangeAnim(*arr):
-    anim_curves = cmds.ls(type='animCurve') or []    
-    if not anim_curves:
-        cmds.warning("Haven't anim curve")
+    times = _key_times()
+    if len(times) < 2:
+        cmds.warning("Select animated controls or create an animation test.")
         return
-    key_times = cmds.keyframe(anim_curves, q=True)
-    
-    if not key_times:
-        cmds.warning("Haven't keyframe")
-        return
-    key_times = sorted(set(key_times))
-    current = cmds.currentTime(q=True)
-    start = None
-    end = None    
-    for i in range(len(key_times) - 1):
-        if key_times[i] <= current <= key_times[i + 1]:
-            start = key_times[i]
-            end = key_times[i + 1]
-            break    
-    if start is None and len(key_times) > 1:
-        if current < key_times[0]:
-            start, end = key_times[0], key_times[1]
-        elif current > key_times[-1]:
-            start, end = key_times[-2], key_times[-1]    
-    if start is not None and end is not None:
-        cmds.playbackOptions(min=start, max=end)
-        cmds.currentTime(current)
-    else:
-        cmds.warning("Can't find frame range")
+    frame = cmds.currentTime(query=True)
+    pairs = list(zip(times[:-1], times[1:]))
+    start, end = next(
+        ((a, b) for a, b in pairs if a <= frame <= b),
+        pairs[0] if frame < times[0] else pairs[-1])
+    cmds.playbackOptions(min=start, max=end)
 
-def deleteSenceKeyframe(*attr):
-    objs = cmds.ls()
-    for i in objs:
-        try:
-            if cmds.attributeQuery("NLTA_SourceJoint",node=i,ex=True):
-                cmds.deleteAttr(i+'.NLTA_SourceJoint')
-        except:pass
-        try:
-            if cmds.attributeQuery("NLTA_worldKeyframe",node=i,ex=True):
-                cmds.delete(i)
-        except:pass
-    cmds.currentTime(0)
+
+def FitRangeAnim(*arr):
+    times = _key_times()
+    if not times:
+        cmds.warning("No keys on selected controls or animation-test drivers.")
+        return
+    cmds.playbackOptions(
+        min=times[0], max=times[-1], ast=times[0], aet=times[-1])
+
+
+def deleteSenceKeyframe(*arr):
+    """Delete only generated animation tests, not the rig's existing keys."""
+    drivers = _test_drivers()
+    count = _remove_drivers(drivers)
+    # Compatible with helpers generated by the older Skinning Animation tool.
+    legacy = cmds.ls("*.NLTA_worldKeyframe", objectsOnly=True, long=True) or []
+    for node in legacy:
+        if not cmds.objExists(node):
+            continue
+        descendants = cmds.listRelatives(node, allDescendents=True, fullPath=True) or []
+        for driver in [node] + descendants:
+            constraints = cmds.listConnections(
+                driver, source=False, destination=True, type="parentConstraint") or []
+            for constraint in constraints:
+                if cmds.objExists(constraint):
+                    cmds.delete(constraint)
+        cmds.delete(node)
+        count += 1
+    for node in cmds.ls("*.NLTA_SourceJoint", objectsOnly=True, long=True) or []:
+        if cmds.objExists(node + ".NLTA_SourceJoint"):
+            cmds.deleteAttr(node + ".NLTA_SourceJoint")
+    session.update({"drivers": [], "controls": [], "start": None, "end": None})
+    if not count:
+        cmds.warning("No generated animation tests to delete.")
+    return count
+
 
 def DeleteAttrKeyframes(*arr):
-    sel = cmds.ls(selection=True)
-    if sel:
-        cmds.cutKey(sel, clear=True)
+    controls = _selection_controls()
+    if not controls:
+        active = _paint_control()
+        controls = [active] if active else []
+    if not controls:
+        cmds.warning("Select controls or an active Paint Skin influence.")
+        return
+    drivers = []
+    for control in controls:
+        drivers.extend(_driver_for_control(control))
+    if drivers:
+        _remove_drivers(drivers)
+        session["drivers"] = [
+            node for node in session["drivers"] if cmds.objExists(node)]
+    else:
+        cmds.cutKey(controls, clear=True)
