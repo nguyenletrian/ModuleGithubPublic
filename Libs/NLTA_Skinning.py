@@ -53,12 +53,6 @@ def _BoundJoint(skin, joint, influences=None):
         return joint
     matches = cmds.ls(joint, long=True, type="joint") or []
     candidates = [name for name in bound if name in matches]
-    if not candidates:
-        # The native Paint Skin tree can use relative paths such as
-        # "joint9|joint2" while MFnSkinCluster returns "|root|joint9|joint2".
-        # Accept only a unique suffix; a repeated leaf name is ambiguous.
-        suffix = "|" + joint.lstrip("|")
-        candidates = [name for name in bound if name.endswith(suffix)]
     return candidates[0] if len(candidates) == 1 else None
 
 
@@ -193,16 +187,7 @@ def _SelectNativePaintInfluence(joint):
             'string $nltaPaintTree = $gArtSkinInfluencesList;')
         if not tree or not cmds.treeView(tree, exists=True):
             return None  # Tool Settings is not showing the native influence tree.
-        pending = list(cmds.treeView(tree, query=True, children="") or [])
-        items = []
-        seen = set()
-        while pending:
-            item = pending.pop()
-            if item in seen:
-                continue
-            seen.add(item)
-            items.append(item)
-            pending.extend(cmds.treeView(tree, query=True, children=item) or [])
+        items = cmds.treeView(tree, query=True, children="") or []
         matches = []
         for item in items:
             paths = cmds.ls(item, long=True, type="joint") or []
@@ -449,66 +434,6 @@ def lockAll(*arr):
     mel.eval("artSkinInvLockInf artAttrSkinPaintCtx 1;")
     mel.eval("artSkinLockInf artAttrSkinPaintCtx 1;")
 
-def _SetPaintInfluenceLock(joint, locked):
-    """Use Maya's native lock action so an open Paint Skin tree updates live."""
-    attr = joint + ".liw"
-    if not cmds.objExists(attr):
-        return False
-    locked = bool(locked)
-    if bool(cmds.getAttr(attr)) == locked:
-        return False
-    # Maya itself invokes this procedure from the paint tool's influence
-    # menu. Unlike setAttr alone, it updates the native lock presentation.
-    name = joint.replace("\\", "\\\\").replace('"', '\\"')
-    try:
-        mel.eval('artSkinLockInfPassedIn "{}" {};'.format(name, int(locked)))
-    except RuntimeError:
-        pass
-    # Keep attribute truth authoritative if native UI isn't initialized.
-    if bool(cmds.getAttr(attr)) != locked:
-        cmds.setAttr(attr, int(locked))
-    return True
-
-
-def RefreshPaintInfluenceLocks(skin):
-    """Update Maya Paint Skin's lock buttons from live .liw values."""
-    try:
-        tree = mel.eval(
-            'global string $gArtSkinInfluencesList; '
-            'string $nltaLockTree = $gArtSkinInfluencesList;')
-        if not tree or not cmds.treeView(tree, exists=True):
-            return 0
-        bound = _SkinInfluencePaths(skin)
-        if not bound:
-            return 0
-
-        # Maya's tree is hierarchical; query child rows recursively rather
-        # than updating only root joints.
-        pending = list(cmds.treeView(tree, query=True, children="") or [])
-        seen = set()
-        updated = 0
-        while pending:
-            item = pending.pop()
-            if item in seen:
-                continue
-            seen.add(item)
-            pending.extend(
-                cmds.treeView(tree, query=True, children=item) or [])
-            joint = _BoundJoint(skin, item, bound)
-            if not joint or not cmds.objExists(joint + ".liw"):
-                continue
-            locked = bool(cmds.getAttr(joint + ".liw"))
-            cmds.treeView(
-                tree, edit=True,
-                buttonState=(item, 1, "buttonDown" if locked else "buttonUp"))
-            updated += 1
-        return updated
-    except (RuntimeError, TypeError, ValueError) as exc:
-        cmds.warning("Paint Skin lock display could not refresh: {}"
-                     .format(exc))
-        return 0
-
-
 def singleUnlock(objs, *arr):
     session = EnsureSkinSession()
     if not session:
@@ -523,8 +448,8 @@ def singleUnlock(objs, *arr):
                      .format(skin))
         return []
     for joint in joints:
-        _SetPaintInfluenceLock(joint, joint not in unlock_set)
-    RefreshPaintInfluenceLocks(skin)
+        if cmds.objExists(joint + ".liw"):
+            cmds.setAttr(joint + ".liw", 0 if joint in unlock_set else 1)
     return [joint for joint in joints if joint in unlock_set]
 
 def unlock(*arr):
@@ -548,7 +473,6 @@ def unlock(*arr):
     cmds.select(session["mesh"], r=True)
     singleUnlock(joints)
     SelectPaintInfluence(session["mesh"], joints[0])
-    RefreshPaintInfluenceLocks(session["skinCluster"])
 
 def UnlockJoints(mesh, jnts):
     skin = GetSkinCluster(mesh)
@@ -560,8 +484,8 @@ def UnlockJoints(mesh, jnts):
     if not targets:
         return
     for joint in joints:
-        _SetPaintInfluenceLock(joint, joint not in targets)
-    RefreshPaintInfluenceLocks(skin)
+        if cmds.objExists(joint + ".liw"):
+            cmds.setAttr(joint + ".liw", 0 if joint in targets else 1)
 
 def addUnlock(*arr):
     mel.eval("artSkinLockInf artAttrSkinPaintCtx 0;")    
@@ -590,7 +514,6 @@ def addUnlockUp(*arr):
 
     singleUnlock([jointActive, parentJoint])
     SelectPaintInfluence(session["mesh"], parentJoint)
-    RefreshPaintInfluenceLocks(session["skinCluster"])
 
 def UnlockTwoJoints(*arr):
     selection = cmds.ls(sl=True, fl=True) or []
@@ -626,7 +549,6 @@ def UnlockTwoJoints(*arr):
     jointB = _BoundJoint(skin, jointB, joints)
     cmds.select(mesh, r=True)
     SelectPaintInfluence(mesh, jointB)
-    RefreshPaintInfluenceLocks(skin)
     return jointA, jointB
 
 def UnlockInfluenceJoints(*arr):
@@ -681,7 +603,6 @@ def UnlockInfluenceJoints(*arr):
 
     cmds.select(mesh, r=True)
     SelectPaintInfluence(mesh, active)
-    RefreshPaintInfluenceLocks(skin)
 
     return unlocked
 
@@ -711,7 +632,6 @@ def addUnlockDown(*arr):
 
     singleUnlock([jointActive, childJoint])
     SelectPaintInfluence(session["mesh"], childJoint)
-    RefreshPaintInfluenceLocks(session["skinCluster"])
 
 def ActiveJoint(mesh, joint, *arr):
     data = GetSkinData(mesh)
