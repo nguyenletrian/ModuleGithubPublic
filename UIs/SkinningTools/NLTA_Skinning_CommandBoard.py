@@ -624,8 +624,9 @@ class InfluencePanel(QtWidgets.QFrame):
         self.tree.setUniformRowHeights(True)
         self.tree.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.tree.setToolTip(
-            "Click one joint to make it the sole active Paint Skin influence.\n"
-            "The Lock checkbox is independent of influence selection.")
+            "The blue row is the active influence in Maya Paint Skin Weights.\n"
+            "A black mesh can mean this joint has no weight in the viewed area.\n"
+            "The Lock checkbox is independent.")
         self.tree.itemChanged.connect(self.change_item_lock)
         self.tree.currentItemChanged.connect(self.change_active_influence)
         self.tree.itemDoubleClicked.connect(self.select_joint)
@@ -810,6 +811,17 @@ class InfluencePanel(QtWidgets.QFrame):
         if _activate_skin_paint_influence(
                 self.skin, self.mesh, joint, self._items):
             self._active_joint = joint
+            # A changed current item does not always select the row in Qt,
+            # particularly when Maya's Tool Settings retains keyboard focus.
+            self._syncing = True
+            blocked = self.tree.blockSignals(True)
+            try:
+                self.tree.clearSelection()
+                self.tree.setCurrentItem(item)
+                item.setSelected(True)
+            finally:
+                self.tree.blockSignals(blocked)
+                self._syncing = False
             self.filter_rows()
 
     def select_joint(self, item, column):
@@ -831,7 +843,9 @@ class InfluencePanel(QtWidgets.QFrame):
             self._active_joint = joint
             self.filter_rows()
             item = self._items[joint]
+            self.tree.clearSelection()
             self.tree.setCurrentItem(item)
+            item.setSelected(True)
             parent = item.parent()
             while parent:
                 parent.setExpanded(True)
@@ -1330,10 +1344,16 @@ class SkinningBoard(QtWidgets.QWidget):
                 alternate-background-color: #2D2D2D;
                 color: #E5E5E5;
                 border: 1px solid #454545;
-                selection-background-color: #505050;
+                selection-background-color: #267AA5;
+                selection-color: #FFFFFF;
             }
             QTreeWidget#SkinningInfluenceTree::item {
                 min-height: 20px;
+            }
+            QTreeWidget#SkinningInfluenceTree::item:selected,
+            QTreeWidget#SkinningInfluenceTree::item:selected:!active {
+                background-color: #267AA5;
+                color: #FFFFFF;
             }
             QLineEdit {
                 background-color: #252525;
