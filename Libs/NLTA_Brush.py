@@ -41,8 +41,8 @@ def _setBrushValue(value, operation):
         return False
     cmds.artAttrSkinPaintCtx(
         context, edit=True, skinPaintMode=1,
-        selectedattroper=operation, minvalue=-1.0,
-        value=float(value), opacity=1.0)
+        selectedattroper=operation, stampProfile="solid",
+        minvalue=-1.0, value=float(value), opacity=1.0)
     return True
 
 
