@@ -49,6 +49,8 @@ class FakeMaya:
         self.native_items = [ROOT, CHILD, OTHER]
         self.native_selected = [ROOT, CHILD]  # Replicate the Maya multi-selection bug.
         self.native_events = []
+        self.native_lock_icons = {}
+        self.native_tree_children = {}
         self.native_display_joint = None
         self.native_callback_events = []
         self.mel_calls = []
@@ -148,8 +150,15 @@ class FakeMaya:
         assert tree == self.native_tree
         if kw.get("exists"):
             return True
-        if kw.get("query") and kw.get("children") == "":
-            return list(self.native_items)
+        if kw.get("query") and "children" in kw:
+            return list(self.native_tree_children.get(
+                kw["children"], self.native_items if kw["children"] == "" else []))
+        if kw.get("edit") and "buttonState" in kw:
+            item, index, state = kw["buttonState"]
+            assert index == 1
+            self.native_lock_icons[item] = state
+            self.native_events.append(("buttonState", item, state))
+            return
         if kw.get("query") and kw.get("selectItem") is True:
             return list(self.native_selected)
         if kw.get("edit") and kw.get("clearSelection"):
@@ -183,7 +192,8 @@ FUNCTIONS = (
     "singleUnlock", "unlock", "UnlockJoints", "addUnlockUp",
     "addUnlockDown", "ActiveJoint", "switchJoint", "GetVertexWeights",
     "UnlockTwoJoints", "UnlockInfluenceJoints", "SelectPaintInfluence",
-    "_SelectNativePaintInfluence", "_RefreshPaintInfluenceDisplay"
+    "_SelectNativePaintInfluence", "_RefreshPaintInfluenceDisplay",
+    "RefreshPaintInfluenceLocks"
 )
 
 
@@ -210,7 +220,8 @@ def load_logic(fake):
         def eval(self, statement):
             fake.mel_calls.append(statement)
             if "$gArtSkinInfluencesList" in statement:
-                assert "string $nltaPaintTree = $gArtSkinInfluencesList;" in statement
+                assert ("string $nltaPaintTree = $gArtSkinInfluencesList;" in statement
+                        or "string $nltaLockTree = $gArtSkinInfluencesList;" in statement)
                 assert "; $gArtSkinInfluencesList;" not in statement
                 return fake.native_tree
             if statement.startswith("setSmoothSkinInfluence"):
@@ -297,6 +308,58 @@ class DagBoundInfluenceTests(unittest.TestCase):
                     ("artAttrSkinContext", {
                         "edit": True, "influence": ROOT,
                     }))
+
+    def test_add_up_refreshes_native_lock_buttons_live(self):
+        self.fake.native_tree = "artSkinInfluencesTree"
+        self.fake.native_tree_children = {
+            "": [ROOT],
+            ROOT: [CHILD],
+            CHILD: [],
+        }
+        self.fake.active = CHILD
+        self.logic["addUnlockUp"]()
+        self.assertFalse(self.fake.locks[ROOT])
+        self.assertFalse(self.fake.locks[CHILD])
+        self.assertEqual(self.fake.native_lock_icons[ROOT], "buttonUp")
+        self.assertEqual(self.fake.native_lock_icons[CHILD], "buttonUp")
+        self.assertEqual(self.fake.active, ROOT)
+        self.assertEqual(self.fake.native_selected, [ROOT])
+
+    def test_add_down_refreshes_native_lock_buttons_live(self):
+        self.fake.native_tree = "artSkinInfluencesTree"
+        self.fake.native_tree_children = {
+            "": [ROOT],
+            ROOT: [CHILD],
+            CHILD: [],
+        }
+        self.fake.active = ROOT
+        self.logic["addUnlockDown"]()
+        self.assertFalse(self.fake.locks[ROOT])
+        self.assertFalse(self.fake.locks[CHILD])
+        self.assertEqual(self.fake.native_lock_icons[ROOT], "buttonUp")
+        self.assertEqual(self.fake.native_lock_icons[CHILD], "buttonUp")
+        self.assertEqual(self.fake.active, CHILD)
+
+    def test_native_lock_refresh_preserves_scene_and_selection(self):
+        self.fake.native_tree = "artSkinInfluencesTree"
+        self.fake.native_tree_children = {"": [ROOT], ROOT: [CHILD]}
+        self.fake.locks[ROOT] = True
+        self.fake.locks[CHILD] = False
+        before = list(self.fake.selected)
+        before_native = list(self.fake.native_selected)
+        changed = self.logic["RefreshPaintInfluenceLocks"](self.fake.skin)
+        self.assertEqual(changed, 2)
+        self.assertEqual(self.fake.native_lock_icons[ROOT], "buttonDown")
+        self.assertEqual(self.fake.native_lock_icons[CHILD], "buttonUp")
+        self.assertEqual(self.fake.selected, before)
+        self.assertEqual(self.fake.native_selected, before_native)
+
+    def test_missing_native_tree_does_not_change_lock_data(self):
+        self.fake.native_tree = None
+        before = dict(self.fake.locks)
+        self.assertEqual(
+            self.logic["RefreshPaintInfluenceLocks"](self.fake.skin), 0)
+        self.assertEqual(self.fake.locks, before)
 
     def test_api_returns_only_the_exact_bound_paths(self):
         self.assertEqual(
