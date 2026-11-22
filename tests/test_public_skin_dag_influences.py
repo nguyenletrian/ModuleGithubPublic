@@ -49,6 +49,8 @@ class FakeMaya:
         self.native_items = [ROOT, CHILD, OTHER]
         self.native_selected = [ROOT, CHILD]  # Replicate the Maya multi-selection bug.
         self.native_events = []
+        self.native_display_joint = None
+        self.native_callback_events = []
         self.mel_calls = []
         self.model_panel = "modelPanel4"
         self.panel_shading = "wireframe"
@@ -209,6 +211,14 @@ def load_logic(fake):
                 return fake.native_tree
             if statement.startswith("setSmoothSkinInfluence"):
                 fake.native_active = statement.split('"')[1]
+            if statement.startswith("artSkinInflListChanging"):
+                item = statement.split('"')[1]
+                state = int(statement.rsplit(" ", 1)[-1].rstrip(";"))
+                fake.native_callback_events.append(("changing", item, state))
+            if statement.startswith("artSkinInflListChanged"):
+                fake.native_callback_events.append(("changed",))
+                fake.native_display_joint = (
+                    fake.native_selected[0] if fake.native_selected else None)
 
     session = {"mesh": "|Body|Mesh", "skinCluster": fake.skin,
                "joints": list(fake.influences)}
@@ -332,11 +342,21 @@ class DagBoundInfluenceTests(unittest.TestCase):
         self.assertEqual(self.fake.active, CHILD)
         self.assertEqual(self.fake.native_events[-2:], [
             "clear", ("select", CHILD, True)])
+        self.assertEqual(self.fake.native_callback_events[-3:], [
+            ("changing", CHILD, 0),
+            ("changing", CHILD, 1),
+            ("changed",)])
+        self.assertEqual(self.fake.native_display_joint, CHILD)
         self.assertEqual(self.fake.selected, before_scene_selection)
 
         self.assertTrue(self.logic["SelectPaintInfluence"]("|Body|Mesh", ROOT))
         self.assertEqual(self.fake.native_selected, [ROOT])
         self.assertEqual(self.fake.active, ROOT)
+        self.assertEqual(self.fake.native_display_joint, ROOT)
+        self.assertEqual(self.fake.native_callback_events[-3:], [
+            ("changing", ROOT, 0),
+            ("changing", ROOT, 1),
+            ("changed",)])
         self.assertEqual(self.fake.selected, before_scene_selection)
 
     def test_native_tree_resolves_partial_dag_item_without_confusing_names(self):
@@ -354,6 +374,10 @@ class DagBoundInfluenceTests(unittest.TestCase):
         self.fake.ls = ls
         self.assertTrue(self.logic["SelectPaintInfluence"]("|Body|Mesh", CHILD))
         self.assertEqual(self.fake.native_selected, ["joint1|joint2"])
+        self.assertEqual(self.fake.native_callback_events[-3:], [
+            ("changing", "joint1|joint2", 0),
+            ("changing", "joint1|joint2", 1),
+            ("changed",)])
 
     def test_native_tree_refuses_ambiguous_item_without_multi_select(self):
         self.fake.native_tree = "artSkinInfluencesTree"
