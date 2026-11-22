@@ -341,7 +341,7 @@ def singleUnlock(objs, *arr):
     return [joint for joint in joints if joint in unlock_set]
 
 def unlock(*arr):
-    selected_joints = cmds.ls(sl=True, type="joint") or []
+    selected_joints = cmds.ls(sl=True, type="joint", long=True) or []
     session = EnsureSkinSession()
     if not session:
         return
@@ -438,12 +438,13 @@ def UnlockTwoJoints(*arr):
     joints = singleUnlock([jointA, jointB])
     if len(joints) != 2:
         return
+    jointA = _BoundJoint(skin, jointA, joints)
     jointB = _BoundJoint(skin, jointB, joints)
     cmds.select(mesh, r=True)
     EnsurePaintContext(mesh)
     if ActiveJoint(mesh, jointB):
         cmds.artAttrSkinPaintCtx("artAttrSkinContext", edit=True, influence=jointB)
-    return joints[0], jointB
+    return jointA, jointB
 
 def UnlockInfluenceJoints(*arr):
     selection = cmds.ls(sl=True, fl=True) or []
