@@ -278,7 +278,7 @@ class InfluenceLogicTests(unittest.TestCase):
                 'self.tree.itemDoubleClicked.connect(self.select_joint)',
                 'self.tree.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)',
                 'self.tree.currentItemChanged.connect(self.change_active_influence)',
-                '# Reapply even for the same row:',
+                'self._syncing = True',
                 'if joint not in self._items:',
 
                 'self._live_timer.setInterval(300)',
@@ -289,7 +289,7 @@ class InfluenceLogicTests(unittest.TestCase):
                 'self.tree.setCurrentItem(item)',
                 'def sync_from_paint(self):',
                 'def sync_live(self):',
-                'def sync_lock_states(self):',
+                'def sync_lock_states(self, rows=None):',
                 'event=[event, callback]',
                 "def reset_scene(self):",
                 "self.influences.refresh()",
