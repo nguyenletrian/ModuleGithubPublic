@@ -541,20 +541,11 @@ def _activate_skin_paint_influence(skin, mesh, joint, bound=None):
         return False
     try:
         import NLTA_Skinning
-        ensure = getattr(NLTA_Skinning, "EnsurePaintContext", None)
-        if not callable(ensure) or not ensure(mesh):
-            cmds.warning("Could not activate Maya Paint Skin Weights for {}.".format(mesh))
+        select = getattr(NLTA_Skinning, "SelectPaintInfluence", None)
+        if not callable(select):
+            cmds.warning("Update NLTA_Skinning.py to enable native Paint Skin synchronization.")
             return False
-
-        # The existing NLTA tools use paintTrans as their current influence.
-        source = cmds.connectionInfo(
-            skin + ".paintTrans", sourceFromDestination=True) or ""
-        current = source.split(".", 1)[0]
-        if _resolve_skin_influence(skin, current, bound) != joint:
-            cmds.connectAttr(joint + ".message", skin + ".paintTrans", force=True)
-        cmds.artAttrSkinPaintCtx(
-            "artAttrSkinContext", edit=True, influence=joint)
-        return True
+        return bool(select(mesh, joint))
     except (RuntimeError, ValueError) as exc:
         cmds.warning("Unable to select paint influence {}: {}".format(
             joint, exc))
