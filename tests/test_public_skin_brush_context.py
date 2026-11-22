@@ -156,15 +156,61 @@ class BrushContextTests(unittest.TestCase):
         self._assert_brush_only(0)
         self._assert_brush_only(1)
 
-    def test_switch_brush_additive_preset_does_not_change_vertex_weights(self):
-        original = dict(self.cmds.weights)
-        self.assertTrue(self.brush["AddWeight"](-1))
-        self.assertEqual(self.cmds.weights, original)
-        self.assertEqual(self.cmds.skin_writes, [])
+    def test_add_preset_modifies_only_selected_weights_with_maya_fallback(self):
+        untouched = self.cmds.weights[MESH + ".vtx[3]"]
+        original_selection = list(self.cmds.selection)
+        self.assertTrue(self.brush["AddWeight"](0.1))
+        self.assertAlmostEqual(self.cmds.weights[MESH + ".vtx[1]"], 0.3)
+        self.assertEqual(self.cmds.weights[MESH + ".vtx[2]"], 1.0)
+        self.assertTrue(self.brush["AddWeight"](-0.5))
+        self.assertEqual(self.cmds.weights[MESH + ".vtx[1]"], 0.0)
+        self.assertEqual(self.cmds.weights[MESH + ".vtx[2]"], 0.5)
+        self.assertEqual(self.cmds.weights[MESH + ".vtx[3]"], untouched)
+        self.assertEqual(self.cmds.selection, original_selection)
+        self.assertEqual(len(self.cmds.skin_writes), 4)
+        self.assertEqual(self.cmds.refreshed, 2)
         self.assertEqual(self.cmds.context_edits[-1], {
             "edit": True, "skinPaintMode": 1,
-            "selectedattroper": "additive", "value": -1.0,
+            "selectedattroper": "additive", "value": -0.5,
         })
+
+    def test_add_preset_uses_original_native_mel_when_available(self):
+        self.mel.loaded = True
+        originals = dict(self.cmds.weights)
+        self.assertTrue(self.brush["AddWeight"](-0.01))
+        self.assertEqual(self.cmds.weights, originals)
+        self.assertEqual(self.cmds.skin_writes, [])
+        self.assertIn(
+            "artSkinSetSelectionValue -0.01 false artAttrSkinPaintCtx artAttrSkin;",
+            self.mel.eval_calls)
+
+    def test_add_preset_does_not_modify_locked_influence(self):
+        self.cmds.liw = True
+        originals = dict(self.cmds.weights)
+        self.assertFalse(self.brush["AddWeight"](0.03))
+        self.assertEqual(self.cmds.weights, originals)
+        self.assertEqual(self.cmds.skin_writes, [])
+        self.assertTrue(any("locked" in w for w in self.cmds.warnings))
+
+    def test_add_without_vertex_selection_does_not_flood_mesh(self):
+        self.cmds.selection = [MESH]
+        originals = dict(self.cmds.weights)
+        self.assertFalse(self.brush["AddWeight"](0.03))
+        self.assertEqual(self.cmds.weights, originals)
+        self.assertEqual(self.cmds.skin_writes, [])
+        self.assertTrue(any("select vertices" in w for w in self.cmds.warnings))
+
+    def test_all_mayascriptnew_add_step_sizes_are_supported(self):
+        increments = (0.0001, 0.0005, 0.001, 0.005,
+                      0.01, 0.03, 0.05, 0.1)
+        for delta in increments:
+            for sign in (-1, 1):
+                with self.subTest(delta=delta, sign=sign):
+                    self.cmds.weights[MESH + ".vtx[1]"] = 0.5
+                    self.assertTrue(self.brush["AddWeight"](delta * sign))
+                    self.assertAlmostEqual(
+                        self.cmds.weights[MESH + ".vtx[1]"],
+                        0.5 + delta * sign)
 
     def test_switching_zero_and_one_sets_current_value_only(self):
         self._assert_brush_only(0)
@@ -220,16 +266,17 @@ class BrushContextTests(unittest.TestCase):
         }])
         self.assertEqual(self.mel.eval_calls, [])
 
-    def test_no_legacy_mel_or_direct_weight_modifications_in_brush(self):
+    def test_missing_mel_ui_procedures_stay_unused_but_weight_add_is_restored(self):
         source = SOURCE.read_text(encoding="utf-8")
-        for unsafe in (
+        for unavailable in (
             "artAttrSkinPaintModePaintSelect",
             "artAttrPaintOperation",
-            "artSkinSetSelectionValue",
-            "skinPercent(",
             "artUpdateStampProfile",
         ):
-            self.assertNotIn(unsafe, source)
+            self.assertNotIn(unavailable, source)
+        self.assertIn('exists "artSkinSetSelectionValue"', source)
+        self.assertIn("skinPercent(", source)
+        self.assertIn("_setBrushValue(newValue", source)
 
 
 if __name__ == "__main__":
