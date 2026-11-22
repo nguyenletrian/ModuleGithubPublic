@@ -78,28 +78,37 @@ def _available_channels(control, kind):
 def _make_driver(control, space, kind, channels):
     parent = (cmds.listRelatives(control, parent=True, fullPath=True) or [None])[0]
     name = "NLTA_TestAnim_" + control.rsplit("|", 1)[-1].replace(":", "_") + "_DRV"
-    kwargs = {"name": name}
+    kwargs = {"name": name, "skipSelect": True}
     if space == "local" and parent:
         kwargs["parent"] = parent
     driver = cmds.createNode("transform", **kwargs)
-    if space == "local":
-        cmds.matchTransform(driver, control, position=True, rotation=True)
-    else:
-        cmds.matchTransform(driver, control, position=True)
-    skip = [axis for axis in "xyz" if kind[0] + axis not in channels]
-    if kind == "rotate":
-        constraint = cmds.orientConstraint(
-            driver, control, maintainOffset=True, skip=skip)[0]
-    else:
-        constraint = cmds.pointConstraint(
-            driver, control, maintainOffset=True, skip=skip)[0]
+    constraint = None
+    try:
+        if space == "local":
+            cmds.matchTransform(driver, control, position=True, rotation=True)
+        else:
+            cmds.matchTransform(driver, control, position=True)
+        skip = [axis for axis in "xyz" if kind[0] + axis not in channels]
+        options = {"maintainOffset": True}
+        if skip:
+            options["skip"] = skip
+        if kind == "rotate":
+            constraint = cmds.orientConstraint(driver, control, **options)[0]
+        else:
+            constraint = cmds.pointConstraint(driver, control, **options)[0]
 
-    cmds.addAttr(driver, longName=_TEST_SOURCE, dataType="string")
-    cmds.setAttr(driver + "." + _TEST_SOURCE, control, type="string")
-    cmds.addAttr(driver, longName=_TEST_CONSTRAINT, dataType="string")
-    cmds.setAttr(driver + "." + _TEST_CONSTRAINT, constraint, type="string")
-    cmds.setAttr(driver + ".visibility", 0)
-    return driver
+        cmds.addAttr(driver, longName=_TEST_SOURCE, dataType="string")
+        cmds.setAttr(driver + "." + _TEST_SOURCE, control, type="string")
+        cmds.addAttr(driver, longName=_TEST_CONSTRAINT, dataType="string")
+        cmds.setAttr(driver + "." + _TEST_CONSTRAINT, constraint, type="string")
+        cmds.setAttr(driver + ".visibility", 0)
+        return driver
+    except RuntimeError:
+        if constraint and cmds.objExists(constraint):
+            cmds.delete(constraint)
+        if cmds.objExists(driver):
+            cmds.delete(driver)
+        raise
 
 
 def _animate_driver(driver, kind, channels, start, end):
@@ -181,7 +190,11 @@ def CreateKeyframe(keyInput, *arr):
                 cmds.warning("{} has no free {} channels; skipped."
                              .format(control, kind))
                 continue
-            driver = _make_driver(control, space, kind, available)
+            try:
+                driver = _make_driver(control, space, kind, available)
+            except RuntimeError as exc:
+                cmds.warning("Cannot test {}: {}".format(control, exc))
+                continue
             generated.append(driver)
             start = origin if simultaneous else origin + i * duration
             _animate_driver(driver, kind, available, start, start + duration)
