@@ -44,6 +44,7 @@ class FakeMaya:
         self.locks = {path: True for path in self.scene_joints}
         self.warning_messages = []
         self.connected = []
+        self.weight_map = {ROOT: 0.25, CHILD: 0.75, OTHER: 0.0, EXTRA: 0.0}
 
     def ls(self, *args, **kwargs):
         if kwargs.get("sl") or kwargs.get("selection"):
@@ -70,6 +71,11 @@ class FakeMaya:
 
     def getAttr(self, attr):
         return self.locks[attr[:-4]]
+
+    def skinPercent(self, skin, vertex, **kwargs):
+        assert skin == self.skin
+        assert kwargs.get("q")
+        return self.weight_map.get(kwargs["transform"], 0.0)
 
     def setAttr(self, attr, value):
         self.locks[attr[:-4]] = bool(value)
@@ -109,7 +115,8 @@ class FakeMaya:
 FUNCTIONS = (
     "_SkinInfluencePaths", "_BoundJoint", "GetActivePaintJoint",
     "singleUnlock", "unlock", "UnlockJoints", "addUnlockUp",
-    "addUnlockDown", "ActiveJoint", "switchJoint"
+    "addUnlockDown", "ActiveJoint", "switchJoint", "GetVertexWeights",
+    "UnlockTwoJoints", "UnlockInfluenceJoints"
 )
 
 
@@ -138,6 +145,8 @@ def load_logic(fake):
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), "exec"),
          scope)
     scope["EnsureSkinSession"] = lambda **kw: session
+    scope["GetSkinCluster"] = lambda mesh: fake.skin
+    scope["_SetSkinSession"] = lambda mesh, skin: session
     scope["EnsurePaintContext"] = lambda *args, **kw: True
     scope["GetSkinData"] = lambda mesh=None: {
         "mesh": "|Body|Mesh", "skinCluster": fake.skin,
@@ -226,6 +235,36 @@ class DagBoundInfluenceTests(unittest.TestCase):
         self.assertEqual(self.logic["singleUnlock"](["joint2"]), [])
         self.assertEqual(before, self.fake.locks)
 
+    def test_vertex_weights_keep_two_same_named_bound_joints_separate(self):
+        self.fake.influences = [ROOT, CHILD, OTHER]
+        self.fake.weight_map = {ROOT: 0.1, CHILD: 0.7, OTHER: 0.2}
+        weights = self.logic["GetVertexWeights"](
+            self.fake.skin, "|Body|Mesh.vtx[3]")
+        self.assertEqual(weights, self.fake.weight_map)
+        self.assertEqual(len(weights), 3)
+
+    def test_unlock_two_joints_handles_two_bound_joint2_nodes(self):
+        self.fake.influences = [ROOT, CHILD, OTHER]
+        self.fake.weight_map = {ROOT: 0.1, CHILD: 0.7, OTHER: 0.2}
+        self.fake.selected = ["|Body|Mesh.vtx[3]"]
+        joints = self.logic["UnlockTwoJoints"]()
+        self.assertEqual(joints, (CHILD, OTHER))
+        self.assertEqual(self.fake.active, OTHER)
+        self.assertTrue(self.fake.locks[ROOT])
+        self.assertFalse(self.fake.locks[CHILD])
+        self.assertFalse(self.fake.locks[OTHER])
+
+    def test_unlock_joints_unlocks_only_influences_weighting_vertex(self):
+        self.fake.influences = [ROOT, CHILD, OTHER]
+        self.fake.weight_map = {ROOT: 0.0, CHILD: 0.8, OTHER: 0.2}
+        self.fake.selected = ["|Body|Mesh.vtx[3]"]
+        unlocked = self.logic["UnlockInfluenceJoints"]()
+        self.assertEqual(set(unlocked), {CHILD, OTHER})
+        self.assertEqual(self.fake.active, CHILD)
+        self.assertTrue(self.fake.locks[ROOT])
+        self.assertFalse(self.fake.locks[CHILD])
+        self.assertFalse(self.fake.locks[OTHER])
+
     def test_other_skin_joint_actions_use_canonical_membership(self):
         source = SOURCE.read_text(encoding="utf-8")
         for fragment in (
@@ -236,7 +275,8 @@ class DagBoundInfluenceTests(unittest.TestCase):
             "sourceIndex = (fullNames.index(sourceName)",
             "parentIndex = (fullNames.index(parentName)",
             "influences[i].fullPathName()",
-            "skinJoints = _SkinInfluencePaths(skinCluster)",
+            "skinJoints = bound",
+            "influences = _SkinInfluencePaths(skinCluster)",
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, source)
