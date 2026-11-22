@@ -158,7 +158,10 @@ def EnsurePaintContext(mesh=None):
     context = "artAttrSkinContext"
     if not cmds.artAttrSkinPaintCtx(context, exists=True):
         cmds.artAttrSkinPaintCtx(context)
-    cmds.setToolTo(context)
+    # Re-entering an already active Artisan context can reset the viewport's
+    # color-feedback draw state. Only activate it if another tool is running.
+    if cmds.currentCtx() != context:
+        cmds.setToolTo(context)
 
     active = GetActivePaintJoint(session["skinCluster"])
     if not active:
