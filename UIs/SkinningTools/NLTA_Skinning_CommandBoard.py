@@ -31,7 +31,6 @@ LEFT_DOCK_GROUP_ORDER = (
 # Small, painted controls in two rows per joint; no QWidget per influence.
 # (label, action, caption, width, row), with 0 = top / 1 = bottom.
 INFLUENCE_ROW_ACTIONS = (
-    ("Unlock", "unlock", "U", 24, 0),
     ("Add Unlock", "add_unlock", "+", 23, 0),
     ("Add Up", "add_up", "↑", 23, 0),
     ("Add Down", "add_down", "↓", 23, 0),
@@ -520,9 +519,8 @@ def _influence_action_plan(skin, joint, action):
         cmds.warning("The clicked joint is no longer bound to this skinCluster.")
         return None
     bound = set(available)
-    if action in ("unlock", "lock_inverse"):
-        # Exclusive: clicked joint unlocked; every other influence locked.
-        # Keep the legacy exclusive Unlock behavior for compatibility.
+    if action == "lock_inverse":
+        # Exclusive: clicked joint unlocked; every other bound influence locked.
         return True, [joint], joint
     if action == "unlock_all":
         return False, available, joint
