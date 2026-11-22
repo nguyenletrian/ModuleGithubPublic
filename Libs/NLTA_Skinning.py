@@ -390,16 +390,23 @@ def addUnlockUp(*arr):
         cmds.warning("No active paint influence found.")
         return
 
-    parentJoint = cmds.listRelatives(jointActive, parent=True, type="joint") or []
-    if not parentJoint:
+    parents = cmds.listRelatives(
+        jointActive, parent=True, type="joint", fullPath=True) or []
+    if not parents:
         cmds.warning("{} has no parent joint.".format(jointActive))
         return
 
-    parentJoint = parentJoint[0]
+    parentJoint = _BoundJoint(session["skinCluster"], parents[0])
+    if not parentJoint:
+        cmds.warning("Parent {} is not bound to {}."
+                     .format(parents[0], session["skinCluster"]))
+        return
+
     singleUnlock([jointActive, parentJoint])
-    EnsurePaintContext()
-    ActiveJoint(session["mesh"], parentJoint)
-    cmds.artAttrSkinPaintCtx("artAttrSkinContext", edit=True, influence=parentJoint)
+    EnsurePaintContext(session["mesh"])
+    if ActiveJoint(session["mesh"], parentJoint):
+        cmds.artAttrSkinPaintCtx("artAttrSkinContext", edit=True,
+                                 influence=parentJoint)
 
 def UnlockTwoJoints(*arr):
     selection = cmds.ls(sl=True, fl=True) or []
@@ -425,13 +432,18 @@ def UnlockTwoJoints(*arr):
         return
 
     jointA, jointB = data[0][0], data[1][0]
-    skinSession.update(GetSkinData(mesh))
-    singleUnlock([jointA, jointB])
+    session = _SetSkinSession(mesh, skin)
+    if not session:
+        return
+    joints = singleUnlock([jointA, jointB])
+    if len(joints) != 2:
+        return
+    jointB = _BoundJoint(skin, jointB, joints)
     cmds.select(mesh, r=True)
-    EnsurePaintContext()
-    ActiveJoint(mesh, jointB)
-    cmds.artAttrSkinPaintCtx("artAttrSkinContext", edit=True, influence=jointB)
-    return jointA, jointB
+    EnsurePaintContext(mesh)
+    if ActiveJoint(mesh, jointB):
+        cmds.artAttrSkinPaintCtx("artAttrSkinContext", edit=True, influence=jointB)
+    return joints[0], jointB
 
 def UnlockInfluenceJoints(*arr):
     selection = cmds.ls(sl=True, fl=True) or []
@@ -471,20 +483,24 @@ def UnlockInfluenceJoints(*arr):
     joints = [joint for joint, weight in data]
 
     # Update skin data
-    skinSession.update(GetSkinData(mesh))
+    session = _SetSkinSession(mesh, skin)
+    if not session:
+        return
 
-    # Unlock all affecting joints
-    singleUnlock(joints)
+    # Unlock all affecting joints by DAG identity.
+    unlocked = singleUnlock(joints)
+    if not unlocked:
+        return
+    active = _BoundJoint(skin, joints[0], unlocked)
+    if not active:
+        return
 
-    # Open Paint Skin Weight Tool
     cmds.select(mesh, r=True)
-    EnsurePaintContext()
+    EnsurePaintContext(mesh)
+    if ActiveJoint(mesh, active):
+        cmds.artAttrSkinPaintCtx("artAttrSkinContext", edit=True, influence=active)
 
-    # Set highest-weight joint as current influence.
-    ActiveJoint(mesh, joints[0])
-    cmds.artAttrSkinPaintCtx("artAttrSkinContext", edit=True, influence=joints[0])
-
-    return joints
+    return unlocked
 
 def addUnlockDown(*arr):
     session = EnsureSkinSession()
@@ -496,16 +512,25 @@ def addUnlockDown(*arr):
         cmds.warning("No active paint influence found.")
         return
 
-    children = cmds.listRelatives(jointActive, children=True, type="joint") or []
+    children = cmds.listRelatives(
+        jointActive, children=True, type="joint", fullPath=True) or []
     if not children:
         cmds.warning("{} has no child joint.".format(jointActive))
         return
 
-    childJoint = children[0]
+    childJoint = next((path for child in children
+                       for path in [_BoundJoint(session["skinCluster"], child)]
+                       if path), None)
+    if not childJoint:
+        cmds.warning("No child of {} is bound to {}."
+                     .format(jointActive, session["skinCluster"]))
+        return
+
     singleUnlock([jointActive, childJoint])
-    EnsurePaintContext()
-    ActiveJoint(session["mesh"], childJoint)
-    cmds.artAttrSkinPaintCtx("artAttrSkinContext", edit=True, influence=childJoint)
+    EnsurePaintContext(session["mesh"])
+    if ActiveJoint(session["mesh"], childJoint):
+        cmds.artAttrSkinPaintCtx("artAttrSkinContext", edit=True,
+                                 influence=childJoint)
 
 def ActiveJoint(mesh, joint, *arr):
     data = GetSkinData(mesh)
@@ -696,16 +721,20 @@ def setMiddleWeight(*arr):
         cmds.warning("Select the middle joint, optional extra joints, and vertices.")
         return
 
-    middleJoint = joints[0]
-    jointArray = joints[1:]
     mesh = vertices[0].split(".")[0]
     vertices = [vertex for vertex in vertices if vertex.split(".")[0] == mesh]
     skinCluster = GetSkinCluster(mesh)
     if not skinCluster:
         cmds.warning("No skinCluster found on {}.".format(mesh))
         return
+    bound = _SkinInfluencePaths(skinCluster)
+    resolved = [_BoundJoint(skinCluster, joint, bound) for joint in joints]
+    if any(joint is None for joint in resolved):
+        cmds.warning("Selected joints must be influences of {}.".format(skinCluster))
+        return
+    middleJoint, jointArray = resolved[0], resolved[1:]
 
-    skinJoints = cmds.skinCluster(skinCluster, q=True, inf=True) or []
+    skinJoints = bound
     lockState = {joint: cmds.getAttr(joint + ".liw") for joint in skinJoints if cmds.objExists(joint + ".liw")}
 
     try:
