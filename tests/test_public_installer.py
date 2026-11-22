@@ -99,8 +99,8 @@ class PublicInstallerTests(unittest.TestCase):
             script = button["command"]
             compile(script, "shelf_" + button["label"], "exec")
             self.assertIn("GH.CreateTool(", script)
-            self.assertIn("'updateFromGitHub': True", script)
-            self.assertIn("'module': '{}'".format(button["label"]), script)
+            self.assertIn('"updateFromGitHub": True', script)
+            self.assertIn('"module": {!r}'.format(button["label"]), script)
             self.assertIn("toolFolder = " + repr(str(self.root)), script)
 
     def test_public_download_verifies_blob_sha(self):
