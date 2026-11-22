@@ -117,6 +117,18 @@ class InfluenceLogicTests(unittest.TestCase):
         self.assertEqual(self.logic["_skin_influence_rows"]("skin1")[-1],
                          ("|Rig|Extra_JNT", None))
 
+    def test_joint_list_matches_dag_paths_used_by_add_down(self):
+        joint_a = "|RigA|root|joint2"
+        joint_b = "|RigB|root|joint2"
+        self.cmds.influences = [joint_a, joint_b]
+        self.cmds.locks = {joint_a: False, joint_b: True}
+        backend = types.ModuleType("NLTA_Skinning")
+        backend._SkinInfluencePaths = lambda skin: (
+            list(self.cmds.influences) if skin == "skin1" else [])
+        with mock.patch.dict(sys.modules, {"NLTA_Skinning": backend}):
+            rows = self.logic["_skin_influence_rows"]("skin1")
+        self.assertEqual(rows, [(joint_a, False), (joint_b, True)])
+
     def test_skin_influence_hierarchy_skips_unbound_ancestors(self):
         hierarchy = self.logic["_influence_hierarchy"]
         rows = [
