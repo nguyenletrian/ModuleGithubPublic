@@ -419,12 +419,31 @@ def DeactiveSkin(mesh,*arr):
 def component(*arr):    
     mel.eval("ComponentEditor;")
     
-def pruneSmallWeights(*arr):    
-    mel.eval("artSkinLockInf artAttrSkinPaintCtx 0;")
-    mel.eval("artSkinInvLockInf artAttrSkinPaintCtx 0;")
-    mel.eval("PruneSmallWeights;")
-    mel.eval("artSkinLockInf artAttrSkinPaintCtx 0;")
-    mel.eval("artSkinInvLockInf artAttrSkinPaintCtx 1;")  
+def pruneSmallWeights(*arr):
+    """Prune with temporarily unlocked influences; restore every original lock."""
+    current = EnsureSkinSession(warn=False)
+    if not current:
+        cmds.warning("Prune requires a skinned mesh.")
+        return
+    skin = current["skinCluster"]
+    locks = {}
+    for joint in _SkinInfluencePaths(skin):
+        plug = joint + ".liw"
+        if cmds.objExists(plug):
+            locks[joint] = bool(cmds.getAttr(plug))
+    try:
+        # Preserve the legacy prune-all behavior without invoking MEL lock
+        # controls that change the native Paint Skin Weights tool's UI state.
+        for joint, locked in locks.items():
+            if locked:
+                cmds.setAttr(joint + ".liw", 0)
+        mel.eval("PruneSmallWeights;")
+    finally:
+        for joint, locked in locks.items():
+            plug = joint + ".liw"
+            if cmds.objExists(plug) and bool(cmds.getAttr(plug)) != locked:
+                cmds.setAttr(plug, int(locked))
+
 
 def unlockAll(*arr):
     mel.eval("artSkinInvLockInf artAttrSkinPaintCtx 0;")
