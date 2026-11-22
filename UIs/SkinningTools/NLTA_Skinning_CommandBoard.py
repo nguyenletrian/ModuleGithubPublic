@@ -28,6 +28,14 @@ LEFT_DOCK_GROUP_ORDER = (
     ("paint", "locks"), ("paint", "helpers"),
     ("weight", "increment"), ("paint", "quick"),
 )
+INFLUENCE_CONTEXT_ACTIONS = (
+    ("Unlock", "unlock"),
+    ("Unlock All", "unlock_all"),
+    ("Add Unlock", "add_unlock"),
+    ("Add Up", "add_up"),
+    ("Add Down", "add_down"),
+    ("Isolate", "isolate"),
+)
 PAINT_STRIP_WIDTH = 145  # Half of the former 290-px action strip.
 
 
@@ -89,14 +97,8 @@ def command_catalog(tools, distance_ui):
                 ("Pick Value", b.pickValue, "Sample a skin weight", ""),
             ]),
             ("locks", "Influence locks", [
-                ("Unlock", s.unlock, "", ""),
-                ("Add Unlock", s.addUnlock, "", ""),
-                ("Add Down", s.addUnlockDown, "", ""),
-                ("Add Up", s.addUnlockUp, "", ""),
-                ("Unlock All", s.unlockAll, "", ""),
-                ("Unlock 2 Joints", s.UnlockTwoJoints, "Select one vertex: unlock its top two weighted influences", ""),
-                ("Unlock Joints", s.UnlockInfluenceJoints, "Select one vertex: unlock every influence affecting that vertex", ""),
-                ("Isolate", s.IsolateEffectVertex, "Isolate vertices affected by the active paint influence", ""),
+                ("Unlock 2 Joints", s.UnlockTwoJoints,
+                 "Select one vertex: unlock its top two weighted influences", ""),
             ]),
             ("helpers", "Paint helpers", [
                 ("Switch Joint", s.switchJoint, "Advance to the next unlocked influence on the selected skin", ""),
@@ -500,6 +502,40 @@ def _set_influence_locks(skin, joints, mode):
     return changed
 
 
+def _influence_menu_plan(skin, joint, action):
+    """Resolve right-click actions against the exact bound DAG joint.
+
+    Exclusive operations match the original singleUnlock behavior. Add Unlock
+    keeps existing locks, while Add Up/Down unlock the clicked joint and its
+    directly adjacent bound parent/child (then focus the latter).
+    """
+    available = [name for name, _ in _skin_influence_rows(skin)]
+    if joint not in available:
+        cmds.warning("The clicked joint is no longer bound to this skinCluster.")
+        return None
+    bound = set(available)
+    if action == "unlock":
+        return True, [joint], joint
+    if action == "unlock_all":
+        return False, available, joint
+    if action == "add_unlock":
+        return False, [joint], joint
+    if action in ("add_up", "add_down"):
+        relatives = cmds.listRelatives(
+            joint, parent=action == "add_up", children=action == "add_down",
+            type="joint", fullPath=True) or []
+        linked = [candidate for name in relatives
+                  for candidate in [_resolve_skin_influence(skin, name, bound)]
+                  if candidate]
+        if not linked:
+            cmds.warning("No bound {} joint found for {}.".format(
+                "parent" if action == "add_up" else "child", joint))
+            return None
+        return True, [joint, linked[0]], linked[0]
+    cmds.warning("Unsupported influence menu action: " + action)
+    return None
+
+
 def _resolve_skin_influence(skin, name, bound=None):
     """Resolve Maya's short paint-influence names against this skin's full DAG paths."""
     if not name or not skin:
@@ -596,6 +632,10 @@ class InfluencePanel(QtWidgets.QFrame):
         self._editing_locks = False
         self._pending_locks = {}
         self._pending_lock_skin = None
+        self._pending_context_action = None
+        self._context_timer = QtCore.QTimer(self)
+        self._context_timer.setSingleShot(True)
+        self._context_timer.timeout.connect(self._apply_influence_action)
         self._lock_timer = QtCore.QTimer(self)
         self._lock_timer.setSingleShot(True)
         self._lock_timer.timeout.connect(self._apply_pending_locks)
@@ -649,6 +689,8 @@ class InfluencePanel(QtWidgets.QFrame):
         self.tree.itemChanged.connect(self.change_item_lock)
         self.tree.currentItemChanged.connect(self.change_active_influence)
         self.tree.itemDoubleClicked.connect(self.select_joint)
+        self.tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self.show_influence_menu)
         column.addWidget(self.tree, 1)
 
         self.status = QtWidgets.QLabel("0 joints")
@@ -671,6 +713,8 @@ class InfluencePanel(QtWidgets.QFrame):
 
     def deactivate(self):
         self._live_timer.stop()
+        self._context_timer.stop()
+        self._pending_context_action = None
         self._lock_timer.stop()
         self._pending_locks.clear()
         self._pending_lock_skin = None
@@ -680,6 +724,8 @@ class InfluencePanel(QtWidgets.QFrame):
         self._jobs = []
 
     def reset_scene(self):
+        self._context_timer.stop()
+        self._pending_context_action = None
         self._lock_timer.stop()
         self._pending_locks.clear()
         self._pending_lock_skin = None
@@ -736,7 +782,9 @@ class InfluencePanel(QtWidgets.QFrame):
         self.sync_from_paint()
 
     def populate(self):
-        # Hierarchy topology changed: never apply pending locks to old rows.
+        # Hierarchy topology changed: never apply actions to old rows.
+        self._context_timer.stop()
+        self._pending_context_action = None
         self._lock_timer.stop()
         self._pending_locks.clear()
         self._pending_lock_skin = None
@@ -822,6 +870,78 @@ class InfluencePanel(QtWidgets.QFrame):
     
         finally:
             self.tree.blockSignals(blocked)
+
+    def show_influence_menu(self, position):
+        """Popup only for the clicked bound joint; never change selection."""
+        item = self.tree.itemAt(position)
+        if not item or not self.skin or self._populating:
+            return
+        joint = item.data(0, QtCore.Qt.UserRole)
+        if joint not in self._items or not cmds.objExists(self.skin):
+            return
+        menu = QtWidgets.QMenu(self.tree)
+        menu.setObjectName("SkinningInfluenceContextMenu")
+        for label, action in INFLUENCE_CONTEXT_ACTIONS:
+            option = menu.addAction(label)
+            option.triggered.connect(
+                partial(self.queue_influence_action, joint, action))
+        menu.aboutToHide.connect(menu.deleteLater)
+        # Non-blocking popup: never run Maya or rebuild the tree while Qt
+        # owns the QTreeWidgetItem sending this context-menu event.
+        menu.popup(self.tree.viewport().mapToGlobal(position))
+
+    def queue_influence_action(self, joint, action, *args):
+        """Defer Maya edits until after the QAction/menu signals have unwound."""
+        if not self.skin or joint not in self._items:
+            return
+        self._pending_context_action = (self.skin, joint, action)
+        self._context_timer.start(0)
+
+    def _apply_influence_action(self):
+        request = self._pending_context_action
+        self._pending_context_action = None
+        if not request:
+            return
+        skin, joint, action = request
+        if skin != self.skin or joint not in self._items or not cmds.objExists(skin):
+            return
+        # A context menu operation supersedes an uncommitted checkbox click.
+        self._lock_timer.stop()
+        self._pending_locks.clear()
+        self._pending_lock_skin = None
+        self._editing_locks = True
+        try:
+            if action == "isolate":
+                import NLTA_Skinning
+                NLTA_Skinning.IsolateEffectVertex(
+                    mesh=self.mesh, joint=joint)
+                focused = joint
+            else:
+                plan = _influence_menu_plan(skin, joint, action)
+                if plan is None:
+                    return
+                exclusive, targets, focused = plan
+                if exclusive:
+                    others = [name for name, _ in _skin_influence_rows(skin)
+                              if name not in targets]
+                    _set_influence_locks(skin, others, "lock")
+                _set_influence_locks(skin, targets, "unlock")
+                self.sync_lock_states()
+            if _activate_skin_paint_influence(
+                    skin, self.mesh, focused, self._items):
+                self._active_joint = focused
+                live_item = self._items.get(focused)
+                if live_item is not None:
+                    blocked = self.tree.blockSignals(True)
+                    try:
+                        self.tree.clearSelection()
+                        self.tree.setCurrentItem(live_item)
+                        live_item.setSelected(True)
+                        self.filter_rows()
+                    finally:
+                        self.tree.blockSignals(blocked)
+        finally:
+            self._editing_locks = False
 
     def change_item_lock(self, item, column):
         if (self._populating or self._syncing or self._editing_locks
