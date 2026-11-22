@@ -470,7 +470,7 @@ def _set_influence_locks(skin, joints, mode):
     return changed
 
 
-def _resolve_skin_influence(skin, name):
+def _resolve_skin_influence(skin, name, bound=None):
     """Resolve Maya's short paint-influence names against this skin's full DAG paths."""
     if not name or not skin:
         return None
@@ -479,7 +479,8 @@ def _resolve_skin_influence(skin, name):
     if not isinstance(name, str):
         return None
     name = name.split(".", 1)[0]
-    bound = {joint for joint, _ in _skin_influence_rows(skin)}
+    if bound is None:
+        bound = {joint for joint, _ in _skin_influence_rows(skin)}
     if name in bound:
         return name
     try:
@@ -490,7 +491,7 @@ def _resolve_skin_influence(skin, name):
     return resolved[0] if len(resolved) == 1 else None
 
 
-def _active_skin_paint_influence(skin):
+def _active_skin_paint_influence(skin, bound=None):
     """Read Maya Paint Skin Weights selection; fall back to skin.paintTrans."""
     if not skin or not cmds.objExists(skin):
         return None
@@ -499,7 +500,7 @@ def _active_skin_paint_influence(skin):
         if cmds.artAttrSkinPaintCtx(context, exists=True):
             active = cmds.artAttrSkinPaintCtx(
                 context, query=True, influence=True)
-            resolved = _resolve_skin_influence(skin, active)
+            resolved = _resolve_skin_influence(skin, active, bound)
             if resolved:
                 return resolved
     except (RuntimeError, ValueError, TypeError):
@@ -507,16 +508,17 @@ def _active_skin_paint_influence(skin):
     try:
         connection = cmds.connectionInfo(
             skin + ".paintTrans", sourceFromDestination=True) or ""
-        return _resolve_skin_influence(skin, connection.split(".", 1)[0])
+        return _resolve_skin_influence(
+            skin, connection.split(".", 1)[0], bound)
     except (RuntimeError, ValueError):
         return None
 
 
-def _activate_skin_paint_influence(skin, mesh, joint):
+def _activate_skin_paint_influence(skin, mesh, joint, bound=None):
     """Activate painting on a bound joint, preserving mesh/vertex selection."""
     if not skin or not mesh:
         return False
-    joint = _resolve_skin_influence(skin, joint)
+    joint = _resolve_skin_influence(skin, joint, bound)
     if not joint:
         cmds.warning("Choose a joint bound to the current skinCluster.")
         return False
@@ -531,7 +533,7 @@ def _activate_skin_paint_influence(skin, mesh, joint):
         source = cmds.connectionInfo(
             skin + ".paintTrans", sourceFromDestination=True) or ""
         current = source.split(".", 1)[0]
-        if _resolve_skin_influence(skin, current) != joint:
+        if _resolve_skin_influence(skin, current, bound) != joint:
             cmds.connectAttr(joint + ".message", skin + ".paintTrans", force=True)
         cmds.artAttrSkinPaintCtx(
             "artAttrSkinContext", edit=True, influence=joint)
@@ -774,38 +776,44 @@ class InfluencePanel(QtWidgets.QFrame):
         self.filter_rows()
 
     def filter_rows(self, *_):
-        phrase = self.search.text().strip().casefold()
-        state = self.filter_box.currentText()
-        matched = set()
-        for joint, locked in self._rows:
-            matches_name = phrase in joint.casefold()
-            matches_state = (state == "All" or
-                             (state == "Locked" and locked is True) or
-                             (state == "Unlocked" and locked is False))
-            if matches_name and matches_state:
-                matched.add(joint)
-
-        # Keep the live active influence visible even while filtering.
-        visible = set(matched)
-        if self._active_joint in self._items:
-            visible.add(self._active_joint)
-        for joint in visible.copy():
-            parent = self._parents.get(joint)
-            while parent:
-                visible.add(parent)
-                if phrase or state != "All":
-                    self._items[parent].setExpanded(True)
-                parent = self._parents.get(parent)
-
-        for joint, item in self._items.items():
-            item.setHidden(joint not in visible)
-            if joint not in visible:
-                item.setSelected(False)
-
-        locked_count = sum(locked is True for _, locked in self._rows)
-        unlocked_count = sum(locked is False for _, locked in self._rows)
-        self.status.setText("{} matched / {} joints  |  {} locked  |  {} unlocked".format(
-            len(matched), len(self._rows), locked_count, unlocked_count))
+        # Filtering a tree must never change Maya's active paint influence.
+        blocked = self.tree.blockSignals(True)
+        try:
+            phrase = self.search.text().strip().casefold()
+            state = self.filter_box.currentText()
+            matched = set()
+            for joint, locked in self._rows:
+                matches_name = phrase in joint.casefold()
+                matches_state = (state == "All" or
+                                 (state == "Locked" and locked is True) or
+                                 (state == "Unlocked" and locked is False))
+                if matches_name and matches_state:
+                    matched.add(joint)
+    
+            # Keep the live active influence visible even while filtering.
+            visible = set(matched)
+            if self._active_joint in self._items:
+                visible.add(self._active_joint)
+            for joint in visible.copy():
+                parent = self._parents.get(joint)
+                while parent:
+                    visible.add(parent)
+                    if phrase or state != "All":
+                        self._items[parent].setExpanded(True)
+                    parent = self._parents.get(parent)
+    
+            for joint, item in self._items.items():
+                item.setHidden(joint not in visible)
+                if joint not in visible:
+                    item.setSelected(False)
+    
+            locked_count = sum(locked is True for _, locked in self._rows)
+            unlocked_count = sum(locked is False for _, locked in self._rows)
+            self.status.setText("{} matched / {} joints  |  {} locked  |  {} unlocked".format(
+                len(matched), len(self._rows), locked_count, unlocked_count))
+    
+        finally:
+            self.tree.blockSignals(blocked)
 
     def change_item_lock(self, item, column):
         if self._populating or column != 1 or not self.skin:
@@ -837,7 +845,8 @@ class InfluencePanel(QtWidgets.QFrame):
         joint = item.data(0, QtCore.Qt.UserRole)
         if joint not in self._items or joint == self._active_joint:
             return
-        if _activate_skin_paint_influence(self.skin, self.mesh, joint):
+        if _activate_skin_paint_influence(
+                self.skin, self.mesh, joint, self._items):
             self._active_joint = joint
             self.filter_rows()
 
@@ -849,7 +858,7 @@ class InfluencePanel(QtWidgets.QFrame):
         """Highlight an influence selected in Maya's Paint Skin Weights UI."""
         if self._syncing or self._populating or not self.skin:
             return
-        joint = _active_skin_paint_influence(self.skin)
+        joint = _active_skin_paint_influence(self.skin, self._items)
         if not joint or joint not in self._items:
             return
         if joint == self._active_joint and self.tree.currentItem() is self._items[joint]:
