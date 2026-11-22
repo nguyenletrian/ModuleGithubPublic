@@ -137,6 +137,44 @@ class SkinningPaintDockTests(unittest.TestCase):
                     for _, _, items in groups)
         self.assertEqual(count, 51)
 
+    def test_left_dock_follows_requested_animation_locks_helpers_weight_paint_order(self):
+        source = FILE.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        order_node = next(node for node in tree.body
+                          if isinstance(node, ast.Assign)
+                          and any(isinstance(target, ast.Name)
+                                  and target.id == "LEFT_DOCK_GROUP_ORDER"
+                                  for target in node.targets))
+        display_order = ast.literal_eval(order_node.value)
+        self.assertEqual(display_order, (
+            ("animation", "local"), ("animation", "world"),
+            ("animation", "timeline"),
+            ("paint", "locks"), ("paint", "helpers"),
+            ("weight", "increment"), ("paint", "quick"),
+        ))
+        catalog = load_catalog()
+        from_catalog = {(section, group)
+                        for section, _, groups in catalog
+                        if section in ("paint", "weight", "animation")
+                        for group, _, _ in groups}
+        self.assertEqual(set(display_order), from_catalog)
+        self.assertEqual(len(display_order), len(from_catalog))
+
+        # Each group owns its widgets from creation. Do not move an existing
+        # section's live Qt buttons around to reorder this dock.
+        self.assertIn("left_groups[(key, group_key)] = group_frame", source)
+        self.assertIn("group_vertical.addWidget(grid)", source)
+        self.assertIn("for group_id in LEFT_DOCK_GROUP_ORDER:", source)
+        self.assertIn("self.paint_stack.insertWidget(", source)
+        self.assertNotIn("vertical.addWidget(grid)", source)
+
+        actions = ["/".join((section, group, label))
+                   for section, _, groups in catalog
+                   for group, _, items in groups
+                   for label, *_ in items]
+        self.assertEqual(len(actions), 105)
+        self.assertEqual(len(set(actions)), 105)
+
     def test_hot_reload_can_close_old_maya_widgets_without_super_errors(self):
         source = FILE.read_text(encoding="utf-8")
         for old_handler in (
