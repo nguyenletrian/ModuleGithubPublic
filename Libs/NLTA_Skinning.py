@@ -250,9 +250,12 @@ def getSkinClusterFn(skinCluster):
 def GetVertexWeights(skinCluster, vert):
     if not skinCluster or not cmds.objExists(skinCluster):
         return {}
-    influences = cmds.skinCluster(skinCluster, q=True, influence=True) or []
-    weights = cmds.skinPercent(skinCluster, vert, q=True, value=True) or []
-    return dict(zip(influences, weights))
+    # Query by full DAG path: mapping by short joint names can overwrite
+    # entries when several bound joints share a leaf name (e.g. joint2).
+    influences = _SkinInfluencePaths(skinCluster)
+    return {joint: cmds.skinPercent(
+        skinCluster, vert, q=True, transform=joint)
+        for joint in influences}
 
 def SetVertexWeights(skinCluster, vert, weightDict):
     if not skinCluster or not weightDict:
