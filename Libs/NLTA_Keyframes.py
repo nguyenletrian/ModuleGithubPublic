@@ -14,7 +14,7 @@ session = {"drivers": [], "controls": [], "start": None, "end": None}
 def _selection_controls():
     """Preserve selection order and DAG identities; mesh selections are not controls."""
     result = []
-    for value in cmds.ls(selection=True, long=True, flatten=True) or []:
+    for value in cmds.ls(selection=True, long=True) or []:
         node = value.split(".", 1)[0]
         if not cmds.objExists(node) or cmds.nodeType(node) not in ("transform", "joint"):
             continue
@@ -167,7 +167,7 @@ def CreateKeyframe(keyInput, *arr):
         return []
     _distance = float(cmds.intSliderGrp(keyInput["ui"], query=True, value=True))
     origin = cmds.currentTime(query=True)
-    selection = cmds.ls(selection=True, long=True, flatten=True) or []
+    selection = cmds.ls(selection=True, long=True) or []
     controls = _selection_controls()
     if not controls:
         active = _paint_control()
@@ -190,24 +190,26 @@ def CreateKeyframe(keyInput, *arr):
                 cmds.warning("{} has no free {} channels; skipped."
                              .format(control, kind))
                 continue
+            driver = None
             try:
                 driver = _make_driver(control, space, kind, available)
+                start = origin if simultaneous else origin + i * duration
+                _animate_driver(driver, kind, available, start, start + duration)
+                if start > origin:
+                    for attr in available:
+                        neutral = cmds.getAttr(driver + "." + attr)
+                        cmds.setKeyframe(
+                            driver, attribute=attr, time=origin, value=neutral)
+                if start + duration < end:
+                    for attr in available:
+                        neutral = cmds.getAttr(driver + "." + attr)
+                        cmds.setKeyframe(
+                            driver, attribute=attr, time=end, value=neutral)
+                generated.append(driver)
             except RuntimeError as exc:
+                if driver:
+                    _remove_drivers([driver])
                 cmds.warning("Cannot test {}: {}".format(control, exc))
-                continue
-            generated.append(driver)
-            start = origin if simultaneous else origin + i * duration
-            _animate_driver(driver, kind, available, start, start + duration)
-            if start > origin:
-                for attr in available:
-                    neutral = cmds.getAttr(driver + "." + attr)
-                    cmds.setKeyframe(
-                        driver, attribute=attr, time=origin, value=neutral)
-            if start + duration < end:
-                for attr in available:
-                    neutral = cmds.getAttr(driver + "." + attr)
-                    cmds.setKeyframe(
-                        driver, attribute=attr, time=end, value=neutral)
 
         if generated:
             session.update({
