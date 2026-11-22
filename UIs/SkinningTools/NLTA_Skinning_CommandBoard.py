@@ -475,7 +475,7 @@ def _influence_hierarchy(rows):
     joints = {joint for joint, _ in rows}
     parents = {}
     for joint, _ in rows:
-        ancestor = joint.rsplit("|", 1)[0]
+        ancestor = joint.rsplit("|", 1)[0] if "|" in joint else ""
         while ancestor and ancestor not in joints:
             ancestor = ancestor.rsplit("|", 1)[0]
         parents[joint] = ancestor if ancestor in joints else None
@@ -495,6 +495,7 @@ class InfluencePanel(QtWidgets.QFrame):
         self._rows = []
         self._items = {}
         self._parents = {}
+        self._tree_skin = None
         self._populating = False
         self._jobs = []
 
@@ -642,7 +643,7 @@ class InfluencePanel(QtWidgets.QFrame):
                     for item in self.tree.selectedItems()}
         expanded = {joint for joint, item in self._items.items()
                     if item.isExpanded()}
-        first_load = not self._items
+        first_load = self._tree_skin != self.skin
         self._parents = _influence_hierarchy(self._rows)
         self._populating = True
         self.tree.setUpdatesEnabled(False)
@@ -683,6 +684,7 @@ class InfluencePanel(QtWidgets.QFrame):
             self.tree.blockSignals(False)
             self.tree.setUpdatesEnabled(True)
             self._populating = False
+        self._tree_skin = self.skin
         self.filter_rows()
 
     def filter_rows(self, *_):
