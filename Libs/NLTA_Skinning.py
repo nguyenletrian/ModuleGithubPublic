@@ -177,8 +177,11 @@ def EnsurePaintContext(mesh=None):
 def _SelectNativePaintInfluence(joint):
     """Replace, never append, the active row in Maya's Paint Skin tree."""
     try:
+        # MEL cannot evaluate a bare global variable as a command. Assign it
+        # to a typed temporary variable so maya.mel.eval returns the string.
         tree = mel.eval(
-            'global string $gArtSkinInfluencesList; $gArtSkinInfluencesList;')
+            'global string $gArtSkinInfluencesList; '
+            'string $nltaPaintTree = $gArtSkinInfluencesList;')
         if not tree or not cmds.treeView(tree, exists=True):
             return None  # Tool Settings is not showing the native influence tree.
         items = cmds.treeView(tree, query=True, children="") or []
