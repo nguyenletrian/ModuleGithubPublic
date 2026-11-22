@@ -223,22 +223,31 @@ class InfluenceLogicTests(unittest.TestCase):
 
     def test_list_selection_sets_paint_joint_without_selecting_scene_joint(self):
         backend = types.ModuleType("NLTA_Skinning")
-        ensure_calls = []
-        backend.EnsurePaintContext = lambda mesh: (
-            ensure_calls.append(mesh) or True)
+        native_calls = []
+
+        def select_paint(mesh, joint):
+            native_calls.append((mesh, joint))
+            self.cmds.connectAttr(
+                joint + ".message", "skin1.paintTrans", force=True)
+            self.cmds.artAttrSkinPaintCtx(
+                "artAttrSkinContext", edit=True, influence=joint)
+            return True
+
+        backend.SelectPaintInfluence = select_paint
         before = list(self.cmds.selected)
         with mock.patch.dict(sys.modules, {"NLTA_Skinning": backend}):
             result = self.logic["_activate_skin_paint_influence"](
                 "skin1", "|Body|Mesh", "|Rig|Arm_JNT")
         self.assertTrue(result)
-        self.assertEqual(ensure_calls, ["|Body|Mesh"])
+        self.assertEqual(native_calls, [("|Body|Mesh", "|Rig|Arm_JNT")])
         self.assertEqual(self.cmds.paint_edits, ["|Rig|Arm_JNT"])
         self.assertEqual(self.cmds.source_joint, "|Rig|Arm_JNT")
         self.assertEqual(self.cmds.selected, before)
 
     def test_unbound_joint_does_not_edit_skin_paint_context(self):
         backend = types.ModuleType("NLTA_Skinning")
-        backend.EnsurePaintContext = lambda mesh: True
+        backend.SelectPaintInfluence = lambda mesh, joint: (
+            self.fail("Unbound influence must not reach Maya Paint Skin"))
         with mock.patch.dict(sys.modules, {"NLTA_Skinning": backend}):
             result = self.logic["_activate_skin_paint_influence"](
                 "skin1", "|Body|Mesh", "|Unbound|Other_JNT")
