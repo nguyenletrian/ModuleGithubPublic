@@ -1203,10 +1203,7 @@ class SkinningBoard(QtWidgets.QWidget):
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(5, 4, 5, 4)
         outer.setSpacing(3)
-        # Small title only; global search/density/max width/paint toolbar removed.
-        self.title = QtWidgets.QLabel("SKINNING")
-        self.title.setObjectName("SkinningBoardTitle")
-        outer.addWidget(self.title)
+        # The window title already identifies Skinning; no duplicate banner.
         self.max_width_value = int(self.settings.value("max_region_width", 230))
 
         self.workspace = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
@@ -1281,7 +1278,7 @@ class SkinningBoard(QtWidgets.QWidget):
                                  QtWidgets.QSizePolicy.Preferred)
             stack = QtWidgets.QVBoxLayout(column)
             stack.setContentsMargins(0, 0, 0, 0)
-            stack.setSpacing(6)
+            stack.setSpacing(3)
             stack.addStretch()
             self.masonry_row.addWidget(column)
             self.masonry_columns.append(column)
@@ -1296,7 +1293,7 @@ class SkinningBoard(QtWidgets.QWidget):
                 section = QtWidgets.QFrame()
                 section.setObjectName("SkinningSection_" + key)
                 vertical = QtWidgets.QVBoxLayout(section)
-                vertical.setContentsMargins(7, 5, 7, 7)
+                vertical.setContentsMargins(7, 4, 7, 5)
                 vertical.setSpacing(2)
                 if key == "mesh":
                     # Mesh tools start folded and only take space when opened.
@@ -1364,9 +1361,29 @@ class SkinningBoard(QtWidgets.QWidget):
                         group_vertical.addWidget(heading_label)
                 else:
                     group_vertical = vertical
-                subheading = QtWidgets.QLabel(heading)
-                subheading.setObjectName("SkinningSubheading")
-                group_vertical.addWidget(subheading)
+                # Right-side panels already show these names in their main header.
+                # Keep distinct subheadings only (animation, weights, mesh tools).
+                subheading = None
+                if key not in ("skin", "proxy", "files", "curve", "sets"):
+                    subheading = QtWidgets.QLabel(heading)
+                    subheading.setObjectName("SkinningSubheading")
+                    group_vertical.addWidget(subheading)
+                if key == "animation" and group_key == "local":
+                    # One Distance parameter for both Local and World spaces.
+                    distance_row = QtWidgets.QHBoxLayout()
+                    distance_row.addWidget(QtWidgets.QLabel("Distance"))
+                    spin = QtWidgets.QSpinBox()
+                    spin.setObjectName("SkinningAnimationDistance")
+                    spin.setRange(0, 10000)
+                    spin.setValue(5)
+                    spin.valueChanged.connect(
+                        lambda value: cmds.intSliderGrp(
+                            distance_ui, edit=True, value=value))
+                    distance_row.addWidget(spin)
+                    distance_row.addStretch()
+                    # The shared input belongs above the Local/World group labels.
+                    group_vertical.insertLayout(
+                        1 if left_dock else 0, distance_row)
                 if (key, group_key) == ("paint", "max"):
                     spin_row = QtWidgets.QHBoxLayout()
                     spin_label = QtWidgets.QLabel("Limit / vertex")
@@ -1380,19 +1397,6 @@ class SkinningBoard(QtWidgets.QWidget):
                     spin_row.addWidget(self.max_influences)
                     spin_row.addStretch()
                     group_vertical.addLayout(spin_row)
-                if key == "animation" and group_key == "local":
-                    distance_row = QtWidgets.QHBoxLayout()
-                    distance_row.addWidget(QtWidgets.QLabel("Distance"))
-                    spin = QtWidgets.QSpinBox()
-                    spin.setObjectName("SkinningAnimationDistance")
-                    spin.setRange(0, 10000)
-                    spin.setValue(5)
-                    spin.valueChanged.connect(
-                        lambda value: cmds.intSliderGrp(distance_ui, edit=True, value=value))
-                    distance_row.addWidget(spin)
-                    distance_row.addStretch()
-                    group_vertical.addLayout(distance_row)
-
                 # Two columns per Paint group; +/- weights retain paired rows.
                 grid_type = (WeightPairButtons
                              if (key, group_key) == ("weight", "increment")
