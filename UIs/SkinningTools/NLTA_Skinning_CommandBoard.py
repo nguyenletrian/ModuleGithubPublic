@@ -38,6 +38,7 @@ SKIN_HELPER_LABELS = {
 }
 PAINT_STRIP_WIDTH = 145  # Half of the former 290-px action strip.
 BOARD_COMPACT_WIDTH = 720  # Strip + influence hierarchy + one 230-px tool column.
+BOARD_COMPACT_HEIGHT = 950  # Show the full left dock without a vertical scrollbar.
 
 # These buttons operate on the joint currently highlighted in the hierarchy.
 INFLUENCE_LOCK_ACTIONS = {
@@ -1791,6 +1792,17 @@ def _bridge_controls(uis):
     return slider
 
 
+def _fit_board_height(board):
+    """Fit the left dock vertically, within the current monitor's work area."""
+    content = board.paint_scroll.widget()
+    needed = max(BOARD_COMPACT_HEIGHT, content.sizeHint().height() + 32,
+                 board.height())
+    screen = board.screen()
+    if screen:
+        needed = min(needed, screen.availableGeometry().height() - 12)
+    board.resize(BOARD_COMPACT_WIDTH, max(board.minimumHeight(), needed))
+
+
 def OpenWindow(tools, uis):
     """Reusable floating Skinning window, independent of the module host layout."""
     global _BOARD
@@ -1804,7 +1816,7 @@ def OpenWindow(tools, uis):
     if _BOARD is not None:
         try:
             _BOARD.showNormal()
-            _BOARD.resize(BOARD_COMPACT_WIDTH, _BOARD.height())
+            _fit_board_height(_BOARD)
             _BOARD.raise_()
             _BOARD.activateWindow()
             return _BOARD
@@ -1852,9 +1864,9 @@ def OpenWindow(tools, uis):
     if saved:
         board.restoreGeometry(saved)
     else:
-        board.resize(BOARD_COMPACT_WIDTH, 790)
-    # Reuse saved position/height, not the old oversized window width.
-    board.resize(BOARD_COMPACT_WIDTH, board.height())
+        board.resize(BOARD_COMPACT_WIDTH, BOARD_COMPACT_HEIGHT)
+    # Preserve saved position but enlarge an older short window for the left dock.
+    _fit_board_height(board)
     _BOARD = board
     uis["board"] = board
     board.show()
