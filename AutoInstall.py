@@ -4,29 +4,41 @@
 import base64
 import hashlib
 import importlib
+import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
-from urllib.error import HTTPError
+import zipfile
 from urllib.request import Request, urlopen
 
 import maya.cmds as cmds
 
 
 TOOLS = ("Skinning", "Setup", "Scene", "Research", "Retarget")
+DEFAULT_INSTALL_FOLDER = r"D:\NLTA"
+REPOSITORY_URL = "https://github.com/nguyenletrian/ModuleGithubPublic.git"
 LOADER_URL = (
     "https://api.github.com/repos/nguyenletrian/ModuleGithubPublic/"
     "contents/Github.py?ref=main"
 )
+RAW_LOADER_URL = (
+    "https://raw.githubusercontent.com/nguyenletrian/ModuleGithubPublic/"
+    "main/Github.py"
+)
+ZIP_URLS = (
+    "https://codeload.github.com/nguyenletrian/ModuleGithubPublic/zip/refs/heads/main",
+    "https://github.com/nguyenletrian/ModuleGithubPublic/archive/refs/heads/main.zip",
+)
+RUNTIME_EXTENSIONS = (".py", ".mel", ".ui", ".qss", ".png", ".svg",
+                      ".ico", ".jpg", ".jpeg")
 
 
 def _install_folder(folder=None):
-    """Use Maya's own user script directory, not a machine-specific drive."""
-    base = folder or os.environ.get("NLTA_TOOL_FOLDER")
-    if not base:
-        base = os.path.join(cmds.internalVar(userScriptDir=True), "NLTA")
+    """Keep installed code on D:, outside the user's frozen Maya Documents."""
+    base = folder or os.environ.get("NLTA_TOOL_FOLDER") or DEFAULT_INSTALL_FOLDER
     return os.path.abspath(os.path.expanduser(os.path.expandvars(base)))
 
 
@@ -36,19 +48,129 @@ def _git_sha(data):
     ).hexdigest()
 
 
+def _request_bytes(url):
+    request = Request(url, headers={"User-Agent": "NLTA-Maya-Installer"})
+    with urlopen(request, timeout=20) as response:
+        return response.read()
+
+
 def _download_loader():
-    request = Request(LOADER_URL, headers={
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "NLTA-Maya-Installer",
-    })
-    with urlopen(request, timeout=15) as response:
-        info = json.load(response)
-    if info.get("encoding") != "base64":
-        raise ValueError("GitHub returned an unsupported Github.py encoding")
-    source = base64.b64decode(info["content"])
-    if _git_sha(source) != info.get("sha"):
-        raise ValueError("Github.py SHA verification failed")
-    return source
+    """Try GitHub API, then raw GitHub when the API returns 404/403."""
+    errors = []
+    for url in (LOADER_URL, RAW_LOADER_URL):
+        try:
+            content = _request_bytes(url)
+            if url == LOADER_URL:
+                info = json.loads(content)
+                if info.get("encoding") != "base64":
+                    raise ValueError("Unsupported Github.py encoding")
+                source = base64.b64decode(info["content"])
+                if _git_sha(source) != info.get("sha"):
+                    raise ValueError("Github.py SHA verification failed")
+            else:
+                source = content
+            if not source:
+                raise ValueError("Empty Github.py response")
+            return source
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            errors.append("{}: {}".format(url, exc))
+    raise RuntimeError("Cannot download Github.py:\n" + "\n".join(errors))
+
+
+def _runtime_file(relative):
+    """Only install runtime code/resources; leave JSON and user data untouched."""
+    parts = relative.replace("\\", "/").split("/")
+    if any(part in ("..", "__pycache__", ".git") for part in parts):
+        return False
+    return (relative in ("Github.py", "RetargetTool.py")
+            or relative.startswith(("Libs/", "UIs/"))) and (
+                relative.lower().endswith(RUNTIME_EXTENSIONS))
+
+
+def _install_runtime_files(folder, files):
+    """Stage remote files first; overwrite code atomically and keep local backups."""
+    prepared = []
+    for relative, content in files:
+        relative = relative.replace("\\", "/")
+        if not _runtime_file(relative):
+            continue
+        destination = os.path.abspath(os.path.join(folder, *relative.split("/")))
+        if os.path.commonpath((folder, destination)) != folder:
+            raise ValueError("Unsafe GitHub path: " + relative)
+        prepared.append((destination, content))
+    if not prepared or not any(
+            os.path.basename(name) == "Github.py" for name, _ in prepared):
+        raise RuntimeError("Repository archive has no NLTA runtime")
+    updated = 0
+    for destination, content in prepared:
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        if os.path.isfile(destination):
+            with open(destination, "rb") as stream:
+                if stream.read() == content:
+                    continue
+            backup = destination + ".nlta-local-backup"
+            if not os.path.exists(backup):
+                shutil.copy2(destination, backup)
+        temp_name = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                    mode="wb", dir=os.path.dirname(destination),
+                    prefix=".nlta-", delete=False) as stream:
+                stream.write(content)
+                temp_name = stream.name
+            os.replace(temp_name, destination)
+        finally:
+            if temp_name and os.path.exists(temp_name):
+                os.remove(temp_name)
+        cache_folder = os.path.join(os.path.dirname(destination), "__pycache__")
+        if destination.endswith(".py") and os.path.isdir(cache_folder):
+            prefix = os.path.splitext(os.path.basename(destination))[0] + "."
+            for name in os.listdir(cache_folder):
+                if name.startswith(prefix) and name.endswith(".pyc"):
+                    os.remove(os.path.join(cache_folder, name))
+        updated += 1
+    importlib.invalidate_caches()
+    return updated
+
+
+def _install_from_archive(folder):
+    """Install from GitHub ZIP, falling back to git clone if ZIP is blocked."""
+    errors = []
+    for url in ZIP_URLS:
+        try:
+            payload = _request_bytes(url)
+            with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                files = []
+                for member in archive.infolist():
+                    if member.is_dir() or "/" not in member.filename:
+                        continue
+                    relative = member.filename.split("/", 1)[1]
+                    if _runtime_file(relative):
+                        files.append((relative, archive.read(member)))
+            return _install_runtime_files(folder, files)
+        except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
+            errors.append("{}: {}".format(url, exc))
+    if shutil.which("git"):
+        try:
+            with tempfile.TemporaryDirectory(prefix="nlta-git-") as temp:
+                subprocess.run(
+                    ["git", "clone", "--depth", "1", "--branch", "main",
+                     REPOSITORY_URL, temp],
+                    check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=90)
+                files = []
+                for root, dirs, names in os.walk(temp):
+                    dirs[:] = [d for d in dirs if d != ".git"]
+                    for name in names:
+                        local = os.path.join(root, name)
+                        relative = os.path.relpath(local, temp).replace("\\", "/")
+                        if _runtime_file(relative):
+                            with open(local, "rb") as stream:
+                                files.append((relative, stream.read()))
+                return _install_runtime_files(folder, files)
+        except (OSError, subprocess.SubprocessError, ValueError, RuntimeError) as exc:
+            errors.append("git clone: {}".format(exc))
+    raise RuntimeError("Cannot download NLTA runtime:\n" + "\n".join(errors))
 
 
 def _save_loader(destination, source):
@@ -110,42 +232,56 @@ def _required_files(folder):
 
 
 def _prepare_runtime(folder):
-    """Bootstrap the loader, then get the complete NLTA UI runtime from GitHub."""
+    """Install full NLTA runtime, with API/RAW/ZIP/git and offline fallback."""
+    os.makedirs(folder, exist_ok=True)
     loader = os.path.join(folder, "Github.py")
     if os.environ.get("NLTA_SKIP_GITHUB_UPDATE", "").lower() in ("1", "true", "yes"):
         missing = [path for path in _required_files(folder)
                    if not os.path.isfile(path)]
         if missing:
             raise RuntimeError(
-                "Offline installation requires an existing NLTA runtime:\n" +
+                "Offline installation requires existing runtime on D:\\NLTA:\n" +
                 "\n".join(missing))
-        print("[NLTA Install] Offline mode: using installed runtime")
+        print("[NLTA Install] Offline mode: using local runtime")
         return _load_local_github(folder)
+
     try:
         source = _download_loader()
         if _save_loader(loader, source):
             print("[NLTA Install] Github.py installed / updated")
     except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
-        if not os.path.isfile(loader):
-            raise RuntimeError(
-                "Cannot install NLTA from public GitHub: {}".format(exc))
-        print("[NLTA Install] GitHub unavailable, checking existing files: {}".format(exc))
+        print("[NLTA Install] Loader API/RAW unavailable: {}".format(exc))
+
+    if not os.path.isfile(loader):
+        print("[NLTA Install] Downloading full runtime archive")
+        count = _install_from_archive(folder)
+        print("[NLTA Install] Archive installed {} files".format(count))
 
     github = _load_local_github(folder)
     if not callable(getattr(github, "SyncWindowModules", None)):
-        raise RuntimeError("Local Github.py is too old. Reconnect and reinstall.")
+        raise RuntimeError("Installed Github.py does not support module sync")
+
     result = github.SyncWindowModules(folder, requested=TOOLS)
     missing = [path for path in _required_files(folder)
                if not os.path.isfile(path)]
+    if result.get("error") or missing:
+        try:
+            print("[NLTA Install] API sync unavailable; trying ZIP/git fallback")
+            count = _install_from_archive(folder)
+            github = _load_local_github(folder)
+            print("[NLTA Install] Archive synced {} files".format(count))
+        except (OSError, ValueError, RuntimeError) as exc:
+            if missing:
+                raise RuntimeError(
+                    "Cannot complete NLTA installation at {}: {}\nMissing:\n{}"
+                    .format(folder, exc, "\n".join(missing)))
+            print("[NLTA Install] Offline fallback: {}".format(exc))
+
+    missing = [path for path in _required_files(folder)
+               if not os.path.isfile(path)]
     if missing:
-        raise RuntimeError(
-            "NLTA installation is incomplete; Shelf was not changed:\n" +
-            "\n".join(missing))
-    if result.get("error"):
-        print("[NLTA Install] Existing local runtime will be used offline")
-    else:
-        print("[NLTA Install] {} files updated / {} checked".format(
-            result.get("updated", 0), result.get("checked", 0)))
+        raise RuntimeError("NLTA files are missing:\n" + "\n".join(missing))
+    print("[NLTA Install] Runtime ready: {}".format(folder))
     return github
 
 
