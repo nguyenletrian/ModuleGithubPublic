@@ -28,6 +28,7 @@ LEFT_DOCK_GROUP_ORDER = (
     ("weight", "increment"),
     ("weight", "switch"),
     ("paint", "locks"),
+    ("paint", "max"),
 )
 INFLUENCE_LOCK_WIDTH = 48  # Native checkbox only.
 INFLUENCE_CELL_HEIGHT = 24
@@ -128,6 +129,10 @@ def command_catalog(tools, distance_ui):
                 ("Eye Lid", e.EyelidSurfaceSkinUI, "Open eyelid skin tool", ""),
                 ("Graph Skinning", graph.CreateUI, "Open graph editor", "primary"),
             ]),
+            ("max", "Max influences", [
+                ("Check", s.checkMaxInfluent, "Check using value above", ""),
+                ("Fix", s.fixMaxInfluence, "Fix using value above", ""),
+            ]),
         ]),
         ("weight", "WEIGHT ADJUSTMENTS", [
             ("increment", "Weight - / +", weight_commands),
@@ -147,10 +152,6 @@ def command_catalog(tools, distance_ui):
                 ("Mirror -X", partial(s.mirrorSkin, "x", "-"), "", ""),
                 ("Clear Weight", s.ClearWeight, "", ""),
                 ("Clear Skins", s.clearSkin, "Unbind skinClusters across the scene", "danger"),
-            ]),
-            ("max", "Max influences", [
-                ("Check", s.checkMaxInfluent, "Check using value above", ""),
-                ("Fix", s.fixMaxInfluence, "Fix using value above", ""),
             ]),
             ("sets", "Selection sets", [
                 ("Create Set", sets.CreateSet, "", ""),
@@ -230,10 +231,10 @@ GROUP_CELL_WIDTHS = {
     ("paint", "quick"): 86,
     ("paint", "locks"): 76,
     ("paint", "helpers"): 88,
+    ("paint", "max"): 65,
     ("weight", "increment"): 60,
     ("weight", "switch"): 60,
     ("skin", "bind"): 92,
-    ("skin", "max"): 72,
     ("skin", "sets"): 84,
     ("files", "io"): 92,
     ("proxy", "proxy"): 84,
@@ -251,10 +252,10 @@ GROUP_MAX_COLUMNS = {
     ("paint", "quick"): 1,
     ("paint", "locks"): 2,
     ("paint", "helpers"): 1,
+    ("paint", "max"): 2,
     ("weight", "increment"): 2,
     ("weight", "switch"): 2,
     ("skin", "bind"): 3,
-    ("skin", "max"): 2,
     ("skin", "sets"): 2,
     ("files", "io"): 3,
     ("proxy", "proxy"): 2,
@@ -1338,7 +1339,7 @@ class SkinningBoard(QtWidgets.QWidget):
                 subheading = QtWidgets.QLabel(heading)
                 subheading.setObjectName("SkinningSubheading")
                 group_vertical.addWidget(subheading)
-                if key == "skin" and group_key == "max":
+                if (key, group_key) == ("paint", "max"):
                     spin_row = QtWidgets.QHBoxLayout()
                     spin_label = QtWidgets.QLabel("Limit / vertex")
                     spin_row.addWidget(spin_label)
@@ -1374,7 +1375,9 @@ class SkinningBoard(QtWidgets.QWidget):
                     max_columns=GROUP_MAX_COLUMNS.get((key, group_key), 2),
                     force_two_columns=(
                         key == "animation" or
-                        (key, group_key) in (("paint", "locks"), ("weight", "switch"))),
+                        (key, group_key) in (
+                            ("paint", "locks"), ("paint", "max"),
+                            ("weight", "switch"))),
                     height_reduction=0)
                 self.grids.append(grid)
                 group_vertical.addWidget(grid)
@@ -1534,9 +1537,9 @@ class SkinningBoard(QtWidgets.QWidget):
         )
         run_callback = True
         try:
-            if action_id == "skin/max/Check":
+            if action_id == "paint/max/Check":
                 return callback(maxValue=self.max_influences.value())
-            if action_id == "skin/max/Fix":
+            if action_id == "paint/max/Fix":
                 return callback(maxInfluence=self.max_influences.value())
             if needs_paint and cmds.currentCtx() != "artAttrSkinContext":
                 if not self.activate_paint():
