@@ -519,7 +519,7 @@ class DagBoundInfluenceTests(unittest.TestCase):
         second = "|Body|Mesh.vtx[4]"
         weights = {
             first: {ROOT: 0.0, CHILD: 0.8, OTHER: 0.0, EXTRA: 0.0},
-            second: {ROOT: 0.0, CHILD: 0.1, OTHER: 0.9, EXTRA: 0.0},
+            second: {ROOT: 0.0, CHILD: 0.05, OTHER: 0.95, EXTRA: 0.0},
         }
         self.fake.selected = [first, second]
         self.fake.skinPercent = (
