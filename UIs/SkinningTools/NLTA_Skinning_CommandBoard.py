@@ -27,8 +27,8 @@ LEFT_DOCK_GROUP_ORDER = (
     ("animation", "header"), ("animation", "local"), ("animation", "world"),
     ("animation", "timeline"),
     ("paint", "locks"),
-    ("weight", "increment"),
     ("weight", "switch"),
+    ("weight", "increment"),
     ("paint", "max"),
 )
 INFLUENCE_LOCK_WIDTH = 48  # Native checkbox only.
