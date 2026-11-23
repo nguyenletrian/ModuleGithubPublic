@@ -141,6 +141,7 @@ def command_catalog(tools, distance_ui):
         ]),
         ("skin", "SKIN & INFLUENCES", [
             ("bind", "Skin and influences", [
+                ("Component", s.component, "", ""),
                 ("Bind Skin", g.bindSkin, "", ""),
                 ("Copy Skin", g.copyJointBind, "Select source mesh first, then destination mesh(es)", ""),
                 ("Add Joint", s.AddJoint, "Joint(s) and mesh(es)", ""),
@@ -213,7 +214,6 @@ def command_catalog(tools, distance_ui):
         ]),
         ("mesh", "MESH & BLEND SHAPE", [
             ("mesh", "Mesh utilities", [
-                ("Component", s.component, "", ""),
                 ("Fix Quad", m.ShowQuardraw, "", ""),
                 ("Fix Initial", g.fixInitial, "", ""),
             ]),
@@ -1298,9 +1298,32 @@ class SkinningBoard(QtWidgets.QWidget):
                 vertical = QtWidgets.QVBoxLayout(section)
                 vertical.setContentsMargins(7, 5, 7, 7)
                 vertical.setSpacing(2)
-                header = QtWidgets.QLabel(section_title)
-                header.setObjectName("SkinningSectionTitle")
-                vertical.addWidget(header)
+                if key == "mesh":
+                    # Mesh tools start folded and only take space when opened.
+                    self.mesh_toggle = QtWidgets.QToolButton(section)
+                    self.mesh_toggle.setObjectName("SkinningMeshToggle")
+                    self.mesh_toggle.setText(section_title)
+                    self.mesh_toggle.setCheckable(True)
+                    self.mesh_toggle.setChecked(False)
+                    self.mesh_toggle.setAutoRaise(True)
+                    self.mesh_toggle.setToolButtonStyle(
+                        QtCore.Qt.ToolButtonTextBesideIcon)
+                    self.mesh_toggle.setArrowType(QtCore.Qt.RightArrow)
+                    vertical.addWidget(self.mesh_toggle)
+
+                    self.mesh_body = QtWidgets.QWidget(section)
+                    self.mesh_body.setObjectName("SkinningMeshBody")
+                    body_layout = QtWidgets.QVBoxLayout(self.mesh_body)
+                    body_layout.setContentsMargins(0, 0, 0, 0)
+                    body_layout.setSpacing(2)
+                    vertical.addWidget(self.mesh_body)
+                    self.mesh_body.hide()
+                    self.mesh_toggle.toggled.connect(self.toggle_mesh_section)
+                    vertical = body_layout
+                else:
+                    header = QtWidgets.QLabel(section_title)
+                    header.setObjectName("SkinningSectionTitle")
+                    vertical.addWidget(header)
             group_records = []
             for group_key, heading, items in groups:
                 if key == "paint" and group_key in ("quick", "helpers"):
@@ -1501,6 +1524,12 @@ class SkinningBoard(QtWidgets.QWidget):
         finally:
             self._reflowing = False
 
+    def toggle_mesh_section(self, expanded):
+        """Expand or collapse Mesh & Blend Shape without changing its tools."""
+        self.mesh_body.setVisible(expanded)
+        self.mesh_toggle.setArrowType(
+            QtCore.Qt.DownArrow if expanded else QtCore.Qt.RightArrow)
+
     def activate_paint(self, quiet=False):
         """Enter Paint Skin context without opening Maya Paint Tool Settings."""
         import NLTA_Skinning
@@ -1637,6 +1666,19 @@ class SkinningBoard(QtWidgets.QWidget):
                 background-color: #202020;
                 border: 1px solid #454545;
                 border-radius: 4px;
+            }
+            QToolButton#SkinningMeshToggle {
+                color: #EAEAEA;
+                font-size: 11px;
+                font-weight: 700;
+                border: none;
+                border-bottom: 1px solid #494949;
+                background: transparent;
+                padding: 2px 0 3px;
+                text-align: left;
+            }
+            QToolButton#SkinningMeshToggle:hover {
+                background-color: #303030;
             }
             QLabel#SkinningSectionTitle {
                 color: #EAEAEA;
