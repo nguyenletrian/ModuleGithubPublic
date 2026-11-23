@@ -24,7 +24,7 @@ LEFT_DOCK_SECTIONS = frozenset(("paint", "weight", "animation"))
 RIGHT_SECTION_ORDER = ("skin", "proxy", "files", "curve", "sets", "mesh")
 # Visual order only: preserve each group's existing action ID and callback.
 LEFT_DOCK_GROUP_ORDER = (
-    ("animation", "local"), ("animation", "world"),
+    ("animation", "header"), ("animation", "local"), ("animation", "world"),
     ("animation", "timeline"),
     ("weight", "increment"),
     ("weight", "switch"),
@@ -1286,7 +1286,28 @@ class SkinningBoard(QtWidgets.QWidget):
             column.hide()
         self.masonry_row.addStretch()
 
-        left_groups = {}
+        # Shared Animation controls are a standalone block above Local / World.
+        animation_frame = QtWidgets.QFrame()
+        animation_frame.setObjectName("SkinningDockGroup_animation_header")
+        animation_layout = QtWidgets.QVBoxLayout(animation_frame)
+        animation_layout.setContentsMargins(3, 3, 3, 3)
+        animation_layout.setSpacing(2)
+        animation_title = QtWidgets.QLabel("ANIMATION & POSES")
+        animation_title.setObjectName("SkinningSectionTitle")
+        animation_layout.addWidget(animation_title)
+        distance_row = QtWidgets.QHBoxLayout()
+        distance_row.addWidget(QtWidgets.QLabel("Distance"))
+        spin = QtWidgets.QSpinBox()
+        spin.setObjectName("SkinningAnimationDistance")
+        spin.setRange(0, 10000)
+        spin.setValue(5)
+        spin.valueChanged.connect(
+            lambda value: cmds.intSliderGrp(distance_ui, edit=True, value=value))
+        distance_row.addWidget(spin)
+        distance_row.addStretch()
+        animation_layout.addLayout(distance_row)
+
+        left_groups = {("animation", "header"): animation_frame}
         for key, section_title, groups in catalog:
             left_dock = key in LEFT_DOCK_SECTIONS
             if not left_dock:
@@ -1354,8 +1375,7 @@ class SkinningBoard(QtWidgets.QWidget):
                     group_vertical = QtWidgets.QVBoxLayout(group_frame)
                     group_vertical.setContentsMargins(3, 3, 3, 3)
                     group_vertical.setSpacing(2)
-                    if (key, group_key) in (
-                            ("animation", "local"), ("weight", "increment")):
+                    if (key, group_key) == ("weight", "increment"):
                         heading_label = QtWidgets.QLabel(section_title)
                         heading_label.setObjectName("SkinningSectionTitle")
                         group_vertical.addWidget(heading_label)
@@ -1368,22 +1388,6 @@ class SkinningBoard(QtWidgets.QWidget):
                     subheading = QtWidgets.QLabel(heading)
                     subheading.setObjectName("SkinningSubheading")
                     group_vertical.addWidget(subheading)
-                if key == "animation" and group_key == "local":
-                    # One Distance parameter for both Local and World spaces.
-                    distance_row = QtWidgets.QHBoxLayout()
-                    distance_row.addWidget(QtWidgets.QLabel("Distance"))
-                    spin = QtWidgets.QSpinBox()
-                    spin.setObjectName("SkinningAnimationDistance")
-                    spin.setRange(0, 10000)
-                    spin.setValue(5)
-                    spin.valueChanged.connect(
-                        lambda value: cmds.intSliderGrp(
-                            distance_ui, edit=True, value=value))
-                    distance_row.addWidget(spin)
-                    distance_row.addStretch()
-                    # The shared input belongs above the Local/World group labels.
-                    group_vertical.insertLayout(
-                        1 if left_dock else 0, distance_row)
                 if (key, group_key) == ("paint", "max"):
                     spin_row = QtWidgets.QHBoxLayout()
                     spin_label = QtWidgets.QLabel("Limit / vertex")
