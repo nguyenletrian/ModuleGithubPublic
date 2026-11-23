@@ -513,6 +513,35 @@ class DagBoundInfluenceTests(unittest.TestCase):
         self.assertFalse(self.fake.locks[CHILD])
         self.assertFalse(self.fake.locks[OTHER])
 
+    def test_unlock_affect_unions_all_selected_vertices(self):
+        self.fake.influences = [ROOT, CHILD, OTHER, EXTRA]
+        first = "|Body|Mesh.vtx[3]"
+        second = "|Body|Mesh.vtx[4]"
+        weights = {
+            first: {ROOT: 0.0, CHILD: 0.8, OTHER: 0.0, EXTRA: 0.0},
+            second: {ROOT: 0.0, CHILD: 0.1, OTHER: 0.9, EXTRA: 0.0},
+        }
+        self.fake.selected = [first, second]
+        self.fake.skinPercent = (
+            lambda skin, vertex, **kw: weights[vertex].get(
+                kw["transform"], 0.0))
+        unlocked = self.logic["UnlockInfluenceJoints"]()
+        self.assertEqual(set(unlocked), {CHILD, OTHER})
+        self.assertFalse(self.fake.locks[CHILD])
+        self.assertFalse(self.fake.locks[OTHER])
+        self.assertTrue(self.fake.locks[ROOT])
+        self.assertTrue(self.fake.locks[EXTRA])
+        self.assertEqual(self.fake.active, OTHER)
+
+    def test_unlock_affect_rejects_vertices_from_multiple_meshes(self):
+        self.fake.selected = [
+            "|Body|Mesh.vtx[3]", "|Different|Mesh.vtx[4]"]
+        before = dict(self.fake.locks)
+        self.assertIsNone(self.logic["UnlockInfluenceJoints"]())
+        self.assertEqual(before, self.fake.locks)
+        self.assertTrue(any("one skinned mesh" in warning
+                            for warning in self.fake.warning_messages))
+
     def test_other_skin_joint_actions_use_canonical_membership(self):
         source = SOURCE.read_text(encoding="utf-8")
         for fragment in (
