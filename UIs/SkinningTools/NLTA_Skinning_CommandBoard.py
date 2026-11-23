@@ -595,26 +595,29 @@ def _resolve_skin_influence(skin, name, bound=None):
 
 
 def _active_skin_paint_influence(skin, bound=None):
-    """Read Maya Paint Skin Weights selection; fall back to skin.paintTrans."""
+    """Follow the skinCluster's actual influence, then the Artisan context."""
     if not skin or not cmds.objExists(skin):
         return None
+    # paintTrans is updated by setSmoothSkinInfluence / ActiveJoint.
+    # The context may still report the previously painted joint during sync.
+    try:
+        source = cmds.connectionInfo(
+            skin + ".paintTrans", sourceFromDestination=True) or ""
+        joint = _resolve_skin_influence(
+            skin, source.split(".", 1)[0], bound)
+        if joint:
+            return joint
+    except (RuntimeError, ValueError, TypeError):
+        pass
     context = "artAttrSkinContext"
     try:
         if cmds.artAttrSkinPaintCtx(context, exists=True):
             active = cmds.artAttrSkinPaintCtx(
                 context, query=True, influence=True)
-            resolved = _resolve_skin_influence(skin, active, bound)
-            if resolved:
-                return resolved
+            return _resolve_skin_influence(skin, active, bound)
     except (RuntimeError, ValueError, TypeError):
-        pass
-    try:
-        connection = cmds.connectionInfo(
-            skin + ".paintTrans", sourceFromDestination=True) or ""
-        return _resolve_skin_influence(
-            skin, connection.split(".", 1)[0], bound)
-    except (RuntimeError, ValueError):
         return None
+    return None
 
 
 def _activate_skin_paint_influence(skin, mesh, joint, bound=None):
@@ -1804,13 +1807,12 @@ def _bridge_controls(uis):
 def OpenWindow(tools, uis):
     """Reusable floating Skinning window, independent of the module host layout."""
     global _BOARD
-    # Apply the former Load UI action on every open, including reopening
-    # an existing board. Initialize the Artisan context before editing it.
-    context = "artAttrSkinContext"
-    if not cmds.artAttrSkinPaintCtx(context, exists=True):
-        cmds.artAttrSkinPaintCtx(context)
-        cmds.artAttrSkinPaintCtx(context, edit=True, stampProfile="solid")
-    tools["NLTA_Brush"].loadUi()
+    # Never create a bare Artisan context: Maya labels it Paint Attributes.
+    # Initialize Paint Skin Weights first, then apply the legacy Load UI options.
+    skin_tools = tools["NLTA_Skinning"]
+    if skin_tools.EnsureSkinSession(warn=False):
+        if skin_tools.EnsurePaintContext():
+            tools["NLTA_Brush"].loadUi()
 
     if _BOARD is not None:
         try:
