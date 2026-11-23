@@ -6,7 +6,7 @@
 
 Requires existing NLTA_Graph.py and NLTA_UI.py for the embedded Bezier graph.
 Skirt procedures additionally require NLTA_Mesh.py (existing topology helpers).
-Pickers use explicit inputs; Skin Children defaults to unlocked influence chains, or explicitly picked joints.
+Pickers use explicit inputs; Skin Children runs directly on the selected mesh and unlocked influence chains.
 Copy Ratio uses topological loops; Copy Ratio Plane uses rest-pose perpendicular planes.
 Transfer has no UI button; private weight transfer helpers support skirt algorithms.
 """
@@ -2152,7 +2152,7 @@ def SkirtChains(data=None, *args, **kwargs):
     """Transfer parent weight below child, then smooth the chain.
 
     Like the original SkirtChains, derive root-to-leaf paths from unlocked
-    bound influences; explicitly picked Chain Joints optionally override them.
+    bound influences on the selected mesh. Direct API callers can pass joints.
     Each path uses Skirt gradients until its last parent-child segment,
     which uses Skirt End. The Graph UI is not modified by a Skin Children run.
     The blend reaches the next child; only geometry beyond it is hard-owned.
@@ -2162,8 +2162,8 @@ def SkirtChains(data=None, *args, **kwargs):
     mesh = _require_mesh(data['mesh'])
     skin = _skin(mesh)
     picked = data.get('joints') or []
-    # Legacy Skin Children operates on the unlocked bound influence hierarchy.
-    # Picking Chain Joints is an optional override, not a required input.
+    # The UI uses every unlocked bound influence; explicit API data may
+    # optionally restrict the operation to a supplied joint list.
     joints = (_validate_joints(skin, picked) if picked
               else _unlocked_joints(_influences(skin)))
     chains = _chains_from_selected(joints)
@@ -2171,7 +2171,7 @@ def SkirtChains(data=None, *args, **kwargs):
         source = 'picked' if picked else 'unlocked'
         raise ValueError(
             'Skin Children: no connected parent-child pair among {} joints. '
-            'Unlock the parent and child influences, or Pick a connected chain.'
+            'Unlock the parent and child influences in one connected chain.'
             .format(source))
 
     # Cache both presets as independent, headless NLTA_Graph curves.
@@ -2347,10 +2347,6 @@ _PICK_FIELDS = {
         ('mesh', 'Mesh', 'mesh'),
         ('jointParent', 'Parent Joint', 'joint'),
         ('joints', 'Skirt Joints', 'joints'),
-    ],
-    'children': [
-        ('mesh', 'Mesh', 'mesh'),
-        ('joints', 'Chain Joints (optional: unlocked if empty)', 'joints'),
     ],
     'plane': [
         ('vertices', 'Reference Vertices (2+)', 'source_vertices'),
@@ -2702,8 +2698,32 @@ def _inputs_skirt_parent():
 
 
 def _inputs_chains():
-    d = _pick_state('children')['data']
-    return {'mesh': d['mesh'], 'joints': d['joints'], 'graph': GetGraph()}
+    """Read the selected skinned mesh; derive chains from its unlocked joints."""
+    selection = cmds.ls(sl=True, long=True) or []
+    meshes = []
+    for item in selection:
+        node = item.split('.', 1)[0]
+        if not cmds.objExists(node):
+            continue
+        kind = cmds.nodeType(node)
+        if kind == 'mesh':
+            parents = cmds.listRelatives(node, parent=True, fullPath=True) or []
+            if not parents:
+                continue
+            node = parents[0]
+        elif kind != 'transform':
+            continue
+        shapes = cmds.listRelatives(node, shapes=True, noIntermediate=True,
+                                    fullPath=True) or []
+        if not any(cmds.nodeType(shape) == 'mesh' for shape in shapes):
+            continue
+        mesh = _canonical(node)
+        if mesh not in meshes:
+            meshes.append(mesh)
+    if len(meshes) != 1:
+        raise ValueError(
+            'Skin Children: select exactly one skinned mesh or its components')
+    return {'mesh': meshes[0], 'joints': []}
 
 
 def _inputs_plane():
@@ -2782,10 +2802,7 @@ def _create_picker(operation, title, callback):
     for key, _, _ in fields:
         state['data'][key] = previous_data.get(key, [] if key in lists else None)
     _DIALOGS[operation] = state
-    tip = ('Skin Children: Pick Mesh. Leave Chain Joints empty to use unlocked '
-           'influences, or Pick a specific parent-child chain.'
-           if operation == 'children' else
-           'For Smooth: select FIRST vertex as origin, then other vertices.'
+    tip = ('For Smooth: select FIRST vertex as origin, then other vertices.'
            if operation == 'smooth' else
            'Pick Reference Vertices first; mesh is detected automatically. Then Pick Affected.'
            if operation == 'plane' else
@@ -2860,7 +2877,8 @@ def CreateSkinParentUI(*args):
 
 
 def CreateSkinChildrenUI(*args):
-    return _create_picker('children', 'Skin Children', SkirtChains)
+    """Compatibility entry point: execute Skin Children without a picker."""
+    return _run_ui(SkirtChains, 'Skin Children', 'children')
 
 
 def CreateUI(*args):
@@ -2908,7 +2926,8 @@ def CreateUI(*args):
     cmds.button(label='Skin Parent', height=33, parent=row,
                 command=lambda *_: CreateSkinParentUI())
     cmds.button(label='Skin Children', height=33, parent=row,
-                command=lambda *_: CreateSkinChildrenUI())
+                annotation='Select one skinned mesh, unlock the chain joints, then run.',
+                command=lambda *_: _run_ui(SkirtChains, 'Skin Children', 'children'))
     cmds.setParent('..')
     _UI['status'] = cmds.text(
         label='Smooth: select vertices (origin first), unlock 2 joints, click Smooth; Graph stays live.',
