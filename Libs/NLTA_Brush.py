@@ -109,13 +109,27 @@ def CopyWeight(*arr):
 
 
 def SwitchBrush(*arr):
-    ctx = cmds.currentCtx()
-    if cmds.contextInfo(ctx, c=True) == "artAttrSkin":
-        value = cmds.artAttrSkinPaintCtx(ctx, q=True, value=True)
-        newValue = value * (-1)
-        # Restore the original Add operation and explicitly write the paint Value.
-        AddWeight(newValue)
-        cmds.artAttrSkinPaintCtx(ctx, edit=True, value=newValue)
+    # Work on the known Paint Skin context; contextInfo may differ by Maya version.
+    ctx = _skinPaintContext()
+    if not ctx:
+        return False
+    value = cmds.artAttrSkinPaintCtx(ctx, query=True, value=True)
+    newValue = -float(value)
+
+    # Use the original MEL UI update when Maya's native controls are available.
+    # Standalone NLTA Skinning does not require Tool Settings to be open.
+    try:
+        mel.eval('artAttrSkinPaintModePaintSelect 1 artAttrSkinPaintCtx;')
+        mel.eval('artAttrPaintOperation artAttrSkinPaintCtx Add;')
+        mel.eval('artSkinSetSelectionValue {} false artAttrSkinPaintCtx artAttrSkin;'.format(newValue))
+    except RuntimeError:
+        pass
+
+    # Apply the value even when the native Paint Skin UI does not exist.
+    cmds.artAttrSkinPaintCtx(ctx, edit=True, skinPaintMode=1,
+                             selectedattroper="additive",
+                             minvalue=-1.0, value=newValue, opacity=1.0)
+    return newValue
 
 def CopyRatio(*arr):
     sels = cmds.ls(orderedSelection=True,flatten=True)
