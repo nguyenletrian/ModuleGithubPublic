@@ -21,6 +21,7 @@ except ImportError:
 _BOARD = None
 _BRIDGE = "NLTA_SkinningCommandBridge"
 LEFT_DOCK_SECTIONS = frozenset(("paint", "weight", "animation"))
+RIGHT_COLUMN_ORDER = ("skin", "proxy", "files", "curve", "mesh")
 # Visual order only: preserve each group's existing action ID and callback.
 LEFT_DOCK_GROUP_ORDER = (
     ("animation", "local"), ("animation", "world"),
@@ -138,7 +139,7 @@ def command_catalog(tools, distance_ui):
             ("increment", "Weight - / +", weight_commands),
             ("switch", "Switch", switch_commands),
         ]),
-        ("skin", "SKIN & JOINTS", [
+        ("skin", "SKIN & INFLUENCES", [
             ("bind", "Skin and influences", [
                 ("Bind Skin", g.bindSkin, "", ""),
                 ("Copy Skin", g.copyJointBind, "Select source mesh first, then destination mesh(es)", ""),
@@ -160,7 +161,16 @@ def command_catalog(tools, distance_ui):
                 ("Delete Sets", sets.DeleteSets, "", ""),
             ]),
         ]),
-        ("files", "SKIN DATA & EXPORT", [
+        ("proxy", "PROXY", [
+            ("proxy", "Proxy", [
+                ("Proxy", p.singleProxy, "", ""),
+                ("Proxy X", partial(p.createProxy, "x"), "", ""),
+                ("Copy Proxy", p.copyProxy, "", ""),
+                ("Paste Proxy", p.pastProxy, "", ""),
+                ("Closest Faces", p.SelectClosetFaces, "", ""),
+            ]),
+        ]),
+        ("files", "SKIN WEIGHTS & FILES", [
             ("io", "Skin weights and files", [
                 ("Export Skin", s.ExportAllSkin, "", ""),
                 ("Import Skin", s.ImportAllSkin, "", ""),
@@ -173,14 +183,7 @@ def command_catalog(tools, distance_ui):
                 ("Export Scene", s.ObjToNewScene, "", ""),
             ]),
         ]),
-        ("proxy", "PROXY & CURVES", [
-            ("proxy", "Proxy", [
-                ("Proxy", p.singleProxy, "", ""),
-                ("Proxy X", partial(p.createProxy, "x"), "", ""),
-                ("Copy Proxy", p.copyProxy, "", ""),
-                ("Paste Proxy", p.pastProxy, "", ""),
-                ("Closest Faces", p.SelectClosetFaces, "", ""),
-            ]),
+        ("curve", "CURVE / LOFT", [
             ("curve", "Curve / loft", [
                 ("Edges to Curve", p.EdgesToCurve, "", ""),
                 ("Verts to Curve", p.VertsToCurve, "", ""),
@@ -238,7 +241,7 @@ GROUP_CELL_WIDTHS = {
     ("skin", "sets"): 84,
     ("files", "io"): 92,
     ("proxy", "proxy"): 84,
-    ("proxy", "curve"): 84,
+    ("curve", "curve"): 84,
     ("animation", "local"): 80,
     ("animation", "world"): 80,
     ("animation", "timeline"): 90,
@@ -259,7 +262,7 @@ GROUP_MAX_COLUMNS = {
     ("skin", "sets"): 2,
     ("files", "io"): 3,
     ("proxy", "proxy"): 2,
-    ("proxy", "curve"): 3,
+    ("curve", "curve"): 3,
     ("animation", "local"): 2,
     ("animation", "world"): 2,
     ("animation", "timeline"): 2,
@@ -1451,47 +1454,37 @@ class SkinningBoard(QtWidgets.QWidget):
         return total
 
     def reflow_sections(self, force=False):
-        """Repack regions using persistent columns; never destroy cards on resize."""
+        """Use five stable right-side columns in the requested fixed order.
+
+        Narrow windows scroll horizontally rather than rearrange the groups.
+        """
         if self._reflowing:
             return
-        available = max(1, self.scroll.viewport().width() - 3)
+
         region_width = max(210, min(440, self.max_width_value))
         visible = [record for record in self.sections
-                   if self.section_visibility.get(record[0], True)
-                   and record[0].objectName().replace(
-                       "SkinningSection_", "") not in LEFT_DOCK_SECTIONS]
-        minimum = max(200, region_width - 20)
-        columns = (max(1, min(len(visible), len(self.masonry_columns),
-                              (available + 6) // (minimum + 6)))
-                   if visible else 0)
-        width = (min(region_width, max(200, (available - (columns - 1) * 6) // columns))
-                 if columns else 0)
-        order = ("paint", "weight", "animation", "skin", "files", "proxy", "mesh")
-        visible.sort(key=lambda record: order.index(
+                   if self.section_visibility.get(record[0], True)]
+        visible.sort(key=lambda record: RIGHT_COLUMN_ORDER.index(
             record[0].objectName().replace("SkinningSection_", "")))
-        signature = (columns, width,
-                     tuple(record[0].objectName() for record in visible),
-                     self.compact)
+        signature = (region_width,
+                     tuple(record[0].objectName() for record in visible))
         if not force and signature == self.masonry_signature:
             return
 
         self._reflowing = True
         try:
-            # Do not delete columns, reparent panels manually, or remove spacers.
-            # Move each existing panel between persistent layouts as necessary.
-            cards = [(record[0].objectName(),
-                      self.estimate_section_height(record, width))
-                     for record in visible]
-            placements = (masonry_assignments(cards, columns)
-                          if columns else [])
+            count = len(visible)
+            gap = self.masonry_row.spacing()
+            self.sections_host.setMinimumWidth(
+                count * region_width + max(0, count - 1) * gap)
             for index, column in enumerate(self.masonry_columns):
-                if index < columns:
-                    column.setFixedWidth(width)
+                if index < count:
+                    column.setFixedWidth(region_width)
                     column.show()
                 else:
                     column.hide()
 
-            for record, (_, index) in zip(visible, placements):
+            for index, record in enumerate(visible):
                 panel = record[0]
                 target = self.masonry_stacks[index]
                 current = panel.parentWidget()
@@ -1639,7 +1632,8 @@ class SkinningBoard(QtWidgets.QWidget):
                 border-radius: 0;
             }
             QFrame#SkinningSection_skin, QFrame#SkinningSection_files,
-            QFrame#SkinningSection_proxy, QFrame#SkinningSection_mesh {
+            QFrame#SkinningSection_proxy, QFrame#SkinningSection_curve,
+            QFrame#SkinningSection_mesh {
                 background-color: #202020;
                 border: 1px solid #454545;
                 border-radius: 4px;
