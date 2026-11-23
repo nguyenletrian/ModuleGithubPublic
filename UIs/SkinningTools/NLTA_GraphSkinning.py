@@ -6,7 +6,7 @@
 
 Requires existing NLTA_Graph.py and NLTA_UI.py for the embedded Bezier graph.
 Skirt procedures additionally require NLTA_Mesh.py (existing topology helpers).
-Operation picker windows choose explicit mesh and joints, independent of Paint Skin unlock state.
+Pickers use explicit inputs; Skin Children defaults to unlocked influence chains, or explicitly picked joints.
 Copy Ratio uses topological loops; Copy Ratio Plane uses rest-pose perpendicular planes.
 Transfer has no UI button; private weight transfer helpers support skirt algorithms.
 """
@@ -2147,19 +2147,28 @@ def _skirt_child_isolated_spike_plan(mesh, skin, segments, helpers,
 
 
 def SkirtChains(data=None, *args, **kwargs):
-    """Legacy order: transfer ALL parent weight below child, THEN smooth.
+    """Transfer parent weight below child, then smooth the chain.
 
-    Uses explicitly picked chain influences, never current Paint Skin locks.
+    Like the original SkirtChains, use unlocked bound joints by default.
+    Explicitly picked Chain Joints override that selection when provided.
     The blend reaches the next child; only geometry beyond it is hard-owned.
     """
     m = _get_skirt_mesh_helpers()
     data = data or _inputs_chains()
     mesh = _require_mesh(data['mesh'])
     skin = _skin(mesh)
-    joints = _validate_joints(skin, data['joints'])
+    picked = data.get('joints') or []
+    # Legacy Skin Children operates on the unlocked bound influence hierarchy.
+    # Picking Chain Joints is an optional override, not a required input.
+    joints = (_validate_joints(skin, picked) if picked
+              else _unlocked_joints(_influences(skin)))
     chains = _chains_from_selected(joints)
     if not chains:
-        raise ValueError('Choose a root and its child joints for Skirt Children')
+        source = 'picked' if picked else 'unlocked'
+        raise ValueError(
+            'Skin Children: no connected parent-child pair among {} joints. '
+            'Unlock the parent and child influences, or Pick a connected chain.'
+            .format(source))
 
     # Before ANY weight change, cache every strip in the bind/rest geometry.
     regions = _skirt_children_regions(mesh, skin, chains, m)
@@ -2325,7 +2334,7 @@ _PICK_FIELDS = {
     ],
     'children': [
         ('mesh', 'Mesh', 'mesh'),
-        ('joints', 'Chain Joints', 'joints'),
+        ('joints', 'Chain Joints (optional: unlocked if empty)', 'joints'),
     ],
     'plane': [
         ('vertices', 'Reference Vertices (2+)', 'source_vertices'),
@@ -2757,7 +2766,10 @@ def _create_picker(operation, title, callback):
     for key, _, _ in fields:
         state['data'][key] = previous_data.get(key, [] if key in lists else None)
     _DIALOGS[operation] = state
-    tip = ('For Smooth: select FIRST vertex as origin, then other vertices.'
+    tip = ('Skin Children: Pick Mesh. Leave Chain Joints empty to use unlocked '
+           'influences, or Pick a specific parent-child chain.'
+           if operation == 'children' else
+           'For Smooth: select FIRST vertex as origin, then other vertices.'
            if operation == 'smooth' else
            'Pick Reference Vertices first; mesh is detected automatically. Then Pick Affected.'
            if operation == 'plane' else
