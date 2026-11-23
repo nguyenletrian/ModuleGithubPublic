@@ -111,11 +111,12 @@ def CopyWeight(*arr):
 def SwitchBrush(*arr):
     ctx = cmds.currentCtx()
     if cmds.contextInfo(ctx, c=True) == "artAttrSkin":
-        value = cmds.artAttrSkinPaintCtx(ctx,q=True,value=True)
-        newValue =  value * (-1)
-        # Switch Brush changes the paint value, not the selected skin weights.
-        _setBrushValue(newValue, "additive")        
-        
+        value = cmds.artAttrSkinPaintCtx(ctx, q=True, value=True)
+        newValue = value * (-1)
+        # Restore the original Add operation and explicitly write the paint Value.
+        AddWeight(newValue)
+        cmds.artAttrSkinPaintCtx(ctx, edit=True, value=newValue)
+
 def CopyRatio(*arr):
     sels = cmds.ls(orderedSelection=True,flatten=True)
     if len(sels) >= 2:
