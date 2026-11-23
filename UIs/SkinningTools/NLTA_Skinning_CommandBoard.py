@@ -211,7 +211,6 @@ def command_catalog(tools, distance_ui):
         ("mesh", "MESH & BLEND SHAPE", [
             ("mesh", "Mesh utilities", [
                 ("Component", s.component, "", ""),
-                ("Load UI", b.loadUi, "", ""),
                 ("Fix Quad", m.ShowQuardraw, "", ""),
                 ("Fix Initial", g.fixInitial, "", ""),
             ]),
@@ -1757,6 +1756,14 @@ def _bridge_controls(uis):
 def OpenWindow(tools, uis):
     """Reusable floating Skinning window, independent of the module host layout."""
     global _BOARD
+    # Apply the former Load UI action on every open, including reopening
+    # an existing board. Initialize the Artisan context before editing it.
+    context = "artAttrSkinContext"
+    if not cmds.artAttrSkinPaintCtx(context, exists=True):
+        cmds.artAttrSkinPaintCtx(context)
+        cmds.artAttrSkinPaintCtx(context, edit=True, stampProfile="solid")
+    tools["NLTA_Brush"].loadUi()
+
     if _BOARD is not None:
         try:
             _BOARD.showNormal()
