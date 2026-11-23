@@ -25,7 +25,6 @@ LEFT_DOCK_SECTIONS = frozenset(("paint", "weight", "animation"))
 LEFT_DOCK_GROUP_ORDER = (
     ("animation", "local"), ("animation", "world"),
     ("animation", "timeline"),
-    ("paint", "quick"), ("paint", "helpers"),
     ("paint", "extras"), ("weight", "increment"),
 )
 INFLUENCE_LOCK_WIDTH = 48  # Native checkbox only.
@@ -98,7 +97,7 @@ def command_catalog(tools, distance_ui):
 
     return [
         ("paint", "PAINT & BRUSH", [
-            ("quick", "Defaut Brush", [
+            ("quick", "Default Brush", [
                 ("Smooth", partial(b.smooth, "solid"), "Smooth painted weights", "primary"),
                 ("Flood", b.flood, "Flood with current brush value", ""),
                 ("Pick Value", b.pickValue, "Sample a skin weight", ""),
@@ -248,9 +247,9 @@ GROUP_CELL_WIDTHS = {
 # Each action group reads top-to-bottom in columns, like the original UI.
 # Cap the column count so a wide window does not turn a group into one long row.
 GROUP_MAX_COLUMNS = {
-    ("paint", "quick"): 2,
+    ("paint", "quick"): 1,
     ("paint", "locks"): 2,
-    ("paint", "helpers"): 2,
+    ("paint", "helpers"): 1,
     ("paint", "extras"): 2,
     ("weight", "increment"): 2,
     ("skin", "bind"): 3,
@@ -650,8 +649,8 @@ class InfluencePanel(QtWidgets.QFrame):
     def __init__(self, parent=None):
         super(InfluencePanel, self).__init__(parent)
         self.setObjectName("SkinningInfluencePanel")
-        self.setMinimumWidth(345)
-        self.setMaximumWidth(550)
+        self.setMinimumWidth(450)
+        self.setMaximumWidth(800)
         self.skin = None
         self.mesh = None
         self._rows = []
@@ -726,10 +725,11 @@ class InfluencePanel(QtWidgets.QFrame):
         self.status.setObjectName("SkinningInfluenceStatus")
         column.addWidget(self.status)
 
-        # Influence Locks is permanently attached below the joint list.
-        self.lock_area = QtWidgets.QVBoxLayout()
+        # Four visual columns: two Influence Locks, one Default Brush,
+        # one Advance Tool. Build group frames directly into this layout.
+        self.lock_area = QtWidgets.QHBoxLayout()
         self.lock_area.setContentsMargins(0, 2, 0, 0)
-        self.lock_area.setSpacing(0)
+        self.lock_area.setSpacing(3)
         column.addLayout(self.lock_area)
 
     def activate(self):
@@ -1173,7 +1173,7 @@ class SkinningBoard(QtWidgets.QWidget):
         super(SkinningBoard, self).__init__()
         self.setObjectName("NLTA_SkinningCommandBoard")
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        self.setMinimumWidth(820)
+        self.setMinimumWidth(900)
         self.setMinimumHeight(440)
         self.catalog = catalog
         self.uis = uis
@@ -1234,7 +1234,7 @@ class SkinningBoard(QtWidgets.QWidget):
         self.workspace.addWidget(self.scroll)
         self.workspace.setStretchFactor(0, 0)
         self.workspace.setStretchFactor(1, 1)
-        self.workspace.setSizes([510, 440])
+        self.workspace.setSizes([720, 440])
         inside = QtWidgets.QWidget()
         inside.setObjectName("SkinningContent")
         self.content = QtWidgets.QVBoxLayout(inside)
@@ -1338,7 +1338,8 @@ class SkinningBoard(QtWidgets.QWidget):
                     cell_width=GROUP_CELL_WIDTHS.get((key, group_key), 86),
                     compact=self.compact,
                     max_columns=GROUP_MAX_COLUMNS.get((key, group_key), 2),
-                    force_two_columns=(key in ("paint", "animation")),
+                    force_two_columns=(
+                        key == "animation" or (key, group_key) == ("paint", "locks")),
                     height_reduction=2 if key in LEFT_DOCK_SECTIONS else 0)
                 self.grids.append(grid)
                 group_vertical.addWidget(grid)
@@ -1357,8 +1358,16 @@ class SkinningBoard(QtWidgets.QWidget):
                     entries.append((action_id, button))
                 group_records.append((subheading, grid, entries))
                 if left_dock:
-                    if (key, group_key) == ("paint", "locks"):
-                        self.influences.lock_area.addWidget(group_frame)
+                    if (key, group_key) in (
+                            ("paint", "locks"), ("paint", "quick"),
+                            ("paint", "helpers")):
+                        # Creation order is quick/locks/helpers; insert into
+                        # locks/quick/helpers order without later reparenting.
+                        position = {"locks": 0, "quick": 1, "helpers": 2}[group_key]
+                        stretch = 2 if group_key == "locks" else 1
+                        group_frame.setMinimumWidth(160 if stretch == 2 else 80)
+                        self.influences.lock_area.insertWidget(
+                            position, group_frame, stretch)
                     else:
                         left_groups[(key, group_key)] = group_frame
             if not left_dock:
@@ -1652,7 +1661,9 @@ class SkinningBoard(QtWidgets.QWidget):
                 border: none;
                 border-radius: 0;
             }
-            QFrame#SkinningDockGroup_paint_locks {
+            QFrame#SkinningDockGroup_paint_locks,
+            QFrame#SkinningDockGroup_paint_quick,
+            QFrame#SkinningDockGroup_paint_helpers {
                 background-color: #202020;
                 border-top: 1px solid #454545;
             }
