@@ -451,7 +451,7 @@ def EdgesToCurve(*args):
     if not sel:
         cmds.warning("Please select edges.")
         return
-    curve = cmds.polyToCurve(form=0,degree=3,conformToSmoothMeshPreview=True)[0]
+    curve = cmds.polyToCurve(form=2,degree=3,conformToSmoothMeshPreview=True)[0]
     cvs = cmds.ls(curve + ".cv[*]", fl=True)
     cvWorldPos = [cmds.pointPosition(cv, w=True) for cv in cvs]
     mesh = sel[0].split(".")[0]
