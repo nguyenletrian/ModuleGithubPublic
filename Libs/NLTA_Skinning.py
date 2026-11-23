@@ -916,11 +916,11 @@ def setMiddleWeight(*arr):
     cmds.select(vertices, r=True)
 
 def mirrorSkin(axis, neg_pos, *arr):
-    """Mirror skin on the chosen mesh/region, including auto-found opposite vertices.
+    """Mirror selected vertices, or the whole skinned mesh when none are selected.
 
-    Resolve Paint Skin vertices even when Maya also selects their mesh or
-    returns shape and transform DAG paths. Keep the Paint Skin tool active.
-    Vertices outside the mirrored region retain their original weights.
+    Resolve Paint Skin components even when Maya includes their mesh or
+    returns shape and transform DAG paths. Keep Paint Skin active.
+    Vertices outside an explicitly selected region retain their weights.
     """
     selection = cmds.ls(sl=True, fl=True, long=True) or []
     context = cmds.currentCtx()
@@ -948,7 +948,7 @@ def mirrorSkin(axis, neg_pos, *arr):
             if component.apiType() == om.MFn.kMeshVertComponent:
                 components.extend("{}.vtx[{}]".format(dag.fullPathName(), vertex)
                                   for vertex in om.MFnSingleIndexedComponent(component).getElements())
-    if not selection and not components:
+    if not selection and not components and not paint_skin:
         cmds.warning("Select a skinned mesh or some of its vertices.")
         return False
 
@@ -965,9 +965,21 @@ def mirrorSkin(axis, neg_pos, *arr):
             return False
         mesh = next(iter(meshes))
     else:
-        mesh = mesh_transform(selection[0])
-        if paint_skin:
-            cmds.warning("Select vertices in Paint Skin Weights before mirroring.")
+        # Object selection means mirror the entire mesh, even while Paint Skin
+        # is active. Maya may leave only a joint (or no DAG selection) while
+        # painting; in that case use the active skin session's mesh.
+        mesh = None
+        for item in selection:
+            candidate = mesh_transform(item)
+            if GetSkinCluster(candidate):
+                mesh = candidate
+                break
+        if mesh is None and paint_skin:
+            session = EnsureSkinSession(warn=False)
+            if session:
+                mesh = session["mesh"]
+        if mesh is None:
+            cmds.warning("Select a skinned mesh or activate Paint Skin Weights.")
             return False
     skin = GetSkinCluster(mesh)
     if not skin:
@@ -979,7 +991,7 @@ def mirrorSkin(axis, neg_pos, *arr):
                    surfaceAssociation="closestPoint",
                    influenceAssociation=["closestJoint", "oneToOne"])
 
-    # An object-only selection outside Paint Skin mirrors the full mesh.
+    # No explicit vertices: mirror the full mesh in or out of Paint Skin.
     if not components:
         cmds.copySkinWeights(**options)
         return True
