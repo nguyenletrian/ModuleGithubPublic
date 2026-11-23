@@ -25,8 +25,8 @@ LEFT_DOCK_SECTIONS = frozenset(("paint", "weight", "animation"))
 LEFT_DOCK_GROUP_ORDER = (
     ("animation", "local"), ("animation", "world"),
     ("animation", "timeline"),
-    ("paint", "helpers"),
-    ("weight", "increment"), ("paint", "quick"),
+    ("paint", "quick"), ("paint", "helpers"),
+    ("paint", "extras"), ("weight", "increment"),
 )
 INFLUENCE_LOCK_WIDTH = 48  # Native checkbox only.
 INFLUENCE_CELL_HEIGHT = 24
@@ -96,13 +96,11 @@ def command_catalog(tools, distance_ui):
 
     return [
         ("paint", "PAINT & BRUSH", [
-            ("quick", "Paint actions", [
+            ("quick", "Defaut Brush", [
                 ("Smooth", partial(b.smooth, "solid"), "Smooth painted weights", "primary"),
                 ("Flood", b.flood, "Flood with current brush value", ""),
-                ("Copy Weight", b.CopyWeight, "Copy skin weight", ""),
-                ("Copy Ratio", b.CopyRatio, "Copy weight ratio", ""),
-                ("Graph Skinning", graph.CreateUI, "Open graph editor", "primary"),
                 ("Pick Value", b.pickValue, "Sample a skin weight", ""),
+                ("Copy Weight", b.CopyWeight, "Copy skin weight", ""),
             ]),
             ("locks", "Influence locks", [
                 # Rebound to the list selection when SkinningBoard builds buttons.
@@ -119,11 +117,15 @@ def command_catalog(tools, distance_ui):
                 ("Unlock 2 Joints", s.UnlockTwoJoints,
                  "Select one vertex: unlock its top two weighted influences", ""),
             ]),
-            ("helpers", "Paint helpers", [
+            ("helpers", "Advance Tool", [
                 ("Middle Weight", s.setMiddleWeight, "", ""),
-                ("Prune", s.pruneSmallWeights, "", ""),
                 ("Transfer", t.CreateUI, "Open transfer tool", ""),
                 ("Eye Lid", e.EyelidSurfaceSkinUI, "Open eyelid skin tool", ""),
+                ("Graph Skinning", graph.CreateUI, "Open graph editor", "primary"),
+            ]),
+            ("extras", "Paint helpers", [
+                ("Copy Ratio", b.CopyRatio, "Copy weight ratio", ""),
+                ("Prune", s.pruneSmallWeights, "", ""),
             ]),
         ]),
         ("weight", "WEIGHT ADJUSTMENTS", [
@@ -226,6 +228,7 @@ GROUP_CELL_WIDTHS = {
     ("paint", "quick"): 86,
     ("paint", "locks"): 76,
     ("paint", "helpers"): 88,
+    ("paint", "extras"): 88,
     ("weight", "increment"): 60,
     ("skin", "bind"): 92,
     ("skin", "max"): 72,
@@ -246,6 +249,7 @@ GROUP_MAX_COLUMNS = {
     ("paint", "quick"): 2,
     ("paint", "locks"): 2,
     ("paint", "helpers"): 2,
+    ("paint", "extras"): 2,
     ("weight", "increment"): 2,
     ("skin", "bind"): 3,
     ("skin", "max"): 2,
@@ -1487,7 +1491,7 @@ class SkinningBoard(QtWidgets.QWidget):
             action_id.startswith("weight/increment/") or
             action_id in {
                 "paint/quick/Smooth", "paint/quick/Flood",
-                "paint/quick/Pick Value", "paint/helpers/Prune"
+                "paint/quick/Pick Value", "paint/extras/Prune"
             }
         )
         run_callback = True
