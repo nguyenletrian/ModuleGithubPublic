@@ -26,9 +26,9 @@ RIGHT_SECTION_ORDER = ("skin", "proxy", "files", "curve", "sets", "mesh")
 LEFT_DOCK_GROUP_ORDER = (
     ("animation", "header"), ("animation", "local"), ("animation", "world"),
     ("animation", "timeline"),
+    ("paint", "locks"),
     ("weight", "increment"),
     ("weight", "switch"),
-    ("paint", "locks"),
     ("paint", "max"),
 )
 INFLUENCE_LOCK_WIDTH = 48  # Native checkbox only.
