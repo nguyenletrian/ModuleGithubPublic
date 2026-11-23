@@ -574,48 +574,36 @@ def UnlockTwoJoints(*arr):
     return jointA, jointB
 
 def UnlockInfluenceJoints(*arr):
+    """Unlock the union of influences with nonzero weight on selected vertices."""
     selection = cmds.ls(sl=True, fl=True) or []
-
-    # Check selection
-    if not selection or ".vtx[" not in selection[0]:
-        cmds.warning("Please select one vertex.")
+    vertices = [item for item in selection if ".vtx[" in item]
+    if not vertices:
+        cmds.warning("Please select one or more vertices.")
         return
 
-    vertex = selection[0]
-    mesh = vertex.split(".")[0]
-
-    # Get skinCluster
+    mesh = vertices[0].split(".vtx[", 1)[0]
+    if any(vertex.split(".vtx[", 1)[0] != mesh for vertex in vertices):
+        cmds.warning("Select vertices from one skinned mesh.")
+        return
     skin = GetSkinCluster(mesh)
     if not skin:
         cmds.warning("No skinCluster found.")
         return
 
-    # Get vertex weights
-    weights = GetVertexWeights(skin, vertex)
-
-    # Get all joints affecting this vertex
-    data = sorted(
-        (
-            (joint, weight)
-            for joint, weight in weights.items()
-            if weight > 0.0
-        ),
-        key=lambda item: item[1],
-        reverse=True
-    )
-
-    if not data:
-        cmds.warning("Vertex has no influences.")
+    # Aggregate positive weights across the full vertex selection.
+    weights = {}
+    for vertex in dict.fromkeys(vertices):
+        for joint, value in GetVertexWeights(skin, vertex).items():
+            if value > 0.0:
+                weights[joint] = weights.get(joint, 0.0) + value
+    if not weights:
+        cmds.warning("Selected vertices have no influences.")
         return
 
-    joints = [joint for joint, weight in data]
-
-    # Update skin data
-    session = _SetSkinSession(mesh, skin)
-    if not session:
+    joints = sorted(weights, key=weights.get, reverse=True)
+    if not _SetSkinSession(mesh, skin):
         return
 
-    # Unlock all affecting joints by DAG identity.
     unlocked = singleUnlock(joints)
     if not unlocked:
         return
@@ -625,7 +613,6 @@ def UnlockInfluenceJoints(*arr):
 
     cmds.select(mesh, r=True)
     SelectPaintInfluence(mesh, active)
-
     return unlocked
 
 def addUnlockDown(*arr):
