@@ -34,8 +34,7 @@ LEFT_DOCK_GROUP_ORDER = (
 INFLUENCE_LOCK_WIDTH = 48  # Native checkbox only.
 INFLUENCE_CELL_HEIGHT = 24
 SKIN_HELPER_LABELS = {
-    "Middle Weight": "Middle", "Copy Weight": "Copy W",
-    "Pick Value": "Pick", "Graph Skinning": "Graph",
+    "Middle Weight": "Middle", "Graph Skinning": "Graph",
 }
 PAINT_STRIP_WIDTH = 145  # Half of the former 290-px action strip.
 BOARD_COMPACT_WIDTH = 720  # Strip + influence hierarchy + one 230-px tool column.
@@ -81,11 +80,15 @@ def command_catalog(tools, distance_ui):
             ("+" + str(amount), partial(b.AddWeight, amount),
              "Add brush Value +{} · Opacity 1".format(amount), ""),
         ))
-    switch_commands = [
+    brush_helper_commands = [
         ("S Joint", s.switchJoint,
          "Switch Joint: advance to the next unlocked influence", ""),
+        ("Smooth", partial(b.smooth, "solid"), "Smooth painted weights", "primary"),
+        ("Flood", b.flood, "Flood with current brush value", ""),
         ("S Brush", b.SwitchBrush,
          "Switch Brush: reverse the Paint Skin brush value", ""),
+        ("Pick Value", b.pickValue, "Sample a skin weight", ""),
+        ("Copy Weight", b.CopyWeight, "Copy skin weight", ""),
     ]
 
     animation_groups = []
@@ -106,12 +109,6 @@ def command_catalog(tools, distance_ui):
 
     return [
         ("paint", "PAINT & BRUSH", [
-            ("quick", "Default Brush", [
-                ("Smooth", partial(b.smooth, "solid"), "Smooth painted weights", "primary"),
-                ("Flood", b.flood, "Flood with current brush value", ""),
-                ("Pick Value", b.pickValue, "Sample a skin weight", ""),
-                ("Copy Weight", b.CopyWeight, "Copy skin weight", ""),
-            ]),
             ("locks", "Lock/Unlock", [
                 # Two columns / four rows in the left dock, below Switch.
                 ("Unlock", s.unlock, "Unlock only this joint; lock all other influences", ""),
@@ -138,7 +135,7 @@ def command_catalog(tools, distance_ui):
         ]),
         ("weight", "WEIGHT ADJUSTMENTS", [
             ("increment", "Weight - / +", weight_commands),
-            ("switch", "Switch", switch_commands),
+            ("switch", "Brush Helper", brush_helper_commands),
         ]),
         ("skin", "SKIN & INFLUENCES", [
             ("bind", "Skin and influences", [
@@ -234,7 +231,6 @@ def command_catalog(tools, distance_ui):
 # Individual group minimum widths allow more tools in each region without
 # forcing a one-size-fits-all global button grid.
 GROUP_CELL_WIDTHS = {
-    ("paint", "quick"): 86,
     ("paint", "locks"): 76,
     ("paint", "helpers"): 88,
     ("paint", "max"): 65,
@@ -255,7 +251,6 @@ GROUP_CELL_WIDTHS = {
 # Each action group reads top-to-bottom in columns, like the original UI.
 # Cap the column count so a wide window does not turn a group into one long row.
 GROUP_MAX_COLUMNS = {
-    ("paint", "quick"): 1,
     ("paint", "locks"): 2,
     ("paint", "helpers"): 1,
     ("paint", "max"): 2,
@@ -735,7 +730,7 @@ class InfluencePanel(QtWidgets.QFrame):
         self.status.setObjectName("SkinningInfluenceStatus")
         column.addWidget(self.status)
 
-        # Brush and advanced actions share four columns / two rows under the tree.
+        # Advanced Skin Helper actions share four columns / one row under the tree.
         self.skin_helper = QtWidgets.QFrame(self)
         self.skin_helper.setObjectName("SkinningSkinHelper")
         helper_layout = QtWidgets.QVBoxLayout(self.skin_helper)
@@ -1348,20 +1343,12 @@ class SkinningBoard(QtWidgets.QWidget):
                     vertical.addWidget(header)
             group_records = []
             for group_key, heading, items in groups:
-                if key == "paint" and group_key in ("quick", "helpers"):
-                    # Four columns, two buttons per column, preserving
-                    # the Default Brush / Advance Tool ordering.
-                    positions = {
-                        "quick": ((0, 0), (1, 0), (0, 1), (1, 1)),
-                        "helpers": ((0, 2), (1, 2), (0, 3), (1, 3)),
-                    }[group_key]
+                if (key, group_key) == ("paint", "helpers"):
+                    # Four advanced tools share one row below the influence list.
+                    positions = ((0, 0), (0, 1), (0, 2), (0, 3))
                     if len(items) != len(positions):
-                        raise ValueError("Skin Helper actions do not match 4x2 grid")
+                        raise ValueError("Skin Helper needs four advanced actions")
                     for (label, callback, tooltip, role), (row, col) in zip(items, positions):
-                        if group_key == "locks" and label in INFLUENCE_LOCK_ACTIONS:
-                            callback = partial(
-                                self.influences.run_selected_action,
-                                INFLUENCE_LOCK_ACTIONS[label])
                         action_id = "/".join((key, group_key, label))
                         button = self.make_button(label, callback, tooltip, role, action_id)
                         button.setText(SKIN_HELPER_LABELS.get(label, label))
@@ -1565,8 +1552,8 @@ class SkinningBoard(QtWidgets.QWidget):
             action_id.startswith("weight/increment/") or
             action_id == "weight/switch/S Brush" or
             action_id in {
-                "paint/quick/Smooth", "paint/quick/Flood",
-                "paint/quick/Pick Value", "skin/bind/Prune"
+                "weight/switch/Smooth", "weight/switch/Flood",
+                "weight/switch/Pick Value", "skin/bind/Prune"
             }
         )
         run_callback = True
