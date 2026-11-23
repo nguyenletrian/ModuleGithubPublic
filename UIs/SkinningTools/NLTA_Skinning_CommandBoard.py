@@ -39,9 +39,7 @@ INFLUENCE_LOCK_ACTIONS = {
     "Add Up": "add_up",
     "Add Down": "add_down",
     "Unlock All": "unlock_all",
-    "Lock Inverse": "lock_inverse",
     "Isolate": "isolate",
-    "Un Isolate": "un_isolate",
 }
 
 
@@ -75,8 +73,12 @@ def command_catalog(tools, distance_ui):
             ("+" + str(amount), partial(b.AddWeight, amount),
              "Add brush Value +{} · Opacity 1".format(amount), ""),
         ))
-    weight_commands.append(("Switch Brush", b.SwitchBrush,
-                            "Switch the active Paint Skin brush", ""))
+    weight_commands.extend((
+        ("Switch Joint", s.switchJoint,
+         "Advance to the next unlocked influence on the selected skin", ""),
+        ("Switch Brush", b.SwitchBrush,
+         "Switch the active Paint Skin brush", ""),
+    ))
 
     animation_groups = []
     for key, space in (("local", "local"), ("world", "world")):
@@ -103,19 +105,19 @@ def command_catalog(tools, distance_ui):
                 ("Copy Weight", b.CopyWeight, "Copy skin weight", ""),
             ]),
             ("locks", "Influence locks", [
-                # Rebound to the list selection when SkinningBoard builds buttons.
-                ("Switch Joint", s.switchJoint,
-                 "Advance to the next unlocked influence on the selected skin", ""),
+                # Two columns / four rows under the influence hierarchy.
+                # Column 1: Unlock, Add Unlock, Add Up, Add Down.
+                # Column 2: Unlock All, Isolate, Unlock 2, Unlock Affect.
                 ("Unlock", s.unlock, "Unlock only this joint; lock all other influences", ""),
                 ("Add Unlock", s.addUnlock, "Unlock this joint without changing the others", ""),
                 ("Add Up", s.addUnlockUp, "Unlock this joint and its bound parent", ""),
                 ("Add Down", s.addUnlockDown, "Unlock this joint and its bound child", ""),
                 ("Unlock All", s.unlockAll, "Unlock all influences in the current skin", ""),
-                ("Lock Inverse", s.unlock, "Keep only this joint unlocked; lock all others", ""),
                 ("Isolate", s.IsolateEffectVertex, "Isolate vertices weighted to this joint", ""),
-                ("Un Isolate", s.UnIsolateEffectVertex, "Restore the isolated viewport", ""),
-                ("Unlock 2 Joints", s.UnlockTwoJoints,
-                 "Select one vertex: unlock its top two weighted influences", ""),
+                ("Unlock 2", s.UnlockTwoJoints,
+                 "Unlock the two strongest influences of the selected vertex", ""),
+                ("Unlock Affect", s.UnlockInfluenceJoints,
+                 "Unlock every influence affecting any selected vertex (weight > 0)", ""),
             ]),
             ("helpers", "Advance Tool", [
                 ("Middle Weight", s.setMiddleWeight, "", ""),
@@ -392,15 +394,17 @@ WEIGHT_STEPS = ("0.0001", "0.0005", "0.001", "0.005",
 
 
 def weight_grid_position(name):
-    """Legacy two-column pairing for negative and positive weight edits."""
-    if name == "Set 0":
+    """Switches share their own top row; signed weight steps stay paired."""
+    if name == "Switch Joint":
         return 0, 0
-    if name == "Set 1":
-        return len(WEIGHT_STEPS) + 1, 1
     if name == "Switch Brush":
-        return len(WEIGHT_STEPS) + 1, 0
+        return 0, 1
+    if name == "Set 0":
+        return 1, 0
+    if name == "Set 1":
+        return 1, 1
     if name[:1] in ("-", "+") and name[1:] in WEIGHT_STEPS:
-        return WEIGHT_STEPS.index(name[1:]) + 1, int(name[0] == "+")
+        return WEIGHT_STEPS.index(name[1:]) + 2, int(name[0] == "+")
     return len(WEIGHT_STEPS) + 2, 0
 
 
@@ -1488,7 +1492,8 @@ class SkinningBoard(QtWidgets.QWidget):
         # Read joint/vertex/control selections BEFORE entering Paint Skin for
         # operations that need them. Return to Paint Skin only afterward.
         needs_paint = (
-            action_id.startswith("weight/increment/") or
+            (action_id.startswith("weight/increment/")
+             and action_id != "weight/increment/Switch Joint") or
             action_id in {
                 "paint/quick/Smooth", "paint/quick/Flood",
                 "paint/quick/Pick Value", "paint/extras/Prune"
