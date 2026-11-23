@@ -150,21 +150,25 @@ def EnsureSkinSession(node=None, warn=True):
 
 
 def EnsurePaintContext(mesh=None):
-    """Use Maya's paint context without opening the default Paint Skin UI."""
+    """Enter Maya's real Paint Skin Weights tool, not generic Paint Attributes."""
     session = EnsureSkinSession(mesh) if mesh else EnsureSkinSession()
     if not session:
         return False
 
     context = "artAttrSkinContext"
+    initialized = cmds.artAttrSkinPaintCtx(context, exists=True)
+    tool = (cmds.artAttrSkinPaintCtx(context, query=True, whichTool=True)
+            if initialized else None)
+
+    # A bare artAttrSkinPaintCtx context is NOT equivalent to Maya's
+    # ArtPaintSkinWeightsTool: the latter installs the skin-specific callbacks.
+    if not initialized or tool != "skinWeights" or cmds.currentCtx() != context:
+        mel.eval("ArtPaintSkinWeightsTool;")
     if not cmds.artAttrSkinPaintCtx(context, exists=True):
-        cmds.artAttrSkinPaintCtx(context)
-        # Default solid stamp on a newly initialized Paint Skin context.
-        # Do not overwrite a brush profile that the artist later changes.
-        cmds.artAttrSkinPaintCtx(context, edit=True, stampProfile="solid")
-    # Re-entering an already active Artisan context can reset the viewport's
-    # color-feedback draw state. Only activate it if another tool is running.
-    if cmds.currentCtx() != context:
-        cmds.setToolTo(context)
+        cmds.warning("Paint Skin Weights context was not initialized.")
+        return False
+    cmds.artAttrSkinPaintCtx(
+        context, edit=True, whichTool="skinWeights", skinPaintMode=1)
 
     active = GetActivePaintJoint(session["skinCluster"])
     if not active:
@@ -268,9 +272,10 @@ def SelectPaintInfluence(mesh, joint):
     mel_name = bound.replace("\\", "\\\\").replace('"', '\\"')
     try:
         mel.eval('setSmoothSkinInfluence "{}";'.format(mel_name))
-    except RuntimeError as exc:
-        cmds.warning("Unable to set Paint Skin influence: {}".format(exc))
-        return False
+    except RuntimeError:
+        # Maya can omit this MEL proc when Tool Settings is closed.
+        # The skinCluster connection and context influence still work.
+        pass
 
     # Finalize the skinCluster and context FIRST; Maya's native selection
     # callback should be the last influence-changing action, otherwise the
