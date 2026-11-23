@@ -27,12 +27,11 @@ LEFT_DOCK_GROUP_ORDER = (
     ("animation", "timeline"),
     ("weight", "increment"),
     ("weight", "switch"),
+    ("paint", "locks"),
 )
 INFLUENCE_LOCK_WIDTH = 48  # Native checkbox only.
 INFLUENCE_CELL_HEIGHT = 24
 SKIN_HELPER_LABELS = {
-    "Unlock All": "Unlk All", "Add Unlock": "Add Unlk",
-    "Unlock Affect": "U Affect", "Unlock 2": "Unlk 2",
     "Middle Weight": "Middle", "Copy Weight": "Copy W",
     "Pick Value": "Pick", "Graph Skinning": "Graph",
 }
@@ -110,10 +109,8 @@ def command_catalog(tools, distance_ui):
                 ("Pick Value", b.pickValue, "Sample a skin weight", ""),
                 ("Copy Weight", b.CopyWeight, "Copy skin weight", ""),
             ]),
-            ("locks", "Influence locks", [
-                # Two columns / four rows under the influence hierarchy.
-                # Column 1: Unlock, Add Unlock, Add Up, Add Down.
-                # Column 2: Unlock All, Isolate, Unlock 2, Unlock Affect.
+            ("locks", "Lock/Unlock", [
+                # Two columns / four rows in the left dock, below Switch.
                 ("Unlock", s.unlock, "Unlock only this joint; lock all other influences", ""),
                 ("Add Unlock", s.addUnlock, "Unlock this joint without changing the others", ""),
                 ("Add Up", s.addUnlockUp, "Unlock this joint and its bound parent", ""),
@@ -289,6 +286,9 @@ COMPACT_LABELS = {
     "Copy Ratio": "Copy Ratio",
     "Pick Value": "Pick",
     "Add Unlock": "Add Unlk",
+    "Unlock All": "Unlk All",
+    "Unlock 2": "Unlk 2",
+    "Unlock Affect": "U Affect",
     "Unlock 2 Joints": "Unlock 2",
     "Unlock Joints": "Unlk Jnts",
     "Switch Joint": "Switch J",
@@ -725,7 +725,7 @@ class InfluencePanel(QtWidgets.QFrame):
         self.status.setObjectName("SkinningInfluenceStatus")
         column.addWidget(self.status)
 
-        # One compact four-column Skin Helper directly under the joint tree.
+        # Brush and advanced actions share two columns under the joint tree.
         self.skin_helper = QtWidgets.QFrame(self)
         self.skin_helper.setObjectName("SkinningSkinHelper")
         helper_layout = QtWidgets.QVBoxLayout(self.skin_helper)
@@ -738,7 +738,7 @@ class InfluencePanel(QtWidgets.QFrame):
         self.skin_helper_grid.setContentsMargins(0, 0, 0, 0)
         self.skin_helper_grid.setHorizontalSpacing(2)
         self.skin_helper_grid.setVerticalSpacing(2)
-        for index in range(4):
+        for index in range(2):
             self.skin_helper_grid.setColumnStretch(index, 1)
         helper_layout.addLayout(self.skin_helper_grid)
         column.addWidget(self.skin_helper)
@@ -1297,16 +1297,14 @@ class SkinningBoard(QtWidgets.QWidget):
                 vertical.addWidget(header)
             group_records = []
             for group_key, heading, items in groups:
-                if key == "paint" and group_key in ("locks", "quick", "helpers"):
-                    # One unified Skin Helper grid, filled column-first.
+                if key == "paint" and group_key in ("quick", "helpers"):
+                    # Only brush and advanced tools remain below the tree.
                     positions = {
-                        "locks": ((0, 0), (1, 0), (2, 0), (3, 0),
-                                  (0, 1), (1, 1), (2, 1), (3, 1)),
-                        "quick": ((0, 2), (1, 2), (2, 2), (3, 2)),
-                        "helpers": ((0, 3), (1, 3), (2, 3), (3, 3)),
+                        "quick": ((0, 0), (1, 0), (2, 0), (3, 0)),
+                        "helpers": ((0, 1), (1, 1), (2, 1), (3, 1)),
                     }[group_key]
                     if len(items) != len(positions):
-                        raise ValueError("Skin Helper actions do not match four-column grid")
+                        raise ValueError("Skin Helper actions do not match two-column grid")
                     for (label, callback, tooltip, role), (row, col) in zip(items, positions):
                         if group_key == "locks" and label in INFLUENCE_LOCK_ACTIONS:
                             callback = partial(
