@@ -25,7 +25,7 @@ LEFT_DOCK_SECTIONS = frozenset(("paint", "weight", "animation"))
 LEFT_DOCK_GROUP_ORDER = (
     ("animation", "local"), ("animation", "world"),
     ("animation", "timeline"),
-    ("paint", "extras"), ("weight", "increment"),
+    ("weight", "increment"),
     ("weight", "switch"),
 )
 INFLUENCE_LOCK_WIDTH = 48  # Native checkbox only.
@@ -131,10 +131,6 @@ def command_catalog(tools, distance_ui):
                 ("Eye Lid", e.EyelidSurfaceSkinUI, "Open eyelid skin tool", ""),
                 ("Graph Skinning", graph.CreateUI, "Open graph editor", "primary"),
             ]),
-            ("extras", "Paint helpers", [
-                ("Copy Ratio", b.CopyRatio, "Copy weight ratio", ""),
-                ("Prune", s.pruneSmallWeights, "", ""),
-            ]),
         ]),
         ("weight", "WEIGHT ADJUSTMENTS", [
             ("increment", "Weight - / +", weight_commands),
@@ -149,6 +145,7 @@ def command_catalog(tools, distance_ui):
                 ("Remove Joint", s.RemoveJoint,
                  "Transfers selected joint weights bottom-up and removes skin influences", "primary"),
                 ("Clear Unused", s.removeUnneedJoint, "", ""),
+                ("Prune", s.pruneSmallWeights, "Prune small skin weights", ""),
                 ("Mirror +X", partial(s.mirrorSkin, "x", "+"), "", ""),
                 ("Mirror -X", partial(s.mirrorSkin, "x", "-"), "", ""),
                 ("Clear Weight", s.ClearWeight, "", ""),
@@ -237,7 +234,6 @@ GROUP_CELL_WIDTHS = {
     ("paint", "quick"): 86,
     ("paint", "locks"): 76,
     ("paint", "helpers"): 88,
-    ("paint", "extras"): 88,
     ("weight", "increment"): 60,
     ("weight", "switch"): 60,
     ("skin", "bind"): 92,
@@ -259,7 +255,6 @@ GROUP_MAX_COLUMNS = {
     ("paint", "quick"): 1,
     ("paint", "locks"): 2,
     ("paint", "helpers"): 1,
-    ("paint", "extras"): 2,
     ("weight", "increment"): 2,
     ("weight", "switch"): 2,
     ("skin", "bind"): 3,
@@ -1536,7 +1531,7 @@ class SkinningBoard(QtWidgets.QWidget):
             action_id == "weight/switch/S Brush" or
             action_id in {
                 "paint/quick/Smooth", "paint/quick/Flood",
-                "paint/quick/Pick Value", "paint/extras/Prune"
+                "paint/quick/Pick Value", "skin/bind/Prune"
             }
         )
         run_callback = True
