@@ -21,7 +21,7 @@ except ImportError:
 _BOARD = None
 _BRIDGE = "NLTA_SkinningCommandBridge"
 LEFT_DOCK_SECTIONS = frozenset(("paint", "weight", "animation"))
-RIGHT_SECTION_ORDER = ("skin", "proxy", "files", "curve", "mesh")
+RIGHT_SECTION_ORDER = ("skin", "proxy", "files", "curve", "sets", "mesh")
 # Visual order only: preserve each group's existing action ID and callback.
 LEFT_DOCK_GROUP_ORDER = (
     ("animation", "local"), ("animation", "world"),
@@ -154,12 +154,6 @@ def command_catalog(tools, distance_ui):
                 ("Clear Weight", s.ClearWeight, "", ""),
                 ("Clear Skins", s.clearSkin, "Unbind skinClusters across the scene", "danger"),
             ]),
-            ("sets", "Selection sets", [
-                ("Create Set", sets.CreateSet, "", ""),
-                ("Next Set", sets.NextSet, "", ""),
-                ("Back Set", sets.BackSet, "", ""),
-                ("Delete Sets", sets.DeleteSets, "", ""),
-            ]),
         ]),
         ("proxy", "PROXY", [
             ("proxy", "Proxy", [
@@ -200,6 +194,14 @@ def command_catalog(tools, distance_ui):
                 ("Clear Loft", p.ClearAllLoft, "Clear loft helpers", "danger"),
             ]),
         ]),
+        ("sets", "SELECTION SETS", [
+            ("sets", "Selection sets", [
+                ("Create Set", sets.CreateSet, "", ""),
+                ("Next Set", sets.NextSet, "", ""),
+                ("Back Set", sets.BackSet, "", ""),
+                ("Delete Sets", sets.DeleteSets, "", ""),
+            ]),
+        ]),
         ("animation", "ANIMATION & POSES", animation_groups + [
             ("timeline", "Timeline", [
                 ("Delete Keys", k.deleteSenceKeyframe, "Delete generated animation tests, not existing control animation", ""),
@@ -238,7 +240,7 @@ GROUP_CELL_WIDTHS = {
     ("weight", "increment"): 60,
     ("weight", "switch"): 60,
     ("skin", "bind"): 92,
-    ("skin", "sets"): 84,
+    ("sets", "sets"): 84,
     ("files", "io"): 92,
     ("proxy", "proxy"): 84,
     ("curve", "curve"): 84,
@@ -259,7 +261,7 @@ GROUP_MAX_COLUMNS = {
     ("weight", "increment"): 2,
     ("weight", "switch"): 2,
     ("skin", "bind"): 3,
-    ("skin", "sets"): 2,
+    ("sets", "sets"): 2,
     ("files", "io"): 3,
     ("proxy", "proxy"): 2,
     ("curve", "curve"): 3,
@@ -1454,7 +1456,7 @@ class SkinningBoard(QtWidgets.QWidget):
         return total
 
     def reflow_sections(self, force=False):
-        """Stack the five right-side sections vertically in the chosen order.
+        """Stack the right-side sections vertically in the chosen order.
 
         Keep the persistent Qt column to avoid hot-reload reparenting issues.
         """
@@ -1631,7 +1633,7 @@ class SkinningBoard(QtWidgets.QWidget):
             }
             QFrame#SkinningSection_skin, QFrame#SkinningSection_files,
             QFrame#SkinningSection_proxy, QFrame#SkinningSection_curve,
-            QFrame#SkinningSection_mesh {
+            QFrame#SkinningSection_sets, QFrame#SkinningSection_mesh {
                 background-color: #202020;
                 border: 1px solid #454545;
                 border-radius: 4px;
