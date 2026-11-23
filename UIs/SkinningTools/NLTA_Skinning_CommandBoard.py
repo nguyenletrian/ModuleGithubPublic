@@ -649,8 +649,8 @@ class InfluencePanel(QtWidgets.QFrame):
     def __init__(self, parent=None):
         super(InfluencePanel, self).__init__(parent)
         self.setObjectName("SkinningInfluencePanel")
-        self.setMinimumWidth(450)
-        self.setMaximumWidth(800)
+        self.setMinimumWidth(415)
+        self.setMaximumWidth(470)
         self.skin = None
         self.mesh = None
         self._rows = []
@@ -725,12 +725,23 @@ class InfluencePanel(QtWidgets.QFrame):
         self.status.setObjectName("SkinningInfluenceStatus")
         column.addWidget(self.status)
 
-        # Four visual columns: two Influence Locks, one Default Brush,
-        # one Advance Tool. Build group frames directly into this layout.
-        self.lock_area = QtWidgets.QHBoxLayout()
-        self.lock_area.setContentsMargins(0, 2, 0, 0)
-        self.lock_area.setSpacing(3)
-        column.addLayout(self.lock_area)
+        # One compact four-column Skin Helper directly under the joint tree.
+        self.skin_helper = QtWidgets.QFrame(self)
+        self.skin_helper.setObjectName("SkinningSkinHelper")
+        helper_layout = QtWidgets.QVBoxLayout(self.skin_helper)
+        helper_layout.setContentsMargins(3, 3, 3, 3)
+        helper_layout.setSpacing(3)
+        helper_title = QtWidgets.QLabel("Skin Helper")
+        helper_title.setObjectName("SkinningSectionTitle")
+        helper_layout.addWidget(helper_title)
+        self.skin_helper_grid = QtWidgets.QGridLayout()
+        self.skin_helper_grid.setContentsMargins(0, 0, 0, 0)
+        self.skin_helper_grid.setHorizontalSpacing(3)
+        self.skin_helper_grid.setVerticalSpacing(2)
+        for index in range(4):
+            self.skin_helper_grid.setColumnStretch(index, 1)
+        helper_layout.addLayout(self.skin_helper_grid)
+        column.addWidget(self.skin_helper)
 
     def activate(self):
         if not self._jobs:
@@ -1173,7 +1184,7 @@ class SkinningBoard(QtWidgets.QWidget):
         super(SkinningBoard, self).__init__()
         self.setObjectName("NLTA_SkinningCommandBoard")
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        self.setMinimumWidth(900)
+        self.setMinimumWidth(820)
         self.setMinimumHeight(440)
         self.catalog = catalog
         self.uis = uis
@@ -1234,7 +1245,7 @@ class SkinningBoard(QtWidgets.QWidget):
         self.workspace.addWidget(self.scroll)
         self.workspace.setStretchFactor(0, 0)
         self.workspace.setStretchFactor(1, 1)
-        self.workspace.setSizes([720, 440])
+        self.workspace.setSizes([585, 580])
         inside = QtWidgets.QWidget()
         inside.setObjectName("SkinningContent")
         self.content = QtWidgets.QVBoxLayout(inside)
@@ -1286,7 +1297,28 @@ class SkinningBoard(QtWidgets.QWidget):
                 vertical.addWidget(header)
             group_records = []
             for group_key, heading, items in groups:
-                # Build each left group directly in its permanent container.
+                if key == "paint" and group_key in ("locks", "quick", "helpers"):
+                    # One unified Skin Helper grid, filled column-first.
+                    positions = {
+                        "locks": ((0, 0), (1, 0), (2, 0), (3, 0),
+                                  (0, 1), (1, 1), (2, 1), (3, 1)),
+                        "quick": ((0, 2), (1, 2), (2, 2), (3, 2)),
+                        "helpers": ((0, 3), (1, 3), (2, 3), (3, 3)),
+                    }[group_key]
+                    if len(items) != len(positions):
+                        raise ValueError("Skin Helper actions do not match four-column grid")
+                    for (label, callback, tooltip, role), (row, col) in zip(items, positions):
+                        if group_key == "locks" and label in INFLUENCE_LOCK_ACTIONS:
+                            callback = partial(
+                                self.influences.run_selected_action,
+                                INFLUENCE_LOCK_ACTIONS[label])
+                        action_id = "/".join((key, group_key, label))
+                        button = self.make_button(label, callback, tooltip, role, action_id)
+                        button.setFixedHeight(22)
+                        self.influences.skin_helper_grid.addWidget(button, row, col)
+                        self.buttons[action_id] = (button, callback, label, tooltip, role)
+                    continue
+                # Build each remaining group directly in its permanent container.
                 # This avoids reparenting Qt widgets after creation (important
                 # for Maya hot reload and QTreeWidget signal stability).
                 if left_dock:
@@ -1358,18 +1390,7 @@ class SkinningBoard(QtWidgets.QWidget):
                     entries.append((action_id, button))
                 group_records.append((subheading, grid, entries))
                 if left_dock:
-                    if (key, group_key) in (
-                            ("paint", "locks"), ("paint", "quick"),
-                            ("paint", "helpers")):
-                        # Creation order is quick/locks/helpers; insert into
-                        # locks/quick/helpers order without later reparenting.
-                        position = {"locks": 0, "quick": 1, "helpers": 2}[group_key]
-                        stretch = 2 if group_key == "locks" else 1
-                        group_frame.setMinimumWidth(160 if stretch == 2 else 80)
-                        self.influences.lock_area.insertWidget(
-                            position, group_frame, stretch)
-                    else:
-                        left_groups[(key, group_key)] = group_frame
+                    left_groups[(key, group_key)] = group_frame
             if not left_dock:
                 self.sections.append((section, section_title, group_records))
                 self.section_visibility[section] = True
@@ -1661,11 +1682,13 @@ class SkinningBoard(QtWidgets.QWidget):
                 border: none;
                 border-radius: 0;
             }
-            QFrame#SkinningDockGroup_paint_locks,
-            QFrame#SkinningDockGroup_paint_quick,
-            QFrame#SkinningDockGroup_paint_helpers {
+            QFrame#SkinningSkinHelper {
                 background-color: #202020;
                 border-top: 1px solid #454545;
+            }
+            QFrame#SkinningSkinHelper QPushButton#SkinningAction {
+                font-size: 10px;
+                padding: 1px 2px;
             }
             QLabel#SkinningInfluenceStatus {
                 color: #B5B5B5;
