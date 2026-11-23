@@ -2017,6 +2017,8 @@ def _skirt_children_regions(mesh, skin, chains, mesh_helpers):
                     'farthest': farthest,
                     'current_edge': current_edge,
                     'smooth_end_edge': next_edge,
+                    'graph_preset': ('skirt_end' if index == len(chain) - 2
+                                     else 'skirt'),
                     'distal_edges': distal_edges,
                     'transfer_targets': targets,
                     'smooth_vertices': smooth,
@@ -2149,8 +2151,10 @@ def _skirt_child_isolated_spike_plan(mesh, skin, segments, helpers,
 def SkirtChains(data=None, *args, **kwargs):
     """Transfer parent weight below child, then smooth the chain.
 
-    Like the original SkirtChains, use unlocked bound joints by default.
-    Explicitly picked Chain Joints override that selection when provided.
+    Like the original SkirtChains, derive root-to-leaf paths from unlocked
+    bound influences; explicitly picked Chain Joints optionally override them.
+    Each path uses Skirt gradients until its last parent-child segment,
+    which uses Skirt End. The Graph UI is not modified by a Skin Children run.
     The blend reaches the next child; only geometry beyond it is hard-owned.
     """
     m = _get_skirt_mesh_helpers()
@@ -2170,8 +2174,19 @@ def SkirtChains(data=None, *args, **kwargs):
             'Unlock the parent and child influences, or Pick a connected chain.'
             .format(source))
 
+    # Cache both presets as independent, headless NLTA_Graph curves.
+    # Never overwrite the user's editable Graph in the Graph Skinning window.
+    skirt_graph = {'points': [(0.0, 0.0), (1.0, 1.0)], 'mode': 'bezier'}
+    skirt_end_graph = {'points': [(0.0, 0.0), (1.0, 1.0)], 'mode': 'bezier'}
+    NLTA_Graph.SkirtCurve(skirt_graph)
+    NLTA_Graph.SkirtEndCurve(skirt_end_graph)
+    graph_presets = {'skirt': skirt_graph, 'skirt_end': skirt_end_graph}
+
     # Before ANY weight change, cache every strip in the bind/rest geometry.
     regions = _skirt_children_regions(mesh, skin, chains, m)
+    for chain in chains:
+        print('[NLTA Skin Children] Chain root={} | {}'.format(
+            chain[0], ' -> '.join(joint.split('|')[-1] for joint in chain)))
     changed = 0
     with _transaction('NLTA Skirt Children'):
         for segment in regions:
@@ -2187,11 +2202,12 @@ def SkirtChains(data=None, *args, **kwargs):
                 transferred = _apply_plan(skin, transfer)
                 changed += transferred
 
-            # Stage 2: smooth from the PARENT up to the NEXT CHILD's edge,
-            # or to farthestEdge for the final segment, as in the legacy tool.
+            # Stage 2: Skirt for intermediate children; Skirt End when
+            # this CHILD is the last joint of its root-to-leaf chain.
+            preset = segment['graph_preset']
             smooth_count, ratio_count = _skirt_child_gradient(
                 mesh, segment['smooth_vertices'], parent, child,
-                data.get('graph'))
+                graph_presets[preset])
             changed += smooth_count + ratio_count
 
             # Stage 3: preserve the newly-smoothed child/next-child overlap.
@@ -2203,9 +2219,9 @@ def SkirtChains(data=None, *args, **kwargs):
                 skin, cleanup = _transfer_plan(mesh, hard_targets, parent, child)
                 cleaned = _apply_plan(skin, cleanup)
                 changed += cleaned
-            print('[NLTA Skin Children] {} -> {} | distal={} | transfer={} | '
-                  'smooth={} | ratio={} | hard={} | cleanup={}'.format(
-                      parent, child, len(targets), transferred,
+            print('[NLTA Skin Children] {} -> {} | graph={} | distal={} | '
+                  'transfer={} | smooth={} | ratio={} | hard={} | cleanup={}'.format(
+                      parent, child, preset, len(targets), transferred,
                       smooth_count, ratio_count, len(hard_targets), cleaned))
 
         # Stage 4: parent-side leak cleanup AFTER all overlapping smooth passes.
