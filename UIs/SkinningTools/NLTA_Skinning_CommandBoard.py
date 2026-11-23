@@ -26,9 +26,16 @@ LEFT_DOCK_GROUP_ORDER = (
     ("animation", "local"), ("animation", "world"),
     ("animation", "timeline"),
     ("paint", "extras"), ("weight", "increment"),
+    ("weight", "switch"),
 )
 INFLUENCE_LOCK_WIDTH = 48  # Native checkbox only.
 INFLUENCE_CELL_HEIGHT = 24
+SKIN_HELPER_LABELS = {
+    "Unlock All": "Unlk All", "Add Unlock": "Add Unlk",
+    "Unlock Affect": "U Affect", "Unlock 2": "Unlk 2",
+    "Middle Weight": "Middle", "Copy Weight": "Copy W",
+    "Pick Value": "Pick", "Graph Skinning": "Graph",
+}
 PAINT_STRIP_WIDTH = 145  # Half of the former 290-px action strip.
 
 # These buttons operate on the joint currently highlighted in the hierarchy.
@@ -72,12 +79,12 @@ def command_catalog(tools, distance_ui):
             ("+" + str(amount), partial(b.AddWeight, amount),
              "Add brush Value +{} · Opacity 1".format(amount), ""),
         ))
-    weight_commands.extend((
-        ("Switch Joint", s.switchJoint,
-         "Advance to the next unlocked influence on the selected skin", ""),
-        ("Switch Brush", b.SwitchBrush,
-         "Switch the active Paint Skin brush", ""),
-    ))
+    switch_commands = [
+        ("S Joint", s.switchJoint,
+         "Switch Joint: advance to the next unlocked influence", ""),
+        ("S Brush", b.SwitchBrush,
+         "Switch Brush: reverse the Paint Skin brush value", ""),
+    ]
 
     animation_groups = []
     for key, space in (("local", "local"), ("world", "world")):
@@ -131,6 +138,7 @@ def command_catalog(tools, distance_ui):
         ]),
         ("weight", "WEIGHT ADJUSTMENTS", [
             ("increment", "Weight - / +", weight_commands),
+            ("switch", "Switch", switch_commands),
         ]),
         ("skin", "SKIN & JOINTS", [
             ("bind", "Skin and influences", [
@@ -231,6 +239,7 @@ GROUP_CELL_WIDTHS = {
     ("paint", "helpers"): 88,
     ("paint", "extras"): 88,
     ("weight", "increment"): 60,
+    ("weight", "switch"): 60,
     ("skin", "bind"): 92,
     ("skin", "max"): 72,
     ("skin", "sets"): 84,
@@ -252,6 +261,7 @@ GROUP_MAX_COLUMNS = {
     ("paint", "helpers"): 1,
     ("paint", "extras"): 2,
     ("weight", "increment"): 2,
+    ("weight", "switch"): 2,
     ("skin", "bind"): 3,
     ("skin", "max"): 2,
     ("skin", "sets"): 2,
@@ -393,18 +403,14 @@ WEIGHT_STEPS = ("0.0001", "0.0005", "0.001", "0.005",
 
 
 def weight_grid_position(name):
-    """Switches share their own top row; signed weight steps stay paired."""
-    if name == "Switch Joint":
-        return 0, 0
-    if name == "Switch Brush":
-        return 0, 1
+    """Keep Set 0 / Set 1 and the negative/positive weight steps paired."""
     if name == "Set 0":
-        return 1, 0
+        return 0, 0
     if name == "Set 1":
-        return 1, 1
+        return 0, 1
     if name[:1] in ("-", "+") and name[1:] in WEIGHT_STEPS:
-        return WEIGHT_STEPS.index(name[1:]) + 2, int(name[0] == "+")
-    return len(WEIGHT_STEPS) + 2, 0
+        return WEIGHT_STEPS.index(name[1:]) + 1, int(name[0] == "+")
+    return len(WEIGHT_STEPS) + 1, 0
 
 
 class WeightPairButtons(ResponsiveButtons):
@@ -649,8 +655,8 @@ class InfluencePanel(QtWidgets.QFrame):
     def __init__(self, parent=None):
         super(InfluencePanel, self).__init__(parent)
         self.setObjectName("SkinningInfluencePanel")
-        self.setMinimumWidth(415)
-        self.setMaximumWidth(470)
+        self.setMinimumWidth(277)
+        self.setMaximumWidth(313)
         self.skin = None
         self.mesh = None
         self._rows = []
@@ -677,8 +683,8 @@ class InfluencePanel(QtWidgets.QFrame):
         self._live_timer.timeout.connect(self.sync_live)
 
         column = QtWidgets.QVBoxLayout(self)
-        column.setContentsMargins(7, 7, 7, 7)
-        column.setSpacing(5)
+        column.setContentsMargins(4, 5, 4, 5)
+        column.setSpacing(4)
 
         heading = QtWidgets.QHBoxLayout()
         self.heading_label = QtWidgets.QLabel("SKIN INFLUENCES")
@@ -729,14 +735,14 @@ class InfluencePanel(QtWidgets.QFrame):
         self.skin_helper = QtWidgets.QFrame(self)
         self.skin_helper.setObjectName("SkinningSkinHelper")
         helper_layout = QtWidgets.QVBoxLayout(self.skin_helper)
-        helper_layout.setContentsMargins(3, 3, 3, 3)
-        helper_layout.setSpacing(3)
+        helper_layout.setContentsMargins(2, 2, 2, 2)
+        helper_layout.setSpacing(2)
         helper_title = QtWidgets.QLabel("Skin Helper")
         helper_title.setObjectName("SkinningSectionTitle")
         helper_layout.addWidget(helper_title)
         self.skin_helper_grid = QtWidgets.QGridLayout()
         self.skin_helper_grid.setContentsMargins(0, 0, 0, 0)
-        self.skin_helper_grid.setHorizontalSpacing(3)
+        self.skin_helper_grid.setHorizontalSpacing(2)
         self.skin_helper_grid.setVerticalSpacing(2)
         for index in range(4):
             self.skin_helper_grid.setColumnStretch(index, 1)
@@ -1245,7 +1251,7 @@ class SkinningBoard(QtWidgets.QWidget):
         self.workspace.addWidget(self.scroll)
         self.workspace.setStretchFactor(0, 0)
         self.workspace.setStretchFactor(1, 1)
-        self.workspace.setSizes([585, 580])
+        self.workspace.setSizes([460, 660])
         inside = QtWidgets.QWidget()
         inside.setObjectName("SkinningContent")
         self.content = QtWidgets.QVBoxLayout(inside)
@@ -1314,6 +1320,7 @@ class SkinningBoard(QtWidgets.QWidget):
                                 INFLUENCE_LOCK_ACTIONS[label])
                         action_id = "/".join((key, group_key, label))
                         button = self.make_button(label, callback, tooltip, role, action_id)
+                        button.setText(SKIN_HELPER_LABELS.get(label, label))
                         button.setFixedHeight(22)
                         self.influences.skin_helper_grid.addWidget(button, row, col)
                         self.buttons[action_id] = (button, callback, label, tooltip, role)
@@ -1365,13 +1372,16 @@ class SkinningBoard(QtWidgets.QWidget):
                     group_vertical.addLayout(distance_row)
 
                 # Two columns per Paint group; +/- weights retain paired rows.
-                grid_type = WeightPairButtons if key == "weight" else ResponsiveButtons
+                grid_type = (WeightPairButtons
+                             if (key, group_key) == ("weight", "increment")
+                             else ResponsiveButtons)
                 grid = grid_type(
                     cell_width=GROUP_CELL_WIDTHS.get((key, group_key), 86),
                     compact=self.compact,
                     max_columns=GROUP_MAX_COLUMNS.get((key, group_key), 2),
                     force_two_columns=(
-                        key == "animation" or (key, group_key) == ("paint", "locks")),
+                        key == "animation" or
+                        (key, group_key) in (("paint", "locks"), ("weight", "switch"))),
                     height_reduction=2 if key in LEFT_DOCK_SECTIONS else 0)
                 self.grids.append(grid)
                 group_vertical.addWidget(grid)
@@ -1431,7 +1441,7 @@ class SkinningBoard(QtWidgets.QWidget):
             if not count:
                 continue
             if isinstance(grid, WeightPairButtons):
-                rows = len(WEIGHT_STEPS) + 2
+                rows = len(WEIGHT_STEPS) + 1
             else:
                 gap = grid.layout_grid.horizontalSpacing()
                 min_width = grid.cell_width + (0 if self.compact else 28)
@@ -1522,8 +1532,8 @@ class SkinningBoard(QtWidgets.QWidget):
         # Read joint/vertex/control selections BEFORE entering Paint Skin for
         # operations that need them. Return to Paint Skin only afterward.
         needs_paint = (
-            (action_id.startswith("weight/increment/")
-             and action_id != "weight/increment/Switch Joint") or
+            action_id.startswith("weight/increment/") or
+            action_id == "weight/switch/S Brush" or
             action_id in {
                 "paint/quick/Smooth", "paint/quick/Flood",
                 "paint/quick/Pick Value", "paint/extras/Prune"
@@ -1687,8 +1697,8 @@ class SkinningBoard(QtWidgets.QWidget):
                 border-top: 1px solid #454545;
             }
             QFrame#SkinningSkinHelper QPushButton#SkinningAction {
-                font-size: 10px;
-                padding: 1px 2px;
+                font-size: 9px;
+                padding: 0px 1px;
             }
             QLabel#SkinningInfluenceStatus {
                 color: #B5B5B5;
