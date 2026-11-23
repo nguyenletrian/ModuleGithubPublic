@@ -821,8 +821,7 @@ def ClearAllLoft(*arr):
 def CreateCircle(*args):
     sel = cmds.ls(sl=True, fl=True)
     if not sel:
-        cmds.warning("Nothing selected.")
-        return
+        return cmds.circle()[0]
     obj = sel[0]
     if cmds.nodeType(obj) == "joint":
         children = cmds.listRelatives(obj, c=True, type="joint") or []
