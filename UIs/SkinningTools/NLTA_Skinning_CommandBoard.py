@@ -38,6 +38,7 @@ SKIN_HELPER_LABELS = {
     "Pick Value": "Pick", "Graph Skinning": "Graph",
 }
 PAINT_STRIP_WIDTH = 145  # Half of the former 290-px action strip.
+BOARD_COMPACT_WIDTH = 720  # Strip + influence hierarchy + one 230-px tool column.
 
 # These buttons operate on the joint currently highlighted in the hierarchy.
 INFLUENCE_LOCK_ACTIONS = {
@@ -1190,7 +1191,7 @@ class SkinningBoard(QtWidgets.QWidget):
         super(SkinningBoard, self).__init__()
         self.setObjectName("NLTA_SkinningCommandBoard")
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        self.setMinimumWidth(820)
+        self.setMinimumWidth(700)
         self.setMinimumHeight(440)
         self.catalog = catalog
         self.uis = uis
@@ -1248,7 +1249,7 @@ class SkinningBoard(QtWidgets.QWidget):
         self.workspace.addWidget(self.scroll)
         self.workspace.setStretchFactor(0, 0)
         self.workspace.setStretchFactor(1, 1)
-        self.workspace.setSizes([460, 660])
+        self.workspace.setSizes([460, 240])
         inside = QtWidgets.QWidget()
         inside.setObjectName("SkinningContent")
         self.content = QtWidgets.QVBoxLayout(inside)
@@ -1814,6 +1815,7 @@ def OpenWindow(tools, uis):
     if _BOARD is not None:
         try:
             _BOARD.showNormal()
+            _BOARD.resize(BOARD_COMPACT_WIDTH, _BOARD.height())
             _BOARD.raise_()
             _BOARD.activateWindow()
             return _BOARD
@@ -1861,7 +1863,9 @@ def OpenWindow(tools, uis):
     if saved:
         board.restoreGeometry(saved)
     else:
-        board.resize(1180, 790)
+        board.resize(BOARD_COMPACT_WIDTH, 790)
+    # Reuse saved position/height, not the old oversized window width.
+    board.resize(BOARD_COMPACT_WIDTH, board.height())
     _BOARD = board
     uis["board"] = board
     board.show()
