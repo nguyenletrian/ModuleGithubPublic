@@ -725,7 +725,7 @@ class InfluencePanel(QtWidgets.QFrame):
         self.status.setObjectName("SkinningInfluenceStatus")
         column.addWidget(self.status)
 
-        # Brush and advanced actions share two columns under the joint tree.
+        # Brush and advanced actions share four columns / two rows under the tree.
         self.skin_helper = QtWidgets.QFrame(self)
         self.skin_helper.setObjectName("SkinningSkinHelper")
         helper_layout = QtWidgets.QVBoxLayout(self.skin_helper)
@@ -738,7 +738,7 @@ class InfluencePanel(QtWidgets.QFrame):
         self.skin_helper_grid.setContentsMargins(0, 0, 0, 0)
         self.skin_helper_grid.setHorizontalSpacing(2)
         self.skin_helper_grid.setVerticalSpacing(2)
-        for index in range(2):
+        for index in range(4):
             self.skin_helper_grid.setColumnStretch(index, 1)
         helper_layout.addLayout(self.skin_helper_grid)
         column.addWidget(self.skin_helper)
@@ -1298,13 +1298,14 @@ class SkinningBoard(QtWidgets.QWidget):
             group_records = []
             for group_key, heading, items in groups:
                 if key == "paint" and group_key in ("quick", "helpers"):
-                    # Only brush and advanced tools remain below the tree.
+                    # Four columns, two buttons per column, preserving
+                    # the Default Brush / Advance Tool ordering.
                     positions = {
-                        "quick": ((0, 0), (1, 0), (2, 0), (3, 0)),
-                        "helpers": ((0, 1), (1, 1), (2, 1), (3, 1)),
+                        "quick": ((0, 0), (1, 0), (0, 1), (1, 1)),
+                        "helpers": ((0, 2), (1, 2), (0, 3), (1, 3)),
                     }[group_key]
                     if len(items) != len(positions):
-                        raise ValueError("Skin Helper actions do not match two-column grid")
+                        raise ValueError("Skin Helper actions do not match 4x2 grid")
                     for (label, callback, tooltip, role), (row, col) in zip(items, positions):
                         if group_key == "locks" and label in INFLUENCE_LOCK_ACTIONS:
                             callback = partial(
@@ -1313,7 +1314,7 @@ class SkinningBoard(QtWidgets.QWidget):
                         action_id = "/".join((key, group_key, label))
                         button = self.make_button(label, callback, tooltip, role, action_id)
                         button.setText(SKIN_HELPER_LABELS.get(label, label))
-                        button.setFixedHeight(22)
+                        button.setFixedHeight(23 if self.compact else 29)
                         self.influences.skin_helper_grid.addWidget(button, row, col)
                         self.buttons[action_id] = (button, callback, label, tooltip, role)
                     continue
@@ -1374,7 +1375,7 @@ class SkinningBoard(QtWidgets.QWidget):
                     force_two_columns=(
                         key == "animation" or
                         (key, group_key) in (("paint", "locks"), ("weight", "switch"))),
-                    height_reduction=2 if key in LEFT_DOCK_SECTIONS else 0)
+                    height_reduction=0)
                 self.grids.append(grid)
                 group_vertical.addWidget(grid)
                 entries = []
@@ -1569,6 +1570,8 @@ class SkinningBoard(QtWidgets.QWidget):
         self.settings.setValue("density", value)
         for grid in self.grids:
             grid.set_density(self.compact)
+        for button in self.influences.skin_helper.findChildren(QtWidgets.QPushButton):
+            button.setFixedHeight(23 if self.compact else 29)
         self.reflow_sections(force=True)
 
     def make_button(self, label, callback, tooltip, role, action_id):
@@ -1664,7 +1667,6 @@ class SkinningBoard(QtWidgets.QWidget):
             }
             QPushButton#SkinningAction[dock="left"] {
                 padding: 0px 3px;
-                min-height: 17px;
             }
             QPushButton#SkinningAction:hover {
                 background-color: #424242;
