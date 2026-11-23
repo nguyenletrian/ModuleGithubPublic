@@ -21,7 +21,7 @@ except ImportError:
 _BOARD = None
 _BRIDGE = "NLTA_SkinningCommandBridge"
 LEFT_DOCK_SECTIONS = frozenset(("paint", "weight", "animation"))
-RIGHT_COLUMN_ORDER = ("skin", "proxy", "files", "curve", "mesh")
+RIGHT_SECTION_ORDER = ("skin", "proxy", "files", "curve", "mesh")
 # Visual order only: preserve each group's existing action ID and callback.
 LEFT_DOCK_GROUP_ORDER = (
     ("animation", "local"), ("animation", "world"),
@@ -1216,7 +1216,7 @@ class SkinningBoard(QtWidgets.QWidget):
         self.scroll.setObjectName("SkinningBoardScroll")
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self.scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        self.scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         # Compact Paint/Weight strip to the LEFT of the joint hierarchy.
         # Keep the original buttons and callbacks; no duplicate commands.
         self.paint_scroll = QtWidgets.QScrollArea()
@@ -1257,7 +1257,7 @@ class SkinningBoard(QtWidgets.QWidget):
         self.content.setContentsMargins(1, 1, 1, 5)
         self.content.setSpacing(5)
 
-        # All sections share adaptive masonry columns with no empty grid rows.
+        # The right-hand tool sections form one top-to-bottom scrollable stack.
         self.sections_host = QtWidgets.QWidget()
         self.sections_host.setObjectName("SkinningMasonry")
         self.masonry_row = QtWidgets.QHBoxLayout(self.sections_host)
@@ -1454,17 +1454,18 @@ class SkinningBoard(QtWidgets.QWidget):
         return total
 
     def reflow_sections(self, force=False):
-        """Use five stable right-side columns in the requested fixed order.
+        """Stack the five right-side sections vertically in the chosen order.
 
-        Narrow windows scroll horizontally rather than rearrange the groups.
+        Keep the persistent Qt column to avoid hot-reload reparenting issues.
         """
         if self._reflowing:
             return
 
-        region_width = max(210, min(440, self.max_width_value))
+        available = max(1, self.scroll.viewport().width() - 6)
+        region_width = min(max(210, min(440, self.max_width_value)), available)
         visible = [record for record in self.sections
                    if self.section_visibility.get(record[0], True)]
-        visible.sort(key=lambda record: RIGHT_COLUMN_ORDER.index(
+        visible.sort(key=lambda record: RIGHT_SECTION_ORDER.index(
             record[0].objectName().replace("SkinningSection_", "")))
         signature = (region_width,
                      tuple(record[0].objectName() for record in visible))
@@ -1473,22 +1474,19 @@ class SkinningBoard(QtWidgets.QWidget):
 
         self._reflowing = True
         try:
-            count = len(visible)
-            gap = self.masonry_row.spacing()
-            self.sections_host.setMinimumWidth(
-                count * region_width + max(0, count - 1) * gap)
+            self.sections_host.setMinimumWidth(0)
             for index, column in enumerate(self.masonry_columns):
-                if index < count:
+                if index == 0 and visible:
                     column.setFixedWidth(region_width)
                     column.show()
                 else:
                     column.hide()
 
-            for index, record in enumerate(visible):
+            target = self.masonry_stacks[0]
+            for record in visible:
                 panel = record[0]
-                target = self.masonry_stacks[index]
                 current = panel.parentWidget()
-                if current is not self.masonry_columns[index]:
+                if current is not self.masonry_columns[0]:
                     if current is not None and current.layout():
                         current.layout().removeWidget(panel)
                     target.insertWidget(target.count() - 1, panel)
