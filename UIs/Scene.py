@@ -96,6 +96,7 @@ patterns = {
     "Scene_Pattern_RigAutoRoll":"Rig Auto Roll",
     "Scene_Pattern_RigAutoSkirt":"Rig Auto Skirt",
     "Scene_Pattern_RigAutoSkirtFunc":"Rig Auto Skirt Func",
+    "Scene_Pattern_RigAutoFnc":"Rig Auto Fnc",
     "Scene_Pattern_RigAutoSkirtVector":"Rig Auto Skirt Vector",
     "Scene_Pattern_RigIK":"Rig IK",
     "Scene_Pattern_RigFold":"Rig Fold",
@@ -470,7 +471,7 @@ def ExportScenePatternBatch(dataFolder, level, *args):
 
             settings = dict(entry)
             settings["sceneDataPath"] = dataFolder
-            if module_name in ("Scene_Pattern_RigAutoSkirt", "Scene_Pattern_RigAutoSkirtFunc"):
+            if module_name in ("Scene_Pattern_RigAutoSkirt", "Scene_Pattern_RigAutoSkirtFunc", "Scene_Pattern_RigAutoFnc"):
                 settings["_batch_export_from_saved"] = True
 
             script = _capture_pattern_python(module, exporter, settings)
