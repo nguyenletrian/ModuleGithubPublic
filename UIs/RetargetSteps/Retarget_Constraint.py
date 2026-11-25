@@ -41,9 +41,11 @@ def Fields():
 
 def _namespaces(context):
     refs = context.get("reference_namespaces") or {}
-    ref = context.get("reference_pose_namespace") or refs.get("reference_pose")
-    anim = context.get("source_namespace_animation") or refs.get("old_animations")
-    rig = context.get("target_namespace") or refs.get("new_rig")
+    # The General Setting role map is authoritative, including manual Run.
+    # Do not reuse an animation/source namespace left over from an earlier step.
+    ref = refs.get("reference_pose") or context.get("reference_pose_namespace")
+    anim = refs.get("old_animations") or context.get("source_namespace_animation")
+    rig = refs.get("new_rig") or context.get("target_namespace")
     if context.get("reference_pose_loaded") is False or not ref:
         raise ValueError("Constraint requires a Reference Pose.")
     if not anim or not rig:
@@ -52,6 +54,23 @@ def _namespaces(context):
     if len({ref, anim, rig}) != 3:
         raise ValueError("Constraint requires separate REF, Anim and Rig namespaces.")
     return ref, anim, rig
+
+
+def _resolve(namespace, name):
+    leaf = rt.leaf(name)
+    if not leaf:
+        raise ValueError("Constraint requires an object name in " + namespace)
+    # Absolute namespace lookup avoids Maya's current namespace and any
+    # stale aliases or similarly named objects in REF / Anim / Rig.
+    qualified = ":" + namespace + ":" + leaf
+    matches = cmds.ls(qualified, long=True, objectsOnly=True) or []
+    matches = [node for node in dict.fromkeys(matches)
+               if node.split("|")[-1].lstrip(":") == qualified.lstrip(":")
+               and cmds.nodeType(node) in ("joint", "transform")]
+    if len(matches) != 1:
+        raise ValueError("Constraint: expected one object at {}, found {}".format(
+            qualified, len(matches)))
+    return matches[0]
 
 
 def _world(node):
@@ -142,24 +161,27 @@ def Run(settings, context):
                 if any(cmds.objExists(node) for node in entry["constraints"])}
     for pair in _expand_pairs(settings.get("pairs", [])):
         if from_role == "REF":
-            ref = rt.resolve(ref_ns, pair["from"])
-            anim = rt.resolve(anim_ns, rt.leaf(ref))
+            ref = _resolve(ref_ns, pair["from"])
+            anim = _resolve(anim_ns, rt.leaf(ref))
         else:
-            anim = rt.resolve(anim_ns, pair["from"])
-            ref = rt.resolve(ref_ns, rt.leaf(anim))
-        target = rt.resolve(rig_ns, pair["to"])
+            anim = _resolve(anim_ns, pair["from"])
+            ref = _resolve(ref_ns, rt.leaf(anim))
+        target = _resolve(rig_ns, pair["to"])
         if target in targets or target in existing:
             raise ValueError("Constraint already configured for: " + target)
         targets.add(target)
-        pending.append((pair, anim, target, _offset(ref, target)))
+        pending.append((pair, ref, anim, target, _offset(ref, target)))
 
     # Capture every REF/rig offset before any control receives a constraint.
     # The animation can be at any frame when the helpers are created.
     entries = []
-    for pair, anim, target, offset in pending:
+    print("[Constraint] REF={}, Anim={}, Rig={}".format(ref_ns, anim_ns, rig_ns))
+    for pair, ref, anim, target, offset in pending:
         extra = _build_extra(anim, target, offset)
+        print("[Constraint] REF bind: {} | Animation parent: {} | Driver: {} | Driven: {}".format(
+            ref, anim, extra, target))
         constraints = _connect(extra, target, pair)
-        entries.append({"source": anim, "target": target, "extra_joint": extra,
+        entries.append({"reference": ref, "source": anim, "target": target, "extra_joint": extra,
                         "constraints": constraints,
                         "translate": pair["translate"], "rotate": pair["rotate"],
                         "scale": pair["scale"]})

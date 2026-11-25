@@ -51,6 +51,22 @@ class ConstraintTests(unittest.TestCase):
         self.assertIn("self._make_rotate_pairs(parent, data[\"pairs\"])", source)
         self.assertIn("self.widgets[key] = (kind, self.rotate_pair_rows)", source)
 
+    def test_general_namespace_roles_override_stale_context(self):
+        env = scope("_namespaces")
+        self.assertEqual(env["_namespaces"]({
+            "reference_namespaces": {"reference_pose": "REF", "old_animations": "Anim", "new_rig": "Rig"},
+            "reference_pose_namespace": "OldREF",
+            "source_namespace_animation": "REF",
+            "target_namespace": "Anim"}), ("REF", "Anim", "Rig"))
+
+    def test_resolve_absolute_namespace_ignores_wrong_namespace_matches(self):
+        def ls(name, **kwargs):
+            self.assertEqual(name, ":Rig:Hand")
+            return ["|REF:Root|REF:Hand", "|Anim:Root|Anim:Hand", "|Rig:Root|Rig:Hand"]
+        env = scope("_resolve", rt=SimpleNamespace(leaf=lambda name: name.split(":")[-1]),
+                    cmds=SimpleNamespace(ls=ls, nodeType=lambda node: "transform"))
+        self.assertEqual(env["_resolve"]("Rig", "REF:Hand"), "|Rig:Root|Rig:Hand")
+
     def test_constraint_types(self):
         calls = []
         def make(kind):
@@ -88,8 +104,8 @@ class ConstraintTests(unittest.TestCase):
         env = scope("PairData", "NormalizeSettings", "_mirror_name", "_expand_pairs", "_namespaces", "Run",
                     re=re,
                     _offset=offset, _build_extra=extra, _connect=connect,
-                    rt=SimpleNamespace(resolve=lambda ns, name: ns + ":" + name,
-                                       leaf=lambda node: node.split(":")[-1]),
+                    _resolve=lambda ns, name: ns + ":" + name,
+                    rt=SimpleNamespace(leaf=lambda node: node.split(":")[-1]),
                     cmds=SimpleNamespace(objExists=lambda node: True))
         context = {"reference_pose_namespace": "REF",
                    "source_namespace_animation": "Anim", "target_namespace": "Rig"}
