@@ -1,28 +1,14 @@
 import os
-import math
 import json
+import math
 import inspect
-import importlib.util
 from datetime import datetime
 from functools import partial
 
 import maya.cmds as cmds
 import NLTA_General
 
-# Reuse the input form with isolated state.
-_path = os.path.join(os.path.dirname(__file__), "Scene_Pattern_RigAutoSkirtFunc.py")
-_spec = importlib.util.spec_from_file_location("_nlta_rig_auto_fnc_form", _path)
-_form = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_form)
-STATE = _form.STATE
-
-# This form edits data only; do not modify the full module graph.
-_form.applyLiveSubItem = lambda *args, **kwargs: False
-_form.buildLiveAddedSubItem = lambda *args, **kwargs: False
-_form.setSubItemMute = lambda *args, **kwargs: False
-_form.readSubItemMute = lambda *args, **kwargs: False
-_form.liveFollicleSize = lambda *args, **kwargs: None
-_form.restoreJsonLive = lambda data, list_ui, *args: _form.Load(data, list_ui)
+STATE = {"rows": []}
 
 
 def DefaultSetting(path, *args):
@@ -33,190 +19,249 @@ def DefaultSetting(path, *args):
 
 
 def dataPath(data):
-    return _form.dataPath(data)
+    entry = NLTA_General.JsonGetByID({"path": os.path.join(data["sceneDataPath"], "ScenePatternData.json"), "id": data["id"]})
+    return os.path.normpath(entry["path"])
 
 
 def getData(data):
-    return _form.getData(data)
+    path = dataPath(data)
+    if not os.path.isfile(path):
+        return {"version": 2, "group": "RigUtil", "items": []}
+    with open(path, encoding="utf-8") as stream:
+        return json.load(stream)
 
 
-def saveSettings(data, *args):
-    config = _form.readUi()
-    config["originalStyle"] = cmds.optionMenu(STATE["style"], q=True, value=True)
+def writeData(data, config):
     with open(dataPath(data), "w", encoding="utf-8") as stream:
         json.dump(config, stream, ensure_ascii=False, separators=(",", ":"))
     return config
 
 
-_form.saveSettings = saveSettings
-
-
-def importJson(data, list_ui, *args):
-    paths = cmds.fileDialog2(fileMode=1, fileFilter="JSON (*.json)", caption="Import AutoSkirtFunc JSON")
-    if not paths:
-        return
-    with open(paths[0], encoding="utf-8") as stream:
-        config = json.load(stream)
-    if config.get("version") != 2 or not config.get("items"):
-        cmds.warning("Rig Auto Fnc: select an AutoSkirtFunc version 2 JSON")
-        return
-    with open(dataPath(data), "w", encoding="utf-8") as stream:
-        json.dump(config, stream, ensure_ascii=False, separators=(",", ":"))
-    _form.Load(data, list_ui)
-    cmds.optionMenu(STATE["style"], e=True, value=config.get("originalStyle", "Diana"))
-
-
-def _short(node):
+def shortName(node):
     return node.rsplit("|", 1)[-1]
 
 
-def _point(shape, v):
+def pick(field, *args):
+    selection = cmds.ls(sl=True, objectsOnly=True) or []
+    if selection:
+        cmds.textField(field, e=True, text=selection[0])
+
+
+def textField(parent, label, value="", picker=True):
+    row = cmds.rowLayout(parent=parent, numberOfColumns=3, adjustableColumn=2, columnWidth3=(85, 190, 45))
+    cmds.text(parent=row, label=label, align="left")
+    field = cmds.textField(parent=row, text=value)
+    if picker:
+        cmds.button(parent=row, label="Pick", command=partial(pick, field))
+    else:
+        cmds.text(parent=row, label="")
+    return field
+
+
+def removeDriven(row, driven, *args):
+    row["drivens"].remove(driven)
+    cmds.deleteUI(driven["frame"])
+
+
+def addDriven(row, spec=None, *args):
+    spec = spec or {}
+    frame = cmds.frameLayout(parent=row["holder"], label="Driven", collapsable=True, marginWidth=4)
+    col = cmds.columnLayout(parent=frame, adjustableColumn=True, rowSpacing=3)
+    driven = {"frame": frame}
+    control = spec.get("control", "")
+    driven["control"] = textField(col, "Control", control)
+    driven["target"] = textField(col, "Target", spec.get("target", shortName(control) + "_Target" if control else ""))
+    for key, label, default in (("refV", "Ref V", -1.0), ("minDistance", "Min Distance", 0.0),
+                                ("maxDistance", "Max Distance", 0.0), ("startAngle", "Start Angle", 10.0)):
+        line = cmds.rowLayout(parent=col, numberOfColumns=2, adjustableColumn=2, columnWidth2=(85, 150))
+        cmds.text(parent=line, label=label, align="left")
+        value = spec.get(key, default)
+        driven[key] = cmds.floatField(parent=line, value=default if value is None else float(value), precision=6)
+    cmds.button(parent=col, label="Remove Driven", command=partial(removeDriven, row, driven))
+    row["drivens"].append(driven)
+
+
+def addSelected(row, *args):
+    for control in cmds.ls(sl=True, objectsOnly=True) or []:
+        addDriven(row, {"control": control})
+
+
+def removeReader(row, *args):
+    STATE["rows"].remove(row)
+    cmds.deleteUI(row["frame"])
+
+
+def addReader(spec=None, *args):
+    spec = spec or {}
+    frame = cmds.frameLayout(parent=STATE["holder"], label="Pose Reader", collapsable=True, marginWidth=5)
+    col = cmds.columnLayout(parent=frame, adjustableColumn=True, rowSpacing=4)
+    row = {"frame": frame, "drivens": []}
+    row["id"] = textField(col, "Reader ID", spec.get("id", "Reader{}".format(len(STATE["rows"]) + 1)), False)
+    for key, label in (("sphere", "Sphere"), ("parent", "Parent"), ("end", "End")):
+        row[key] = textField(col, label, spec.get(key, ""))
+    actions = cmds.rowLayout(parent=col, numberOfColumns=3)
+    cmds.button(parent=actions, label="Add Driven", command=lambda *unused: addDriven(row))
+    cmds.button(parent=actions, label="Add Selected", command=partial(addSelected, row))
+    cmds.button(parent=actions, label="Remove Reader", command=partial(removeReader, row))
+    row["holder"] = cmds.columnLayout(parent=col, adjustableColumn=True, rowSpacing=3)
+    STATE["rows"].append(row)
+    for driven in spec.get("drivens", []):
+        addDriven(row, driven)
+
+
+def convertConfig(config):
+    result = {"version": 2, "group": config.get("group", "RigUtil"), "items": []}
+    discarded = 0
+    for item in config.get("items", []):
+        reader = {key: item.get(key, "") for key in ("id", "sphere", "parent", "end")}
+        reader["drivens"] = []
+        if "drivens" in item:
+            reader["drivens"] = item["drivens"]
+        else:
+            for index, control in enumerate(item.get("joints", [])):
+                entries = item.get("subItems", [])
+                subs = entries[index] if index < len(entries) else []
+                sub = subs[0] if subs else {}
+                discarded += max(0, len(subs) - 1)
+                v = sub.get("refV")
+                if v is None and index < len(item.get("refV", [])):
+                    v = item["refV"][index]
+                reader["drivens"].append(dict(control=control, target=shortName(control) + "_Target",
+                    refV=v, minDistance=sub.get("minDistance", 0), maxDistance=sub.get("maxDistance", 0),
+                    startAngle=sub.get("startAngle", 10)))
+        result["items"].append(reader)
+    if discarded:
+        cmds.warning("Rig Auto Fnc: {} extra Sub Items ignored; only the first is imported.".format(discarded))
+    return result
+
+
+def loadForm(config):
+    for child in cmds.layout(STATE["list"], q=True, childArray=True) or []:
+        cmds.deleteUI(child)
+    config = convertConfig(config)
+    STATE["rows"] = []
+    STATE["group"] = textField(STATE["list"], "Contain", config["group"])
+    STATE["holder"] = cmds.columnLayout(parent=STATE["list"], adjustableColumn=True, rowSpacing=5)
+    for spec in config["items"]:
+        addReader(spec)
+    if not config["items"]:
+        addReader()
+
+
+def saveSettings(data, *args):
+    config = {"version": 2, "group": cmds.textField(STATE["group"], q=True, text=True).strip(), "items": []}
+    for row in STATE["rows"]:
+        reader = {key: cmds.textField(row[key], q=True, text=True).strip() for key in ("id", "sphere", "parent", "end")}
+        reader["drivens"] = []
+        for driven in row["drivens"]:
+            spec = {key: cmds.textField(driven[key], q=True, text=True).strip() for key in ("control", "target")}
+            for key in ("refV", "minDistance", "maxDistance", "startAngle"):
+                spec[key] = cmds.floatField(driven[key], q=True, value=True)
+            if spec["refV"] < 0:
+                spec["refV"] = None
+            if not spec["target"]:
+                spec["target"] = shortName(spec["control"]) + "_Target"
+            reader["drivens"].append(spec)
+        config["items"].append(reader)
+    return writeData(data, config)
+
+
+def importJson(data, *args):
+    paths = cmds.fileDialog2(fileMode=1, fileFilter="JSON (*.json)", caption="Import AutoSkirtFunc JSON")
+    if paths:
+        with open(paths[0], encoding="utf-8") as stream:
+            config = convertConfig(json.load(stream))
+        writeData(data, config)
+        loadForm(config)
+
+
+def resolve(reader):
     import maya.api.OpenMaya as om
+    sphere = shortName(reader["sphere"])
+    shape = cmds.listRelatives(sphere, shapes=True, noIntermediate=True, type="nurbsSurface", fullPath=True)[0]
     selection = om.MSelectionList()
     selection.add(shape)
     surface = om.MFnNurbsSurface(selection.getDagPath(0))
-    point = surface.getPointAtParam(0.5, v, om.MSpace.kWorld)
-    return (point.x, point.y, point.z)
-
-
-def _distance(a, b):
-    return math.sqrt(sum((x-y)**2 for x, y in zip(a, b)))
-
-
-def _resolve(config, reader):
-    sphere = _short(reader["sphere"])
-    shape = cmds.listRelatives(sphere, shapes=True, noIntermediate=True, type="nurbsSurface", fullPath=True)[0]
-    controls = [_short(node) for node in reader["joints"]]
-    refs = []
-    for index, (control, entries) in enumerate(zip(controls, reader["subItems"])):
-        for sub_index, sub in enumerate(entries, 1):
-            name = control if sub_index == 1 else control + "_Sub{:02d}".format(sub_index)
-            ref = sphere + "_" + name + "_ref_follicle"
-            v = sub.get("refV")
-            if v is None:
-                if cmds.objExists(ref + ".refV"):
-                    v = cmds.getAttr(ref + ".refV")
-                elif cmds.objExists(ref):
-                    follicle = cmds.listRelatives(ref, shapes=True, type="follicle")[0]
-                    v = cmds.getAttr(follicle + ".parameterV")
-                elif index < len(reader.get("refV", [])):
-                    v = reader["refV"][index]
-                else:
-                    v = _form.sourceRefVFromDriven(sphere, control)
-            refs.append(dict(control=control, name=name, index=index, sub_index=sub_index,
-                             ref=ref, v=float(v), spec=sub))
-    base = [r for r in refs if r["sub_index"] == 1]
-    for r in refs:
-        sub = r["spec"]
-        maximum = float(sub.get("maxDistance", 0))
-        if maximum == 0:
-            plug = r["ref"] + ".maxDistance"
-            if cmds.objExists(plug):
-                maximum = float(cmds.getAttr(plug))
+    if any(abs(cmds.getAttr(shape + "." + attr) - expected) > 1e-6 for attr, expected in (
+            ("minValueU", 0), ("maxValueU", 1), ("minValueV", 0), ("maxValueV", 1))):
+        raise ValueError("Rig Auto Fnc: sphere UV must be 0-1: " + sphere)
+    specs = reader["drivens"]
+    values = []
+    points = []
+    for spec in specs:
+        control = shortName(spec["control"])
+        ref = sphere + "_" + control + "_ref_follicle"
+        v = spec.get("refV")
+        if v is None or v < 0:
+            if cmds.objExists(ref + ".refV"):
+                v = cmds.getAttr(ref + ".refV")
+            elif cmds.objExists(ref):
+                follicle = cmds.listRelatives(ref, shapes=True, type="follicle")[0]
+                v = cmds.getAttr(follicle + ".parameterV")
             else:
-                position = _point(shape, r["v"])
-                bounds = cmds.exactWorldBoundingBox(sphere)
-                radius = max(bounds[i+3]-bounds[i] for i in range(3)) * 0.5
-                maximum = max(min((_distance(position, _point(shape, other["v"]))
-                                   for other in base if other["index"] != r["index"]),
+                pos = cmds.xform(control, q=True, ws=True, rp=True)
+                _, _, v = surface.closestPoint(om.MPoint(*pos), space=om.MSpace.kWorld)
+        v = float(v)
+        if not 0 <= v <= 1:
+            raise ValueError("Rig Auto Fnc: Ref V must be 0-1: " + control)
+        values.append(v)
+        points.append(surface.getPointAtParam(0.5, v, om.MSpace.kWorld))
+    bounds = cmds.exactWorldBoundingBox(sphere)
+    radius = max(bounds[i+3]-bounds[i] for i in range(3)) * 0.5
+    ranges = []
+    for index, spec in enumerate(specs):
+        minimum, maximum = float(spec["minDistance"]), float(spec["maxDistance"])
+        if maximum == 0:
+            ref = sphere + "_" + shortName(spec["control"]) + "_ref_follicle"
+            if cmds.objExists(ref + ".maxDistance"):
+                maximum = cmds.getAttr(ref + ".maxDistance")
+            else:
+                maximum = max(min((points[index].distanceTo(point) for i, point in enumerate(points) if i != index),
                                   default=radius), 0.001)
-        minimum = float(sub.get("minDistance", 0))
-        if minimum >= maximum:
-            raise ValueError("Rig Auto Fnc: Min Distance must be below Max Distance: " + r["name"])
-        r["range"] = (minimum, maximum)
-    return refs
-
-
-def _existing_target(control):
-    target = control + "_Target"
-    if cmds.objExists(target):
-        parents = cmds.ls(control, long=True) or []
-        if len(parents) == 1 and target in parents[0].split("|")[:-1]:
-            return target
-    return None
+        if not 0 <= minimum < maximum:
+            raise ValueError("Rig Auto Fnc: invalid distance range for " + spec["control"])
+        if not 0 <= float(spec["startAngle"]) <= 180:
+            raise ValueError("Rig Auto Fnc: Start Angle must be 0-180")
+        ranges.append((minimum, float(maximum)))
+    return values, ranges
 
 
 def buildScript(config):
+    config = convertConfig(config)
     lines = ["import maya.cmds as cmds", "", "", "def main():"]
-    emit = lambda line="": lines.append("    " + line if line else "")
-    emit("rig_group = " + repr(config.get("group", "RigUtil")))
-    style = config.get("originalStyle", "Diana")
-    targets = {}
-    target_signals = {}
-    follow_attrs = {}
+    def emit(line=""):
+        lines.append("    " + line if line else "")
+    emit("rig_group = " + repr(config["group"]))
+    seen = set()
     for reader in config["items"]:
-        refs = _resolve(config, reader)
-        sphere = _short(reader["sphere"])
-        if not refs:
-            continue
+        if not reader["drivens"]:
+            raise ValueError("Rig Auto Fnc: add Driven controls to " + reader["id"])
+        ref_parameterV, min_max_distance = resolve(reader)
+        controls = [shortName(d["control"]) for d in reader["drivens"]]
+        targets = [shortName(d.get("target") or shortName(d["control"]) + "_Target") for d in reader["drivens"]]
+        for target in targets:
+            if target in seen:
+                raise ValueError("Rig Auto Fnc: one Rotate Z output per Target: " + target)
+            seen.add(target)
         emit()
-        emit("# " + str(reader["id"]).replace("\n", " ").replace("\r", " "))
-        emit("pose_reader = " + repr(sphere))
-        emit("skirt_joints = " + repr([r["name"] for r in refs]))
-        emit("ref_parameterV = " + repr([r["v"] for r in refs]))
-        emit("min_max_distance = " + repr([r["range"] for r in refs]))
-        emit("raise_start_angle = " + repr([float(r["spec"].get("startAngle", 10)) for r in refs]))
-        emit("cp_follicle_shape, cpos = createPoseReaderSystem(pose_reader, {}, {}, rig_group)".format(repr(_short(reader["parent"])), repr(_short(reader["end"]))))
+        emit("pose_reader = " + repr(shortName(reader["sphere"])))
+        emit("skirt_joints = " + repr(controls))
+        emit("skirt_targets = " + repr(targets))
+        emit("ref_parameterV = " + repr(ref_parameterV))
+        emit("min_max_distance = " + repr(min_max_distance))
+        emit("raise_start_angle = " + repr([float(d["startAngle"]) for d in reader["drivens"]]))
+        emit("cp_follicle_shape, cpos = createPoseReaderSystem(pose_reader, {}, {}, rig_group)".format(repr(shortName(reader["parent"])), repr(shortName(reader["end"]))))
         emit("raise_influence_nodes = createSkirtRigSystem(pose_reader, cp_follicle_shape, cpos, skirt_joints, ref_parameterV, min_max_distance, raise_start_angle, rig_group)")
-        for i, r in enumerate(refs):
-            control, sub = r["control"], r["spec"]
-            prefix = sphere + "_" + r["name"]
-            core = prefix + "_md_RaiseInfluence"
-            raw = prefix + "_md_Raise.outputX"
-            if sub.get("reverseU"):
-                emit("cmds.setAttr({!r}, 180)".format(prefix + "_Remap_Raise.outputMin"))
-                emit("cmds.setAttr({!r}, 0)".format(prefix + "_Remap_Raise.outputMax"))
-            if style == "Akali":
-                emit("neutral_value = cmds.getAttr({!r})".format(raw))
-                zero = prefix + "_ZeroOut_PMA"
-                emit("zero = cmds.createNode('plusMinusAverage', n={!r})".format(zero))
-                emit("cmds.setAttr(zero + '.operation', 2)")
-                emit("cmds.connectAttr({!r}, zero + '.input1D[0]')".format(raw))
-                emit("cmds.setAttr(zero + '.input1D[1]', neutral_value)")
-                emit("cmds.connectAttr(zero + '.output1D', {!r}, force=True)".format(core + ".input1X"))
-            follow = control + ".AutoFollow"
-            if control not in follow_attrs:
-                emit("if not cmds.attributeQuery('AutoFollow', node={!r}, exists=True):".format(control))
-                emit("    cmds.addAttr({!r}, ln='AutoFollow', at='double', min=0, max=2, dv=1, k=True)".format(control))
-                follow_attrs[control] = follow
-            emit("cmds.connectAttr({!r}, raise_influence_nodes[{}] + '.input2X')".format(follow, i))
-            signal = core + ".outputX"
-            factor = float(sub.get("strength", 1)) * (-1 if sub.get("invertRotate") else 1)
-            if factor != 1:
-                md = prefix + "_Output_MD"
-                emit("md = cmds.createNode('multiplyDivide', n={!r})".format(md))
-                emit("cmds.connectAttr({!r}, md + '.input1X')".format(signal))
-                emit("cmds.setAttr(md + '.input2X', {!r})".format(factor))
-                signal = md + ".outputX"
-            if control not in targets:
-                target = _existing_target(control)
-                if target is None:
-                    target = control + "_RigAutoFnc_Target"
-                    emit("matrix = cmds.xform({!r}, q=True, ws=True, m=True)".format(control))
-                    emit("parents = cmds.listRelatives({!r}, parent=True, fullPath=True)".format(control))
-                    emit("space = cmds.createNode('transform', n={!r})".format(control + "_RigAutoFnc_Space"))
-                    emit("cmds.xform(space, ws=True, m=matrix)")
-                    emit("if parents:")
-                    emit("    space = cmds.parent(space, parents[0], absolute=True)[0]")
-                    emit("target = cmds.createNode('transform', n={!r}, parent=space)".format(target))
-                    emit("cmds.parent({!r}, target, absolute=True)".format(control))
-                targets[control] = target
-            channel = targets[control] + "." + sub.get("outputType", "rotate") + sub.get("axis", "Z").upper()[-1]
-            target_signals.setdefault(channel, []).append(signal)
-    emit()
-    emit("# Connect lift influence")
-    for channel, signals in target_signals.items():
-        signal = signals[0]
-        if len(signals) > 1:
-            name = channel.replace(".", "_") + "_Sum"
-            emit("summation = cmds.createNode('plusMinusAverage', n={!r})".format(name))
-            for i, src in enumerate(signals):
-                emit("cmds.connectAttr({!r}, summation + '.input1D[{}]')".format(src, i))
-            signal = name + ".output1D"
-        emit("cmds.connectAttr({!r}, {!r})".format(signal, channel))
-    lines.extend(["", "", inspect.getsource(createPoseReaderSystem).rstrip(),
-                  "", "", inspect.getsource(createSkirtRigSystem).rstrip(),
-                  "", "", 'if __name__ == "__main__":', "    main()", ""])
+        emit()
+        emit("# Connect master control")
+        emit("for i, skirt_joint in enumerate(skirt_joints):")
+        emit("    if not cmds.attributeQuery('AutoFollow', node=skirt_joint, exists=True):")
+        emit("        cmds.addAttr(skirt_joint, ln='AutoFollow', at='double', min=0, max=2, dv=1, k=True)")
+        emit("    cmds.connectAttr(f'{skirt_joint}.AutoFollow', f'{raise_influence_nodes[i]}.input2X')")
+        emit("    cmds.connectAttr(f'{raise_influence_nodes[i]}.outputX', f'{skirt_targets[i]}.rotateZ')")
+    lines.extend(["", "", inspect.getsource(createPoseReaderSystem).rstrip(), "", "",
+                  inspect.getsource(createSkirtRigSystem).rstrip(), "", "",
+                  'if __name__ == "__main__":', "    main()", ""])
     script = "\n".join(lines)
     compile(script, "Python_Scene_Pattern_RigAutoFnc.py", "exec")
     return script
@@ -243,23 +288,16 @@ def runFromForm(data, *args):
 
 def Form(data, *args):
     ui = NLTA_General.LoadModule("Scene_Form").Create(data)
-    buttons, list_ui = ui["buttonUI"], ui["listUI"]
-    cmds.rowColumnLayout(parent=buttons, numberOfColumns=5)
-    cmds.button(label="Add", width=70, command=_form.addEmpty)
-    cmds.button(label="Import JSON", width=90, command=partial(importJson, data, list_ui))
-    cmds.button(label="Save", width=70, command=partial(saveSettings, data))
-    cmds.button(label="Run", width=70, command=partial(runFromForm, data))
-    export = cmds.button(label="Export Py", width=80, command=partial(ExportPython, data))
-    cmds.popupMenu(parent=export, button=3)
-    cmds.menuItem(label="Open Folder", command=partial(_form.OpenExportFolder, data))
-    style = cmds.optionMenu(parent=buttons, label="Original Style")
-    cmds.menuItem(parent=style, label="Diana")
-    cmds.menuItem(parent=style, label="Akali")
-    cmds.button(parent=buttons, label="Rebuild Sphere UV 0-1", command=_form.rebuildSphereUVButton)
-    cmds.text(parent=buttons, label="Edit data only. Run / Export on a clean rig.", align="left")
-    _form.Load(data, list_ui)
-    STATE["style"] = style
-    cmds.optionMenu(style, e=True, value=getData(data).get("originalStyle", "Diana"))
+    buttons = ui["buttonUI"]
+    STATE["list"] = ui["listUI"]
+    row = cmds.rowColumnLayout(parent=buttons, numberOfColumns=5)
+    cmds.button(parent=row, label="Add Reader", command=lambda *unused: addReader())
+    cmds.button(parent=row, label="Import JSON", command=partial(importJson, data))
+    cmds.button(parent=row, label="Save", command=partial(saveSettings, data))
+    cmds.button(parent=row, label="Run", command=partial(runFromForm, data))
+    cmds.button(parent=row, label="Export Py", command=partial(ExportPython, data))
+    cmds.text(parent=buttons, label="Ref V = -1 / Max Distance = 0: Auto. Target must exist. Rotate Z only.", align="left")
+    loadForm(getData(data))
 
 
 def createPoseReaderSystem(
