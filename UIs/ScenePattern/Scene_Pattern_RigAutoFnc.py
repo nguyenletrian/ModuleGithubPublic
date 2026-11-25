@@ -41,6 +41,16 @@ def shortName(node):
     return node.rsplit("|", 1)[-1]
 
 
+def jointName(control):
+    name = shortName(control)
+    return name[:-3] if name.endswith("_FK") else name
+
+
+def referenceName(sphere, control):
+    names = [sphere + "_" + name + "_ref_follicle" for name in (jointName(control), shortName(control))]
+    return next((name for name in names if cmds.objExists(name)), names[0])
+
+
 def pick(field, *args):
     selection = cmds.ls(sl=True, objectsOnly=True) or []
     if selection:
@@ -110,7 +120,9 @@ def addReader(spec=None, *args):
 
 
 def convertConfig(config):
-    result = {"version": 2, "group": config.get("group", "RigUtil"), "items": []}
+    result = {"version": 2, "group": "RigUtil", "items": []}
+    if config.get("group", "RigUtil") != "RigUtil":
+        cmds.warning("Rig Auto Fnc: original Diana code uses fixed RigUtil.")
     discarded = 0
     simplified = 0
     for item in config.get("items", []):
@@ -146,7 +158,7 @@ def loadForm(config):
         cmds.deleteUI(child)
     config = convertConfig(config)
     STATE["rows"] = []
-    STATE["group"] = textField(STATE["list"], "Contain", config["group"])
+    cmds.text(parent=STATE["list"], label="Contain: RigUtil", align="left")
     STATE["holder"] = cmds.columnLayout(parent=STATE["list"], adjustableColumn=True, rowSpacing=5)
     for spec in config["items"]:
         addReader(spec)
@@ -155,7 +167,7 @@ def loadForm(config):
 
 
 def saveSettings(data, *args):
-    config = {"version": 2, "group": cmds.textField(STATE["group"], q=True, text=True).strip(), "items": []}
+    config = {"version": 2, "group": "RigUtil", "items": []}
     for row in STATE["rows"]:
         reader = {key: cmds.textField(row[key], q=True, text=True).strip() for key in ("id", "sphere", "parent", "end")}
         reader["drivens"] = []
@@ -196,7 +208,7 @@ def resolve(reader):
     points = []
     for spec in specs:
         control = shortName(spec["control"])
-        ref = sphere + "_" + control + "_ref_follicle"
+        ref = referenceName(sphere, control)
         v = spec.get("refV")
         if v is None or v < 0:
             if cmds.objExists(ref + ".refV"):
@@ -218,14 +230,14 @@ def resolve(reader):
     for index, spec in enumerate(specs):
         minimum, maximum = float(spec["minDistance"]), float(spec["maxDistance"])
         if maximum == 0:
-            ref = sphere + "_" + shortName(spec["control"]) + "_ref_follicle"
+            ref = referenceName(sphere, spec["control"])
             if cmds.objExists(ref + ".maxDistance"):
                 maximum = cmds.getAttr(ref + ".maxDistance")
             else:
                 maximum = max(min((points[index].distanceTo(point) for i, point in enumerate(points) if i != index),
                                   default=radius), 0.001)
-        if not 0 <= minimum < maximum:
-            raise ValueError("Rig Auto Fnc: invalid distance range for " + spec["control"])
+        if not 0 <= minimum < maximum <= 2:
+            raise ValueError("Rig Auto Fnc: original Diana distance attributes require 0 <= Min < Max <= 2: " + spec["control"])
         if not 0 <= float(spec["startAngle"]) <= 180:
             raise ValueError("Rig Auto Fnc: Start Angle must be 0-180")
         ranges.append((minimum, float(maximum)))
@@ -239,34 +251,55 @@ def buildScript(config):
     lines = ["import maya.cmds as cmds", "", "", "def main():"]
     def emit(line=""):
         lines.append("    " + line if line else "")
-    emit("rig_group = " + repr(config["group"]))
-    seen = set()
+    seen_targets, seen_controls, seen_spheres = set(), set(), set()
     for reader in config["items"]:
         if not reader["drivens"]:
             raise ValueError("Rig Auto Fnc: add Driven controls to " + reader["id"])
         ref_parameterV, min_max_distance = resolve(reader)
+        pose_reader = shortName(reader["sphere"])
         controls = [shortName(d["control"]) for d in reader["drivens"]]
+        shoulder_joints = [jointName(control) for control in controls]
         targets = [shortName(d.get("target") or shortName(d["control"]) + "_Target") for d in reader["drivens"]]
-        for target in targets:
-            if target in seen:
-                raise ValueError("Rig Auto Fnc: one Rotate Z output per Target: " + target)
-            seen.add(target)
+        if pose_reader in seen_spheres:
+            raise ValueError("Rig Auto Fnc: one item per original pose reader: " + pose_reader)
+        seen_spheres.add(pose_reader)
+        for control, target in zip(controls, targets):
+            if control in seen_controls or target in seen_targets:
+                raise ValueError("Rig Auto Fnc: original script requires one output per Control and Target: " + control)
+            seen_controls.add(control)
+            seen_targets.add(target)
+        if len(set(shoulder_joints)) != len(shoulder_joints):
+            raise ValueError("Rig Auto Fnc: duplicate shoulder joint name")
         emit()
-        emit("pose_reader = " + repr(shortName(reader["sphere"])))
-        emit("skirt_joints = " + repr(controls))
-        emit("skirt_targets = " + repr(targets))
-        emit("ref_parameterV = " + repr(ref_parameterV))
+        emit("ref_parameterV = " + repr(ref_parameterV) + "  # v values on the sphere, horizontal values")
+        emit()
         emit("min_max_distance = " + repr(min_max_distance))
+        emit()
         emit("raise_start_angle = " + repr([float(d["startAngle"]) for d in reader["drivens"]]))
-        emit("cp_follicle_shape, cpos = createPoseReaderSystem(pose_reader, {}, {}, rig_group)".format(repr(shortName(reader["parent"])), repr(shortName(reader["end"]))))
-        emit("raise_influence_nodes = createSkirtRigSystem(pose_reader, cp_follicle_shape, cpos, skirt_joints, ref_parameterV, min_max_distance, raise_start_angle, rig_group)")
+        emit()
+        emit("shoulder_joints = " + repr(shoulder_joints))
+        conventional_controls = controls == [name + "_FK" for name in shoulder_joints]
+        conventional_targets = targets == [name + "_Target" for name in controls]
+        if not conventional_controls:
+            emit("shoulderguard_controls = " + repr(controls))
+        if not conventional_targets:
+            emit("shoulderguard_targets = " + repr(targets))
+        emit("cp_follicle_shape, cpos = createPoseReaderSystem({!r}, {!r}, {!r})".format(pose_reader, shortName(reader["parent"]), shortName(reader["end"])))
+        emit()
+        emit("raise_influence_nodes = createSkirtRigSystem(")
+        emit("    {!r},".format(pose_reader))
+        for argument in ("cp_follicle_shape", "cpos", "shoulder_joints", "ref_parameterV", "min_max_distance"):
+            emit("    " + argument + ",")
+        emit("    raise_start_angle)")
         emit()
         emit("# Connect master control")
-        emit("for i, skirt_joint in enumerate(skirt_joints):")
-        emit("    if not cmds.attributeQuery('AutoFollow', node=skirt_joint, exists=True):")
-        emit("        cmds.addAttr(skirt_joint, ln='AutoFollow', at='double', min=0, max=2, dv=1, k=True)")
-        emit("    cmds.connectAttr(f'{skirt_joint}.AutoFollow', f'{raise_influence_nodes[i]}.input2X')")
-        emit("    cmds.connectAttr(f'{raise_influence_nodes[i]}.outputX', f'{skirt_targets[i]}.rotateZ')")
+        emit("for i, shoulder_joint in enumerate(shoulder_joints):")
+        emit('    shoulderguard_control = f"{shoulder_joint}_FK"' if conventional_controls else "    shoulderguard_control = shoulderguard_controls[i]")
+        emit('    cmds.addAttr(shoulderguard_control, ln="autoShoulderGuard", at="double", min=0, max=2, dv=1, k=True)')
+        emit('    cmds.connectAttr(f"{shoulderguard_control}.autoShoulderGuard", f"{raise_influence_nodes[i]}.input2X")')
+        emit()
+        emit("    # Connect lift influence")
+        emit('    cmds.connectAttr(f"{raise_influence_nodes[i]}.outputX", f"{shoulderguard_control}_Target.rotateZ")' if conventional_targets else '    cmds.connectAttr(f"{raise_influence_nodes[i]}.outputX", f"{shoulderguard_targets[i]}.rotateZ")')
     lines.extend(["", "", inspect.getsource(createPoseReaderSystem).rstrip(), "", "",
                   inspect.getsource(createSkirtRigSystem).rstrip(), "", "",
                   'if __name__ == "__main__":', "    main()", ""])
@@ -304,7 +337,7 @@ def Form(data, *args):
     cmds.button(parent=row, label="Save", command=partial(saveSettings, data))
     cmds.button(parent=row, label="Run", command=partial(runFromForm, data))
     cmds.button(parent=row, label="Export Py", command=partial(ExportPython, data))
-    cmds.text(parent=buttons, label="Ref V = -1 / Max Distance = 0: Auto. Target must exist. Rotate Z only.", align="left")
+    cmds.text(parent=buttons, label="Ref V = -1 / Max Distance = 0: Auto. Range 0-2. Original Rotate Z. Clean rig.", align="left")
     loadForm(getData(data))
 
 
@@ -312,7 +345,6 @@ def createPoseReaderSystem(
     poseReader,
     poseReader_constraint_target,
     closest_point_ref_object,
-    rig_group="RigUtil",
 ):
 
     # Create a locator that follows the reference object.
@@ -322,7 +354,7 @@ def createPoseReaderSystem(
     target_loc_shape = cmds.listRelatives(target_loc, shapes=True, fullPath=False)[0]
 
     cmds.parent(target_loc, target_loc_group)
-    cmds.parent(target_loc_group, rig_group)
+    cmds.parent(target_loc_group, "RigUtil")
     cmds.parentConstraint(closest_point_ref_object, target_loc_group, mo=False)
 
     # Pose reader sphere setup
@@ -340,7 +372,7 @@ def createPoseReaderSystem(
     cp_follicleTransform = cmds.listRelatives(cp_follicleShape, parent=True, fullPath=False)[0]
     cp_follicleTransform = cmds.rename(cp_follicleTransform, f"{poseReader}_CP_follicle")
 
-    cmds.parent(cp_follicleTransform, rig_group)
+    cmds.parent(cp_follicleTransform, "RigUtil")
 
     cmds.connectAttr(f"{pose_reader_shape}.worldSpace[0]", f"{cp_follicleShape}.inputSurface")
     cmds.connectAttr(f"{pose_reader_shape}.worldMatrix[0]", f"{cp_follicleShape}.inputWorldMatrix")
@@ -361,7 +393,6 @@ def createSkirtRigSystem(
     ref_parameterV,
     min_max_distance,
     raise_start_angle,
-    rig_group="RigUtil",
 ):
 
     """
@@ -388,7 +419,7 @@ def createSkirtRigSystem(
             follicleTransform = cmds.rename(follicleTransform, f"{pose_reader}_{skirt_joint}_{follicle_type}_follicle")
 
             equator_follicles.append(follicleTransform)
-            cmds.parent(follicleTransform, rig_group)
+            cmds.parent(follicleTransform, "RigUtil")
 
             cmds.connectAttr(f"{pose_reader_shape}.worldSpace[0]", f"{follicleShape}.inputSurface")
             cmds.connectAttr(f"{pose_reader_shape}.worldMatrix[0]", f"{follicleShape}.inputWorldMatrix")
@@ -399,8 +430,8 @@ def createSkirtRigSystem(
 
             if follicle_type == "ref":
                 cmds.setAttr(f"{follicleShape}.parameterV", ref_parameterV[i])
-                cmds.addAttr(follicleTransform, ln="minDistance", at="double", min=0, max=max(2, min_max_distance[i][0]), dv=0, k=True)
-                cmds.addAttr(follicleTransform, ln="maxDistance", at="double", min=0, max=max(2, min_max_distance[i][1]), dv=1.5, k=True)
+                cmds.addAttr(follicleTransform, ln="minDistance", at="double", min=0, max=2, dv=0, k=True)
+                cmds.addAttr(follicleTransform, ln="maxDistance", at="double", min=0, max=2, dv=1.5, k=True)
                 cmds.addAttr(follicleTransform, ln="raiseStartAngle", at="double", min=0, max=180, dv=10, k=True)
                 # cmds.addAttr(follicleTransform, ln="falloff", at="double", min=0, max=10, dv=1, k=True)
             else:
