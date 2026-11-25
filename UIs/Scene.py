@@ -109,6 +109,7 @@ patterns = {
     "Scene_Pattern_RigFollicles":"Rig Follicles",
     "Scene_Pattern_RigSlideSurface":"Rig Slide Surface",
     "Scene_Pattern_RigSlideSurfaceFunc":"Rig Slide Surface Func",
+    "Scene_Pattern_RigSlideSurfaceFnc":"Rig Slide Surface Fnc",
  
 
 
