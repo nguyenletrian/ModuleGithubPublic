@@ -492,7 +492,7 @@ def readUi():
         raise RuntimeError("AutoSkirt: form is not open")
     cfg = {"version": 2,
            "name": cmds.textField(top["name"], query=True, text=True).strip(),
-           "group": STATE.get("group", "RigUtil"),
+           "group": cmds.textField(top["group"], query=True, text=True).strip(),
            "items": []}
     for row in STATE["rows"]:
         editor = row.get("subEditor")
@@ -514,8 +514,7 @@ def readUi():
             "equatorU": 0.5,
             "joints": controls,
             "subItems": [normalizeSubItems(row["subItems"].get(c)) for c in controls],
-            "refV": ([row["referenceV"][c] for c in controls]
-                     if all(c in row["referenceV"] for c in controls) else [])}
+            "refV": [row["referenceV"].get(c) for c in controls]}
         if not all(reader.get(key) for key in ("id", "sphere", "parent", "end")):
             raise ValueError("AutoSkirt: Reader ID, Sphere Name, Parent and End required")
         cfg["items"].append(reader)
@@ -539,6 +538,8 @@ def legacyConfig(config):
     result.setdefault("group", "RigUtil")
     for reader in result.get("items", []):
         if "drivens" not in reader:
+            if isinstance(reader.get("joints"), str):
+                reader["joints"] = [name.strip() for name in reader["joints"].splitlines() if name.strip()]
             continue
         groups = {}
         for spec in reader.pop("drivens"):
@@ -684,7 +685,8 @@ def Load(data, listUI, *args):
     frame = cmds.frameLayout(parent=listUI, label="AutoSkirt Settings", collapsable=True, marginWidth=5)
     col = cmds.columnLayout(parent=frame, adjustableColumn=True)
     STATE["top"]["name"] = lineField(col, "System Name", config["name"], False)
-    cmds.text(parent=col, label="Contain: " + STATE["group"] + " (original core: RigUtil)", align="left")
+    STATE["top"]["group"] = lineField(col, "Contain", STATE["group"])
+    cmds.text(parent=col, label="Original core requires RigUtil", align="left")
     STATE["holder"] = cmds.columnLayout(parent=listUI, adjustableColumn=True)
     for entry in config["items"]: addRow(STATE["holder"], entry)
     if not config["items"]: addRow(STATE["holder"])
