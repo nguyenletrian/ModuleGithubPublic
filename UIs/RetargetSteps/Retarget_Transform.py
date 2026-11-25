@@ -1,4 +1,4 @@
-"""Add local Translate, Rotate and Scale offsets to one picked Maya object.
+"""Add local Translate, Rotate and Scale offsets to ordered Maya objects.
 
 Rig = New Rig namespace, Anim = animation namespace, REF = Reference Pose.
 Values are additive channel offsets; scale is not multiplied.
@@ -14,24 +14,27 @@ _AXES = ("X", "Y", "Z")
 _GROUPS = ("translate", "rotate", "scale")
 
 
+def ItemData(item):
+    return {"source": str(item.get("source") or "Rig"),
+            "object": str(item.get("object") or "").strip(),
+            "offsets": _offsets(item.get("offsets"))}
+
+
 def DefaultSetting():
-    return {
-        "source": "Rig",
-        "object": "",
-        "offsets": {
-            "translate": [0.0, 0.0, 0.0],
-            "rotate": [0.0, 0.0, 0.0],
-            "scale": [0.0, 0.0, 0.0],
-        },
-    }
+    return {"items": [ItemData({})]}
+
+
+def NormalizeSettings(settings):
+    items = settings.get("items")
+    if items is None:
+        items = [settings]
+    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+        raise ValueError("Extra Transform items must be a list of objects.")
+    return {"items": [ItemData(item) for item in items]}
 
 
 def Fields():
-    return [
-        ("Namespace", "source", "choice", ("Rig", "Anim", "REF")),
-        ("Object", "object", "pick"),
-        ("Additive Transform Offsets", "offsets", "transform9"),
-    ]
+    return [("Items", "items", "transform_items")]
 
 
 def _namespace(source, context):
@@ -75,28 +78,32 @@ def _offsets(data):
 
 
 def Run(settings, context):
-    name = str(settings.get("object") or "").strip()
-    if not name:
-        raise ValueError("Pick one Transform object.")
-    namespace = _namespace(settings.get("source", "Rig"), context)
-    node = rt.resolve(namespace, name)
-    offsets = _offsets(settings.get("offsets"))
-    changes = []
-
-    # Validate all channels before writing anything: a connected or locked
-    # channel with a non-zero offset must not cause a partial update.
-    for group in _GROUPS:
-        for axis, delta in zip(_AXES, offsets[group]):
-            if delta == 0.0:
+    changes = {}
+    objects = []
+    for index, item in enumerate(NormalizeSettings(settings)["items"], 1):
+        name = item["object"]
+        offsets = item["offsets"]
+        if not name:
+            if not any(delta for values in offsets.values() for delta in values):
                 continue
-            plug = "{}.{}{}".format(node, group, axis)
-            if not cmds.getAttr(plug, settable=True):
-                raise ValueError("Transform channel is locked/connected: " + plug)
-            current = cmds.getAttr(plug)
-            if not isinstance(current, (float, int)):
-                raise ValueError("Transform channel is not numeric: " + plug)
-            changes.append((plug, float(current) + delta))
+            raise ValueError("Extra Transform Item {}: pick an object.".format(index))
+        namespace = _namespace(item["source"], context)
+        node = rt.resolve(namespace, name)
+        objects.append(node)
+        # Validate all channels before writing. Repeated entries accumulate
+        # additive offsets in item order without reading stale scene values.
+        for group in _GROUPS:
+            for axis, delta in zip(_AXES, offsets[group]):
+                if delta == 0.0:
+                    continue
+                plug = "{}.{}{}".format(node, group, axis)
+                if not cmds.getAttr(plug, settable=True):
+                    raise ValueError("Transform channel is locked/connected: " + plug)
+                current = changes[plug] if plug in changes else cmds.getAttr(plug)
+                if not isinstance(current, (float, int)):
+                    raise ValueError("Transform channel is not numeric: " + plug)
+                changes[plug] = float(current) + delta
 
-    for plug, value in changes:
+    for plug, value in changes.items():
         cmds.setAttr(plug, value)
-    return {"object": node, "namespace": namespace, "changed": len(changes)}
+    return {"items": len(objects), "objects": objects, "changed": len(changes)}

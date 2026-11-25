@@ -220,6 +220,8 @@ def _validate_entries(records):
         if not isinstance(settings, dict):
             raise ValueError("Invalid settings for step " + kind)
         defaults.update(settings)
+        if kind == "Transform":
+            defaults = _module(kind).NormalizeSettings(settings)
         if kind == "Constraint":
             defaults = _module(kind).NormalizeSettings(defaults)
         if kind == "SetValue" and "items" not in settings:
@@ -942,7 +944,7 @@ def _mapping_item(pair):
 
 def _module_field_columns(kind, descriptors):
     """Partition UI fields without changing their keys or JSON values."""
-    if kind in ("SetValue", "MatchRotatePair", "MatchRotate", "MatchTransform", "Constraint"):
+    if kind in ("SetValue", "Transform", "MatchRotatePair", "MatchRotate", "MatchTransform", "Constraint"):
         return "", [], "", [], descriptors
     paired = {
         "Scale": (("source_role", "old_low", "old_high"),
@@ -954,8 +956,6 @@ def _module_field_columns(kind, descriptors):
         "Rotate": (("old_anchor", "old_forward", "old_low"),
                    ("new_anchor", "new_forward", "new_low"),
                    "Old", "New"),
-        "Transform": (("source",), ("object",),
-                      "Namespace", "Object"),
     }
     if kind in paired:
         left_keys, right_keys, left_title, right_title = paired[kind]
@@ -1108,6 +1108,19 @@ class RetargetCard(QtWidgets.QFrame):
         _STATE.setdefault("expanded", {})[self.identifier] = bool(expanded)
 
     def _add_field(self, parent, label, key, kind, value, options):
+        if kind == "transform_items":
+            self.transform_rows = []
+            self.transform_list = QtWidgets.QVBoxLayout()
+            self.transform_list.setSpacing(5)
+            data = _module("Transform").NormalizeSettings(_get_step(self.identifier)["data"])
+            for item in data["items"]:
+                self._add_transform_item(item)
+            parent.addLayout(self.transform_list)
+            add = QtWidgets.QPushButton("+ Add Item")
+            add.clicked.connect(lambda checked=False: self._add_transform_item())
+            parent.addWidget(add)
+            self.widgets[key] = (kind, self.transform_rows)
+            return
         if kind == "constraint_pairs":
             data = _module("Constraint").NormalizeSettings(_get_step(self.identifier)["data"])
             namespace_row = QtWidgets.QHBoxLayout()
@@ -1426,6 +1439,66 @@ class RetargetCard(QtWidgets.QFrame):
             row.addWidget(button)
         parent.addLayout(row)
         self.widgets[key] = (kind, widget)
+
+    def _add_transform_item(self, data=None):
+        data = _module("Transform").ItemData(data or {})
+        frame = QtWidgets.QFrame(self.details)
+        frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        content = QtWidgets.QVBoxLayout(frame)
+        content.setContentsMargins(5, 4, 5, 4)
+        content.setSpacing(3)
+        header = QtWidgets.QHBoxLayout()
+        role = QtWidgets.QComboBox()
+        role.addItems(["Rig", "Anim", "REF"])
+        role.setCurrentText(data["source"])
+        role.currentIndexChanged.connect(_queue_save)
+        field = QtWidgets.QLineEdit(data["object"])
+        field.setPlaceholderText("Object")
+        field.setMinimumWidth(0)
+        field.textChanged.connect(_queue_save)
+        pick = QtWidgets.QPushButton("Pick")
+        pick.setFixedWidth(40)
+        pick.clicked.connect(lambda checked=False: _safe(
+            lambda: _pick_pair_object(field, role)))
+        delete = QtWidgets.QPushButton("X")
+        delete.setFixedWidth(24)
+        header.addWidget(role)
+        header.addWidget(field, 1)
+        header.addWidget(pick)
+        header.addWidget(delete)
+        content.addLayout(header)
+        grid = QtWidgets.QGridLayout()
+        grid.setHorizontalSpacing(5)
+        grid.setVerticalSpacing(3)
+        for column, axis in enumerate("XYZ", 1):
+            grid.addWidget(QtWidgets.QLabel(axis), 0, column)
+        offsets = {}
+        for index, group in enumerate(("translate", "rotate", "scale"), 1):
+            grid.addWidget(QtWidgets.QLabel(group.title()), index, 0)
+            offsets[group] = []
+            for column, number in enumerate(data["offsets"][group], 1):
+                control = QtWidgets.QLineEdit(str(number))
+                validator = QtGui.QDoubleValidator(control)
+                validator.setLocale(QtCore.QLocale.c())
+                control.setValidator(validator)
+                control.setAlignment(QtCore.Qt.AlignRight)
+                control.setMinimumWidth(0)
+                control.textChanged.connect(_queue_save)
+                control.setToolTip("Additive local {} offset".format(group))
+                grid.addWidget(control, index, column)
+                offsets[group].append(control)
+        content.addLayout(grid)
+        row = {"frame": frame, "source": role, "object": field, "offsets": offsets}
+        self.transform_rows.append(row)
+        self.transform_list.addWidget(frame)
+        delete.clicked.connect(lambda checked=False: self._remove_transform_item(row))
+        _queue_save()
+
+    def _remove_transform_item(self, row):
+        self.transform_rows.remove(row)
+        self.transform_list.removeWidget(row["frame"])
+        row["frame"].deleteLater()
+        _queue_save()
 
     def _make_rotate_pairs(self, parent, pairs):
         """Editable manual pairs for either rotation matching module."""
@@ -1883,6 +1956,15 @@ class RetargetCard(QtWidgets.QFrame):
                 value = widget.toPlainText()
             elif kind in ("int", "float"):
                 value = widget.value()
+            elif kind == "transform_items":
+                value = [
+                    {"source": row["source"].currentText(),
+                     "object": row["object"].text().strip(),
+                     "offsets": {group: [
+                         _transform_number(control.text(), "{} {}".format(group, "XYZ"[index]))
+                         for index, control in enumerate(controls)]
+                         for group, controls in row["offsets"].items()}}
+                    for row in widget]
             elif kind == "transform9":
                 value = {
                     group: [
@@ -1905,7 +1987,7 @@ class RetargetCard(QtWidgets.QFrame):
             else:
                 value = widget.text()
             values[key] = value
-        if self.kind == "SetValue":
+        if self.kind in ("SetValue", "Transform"):
             values = {"items": values.get("items", [])}
         elif self.kind == "MatchRotatePair":
             values = {"pairs": values.get("pairs", [])}
