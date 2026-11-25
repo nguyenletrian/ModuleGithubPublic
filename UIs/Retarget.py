@@ -38,6 +38,7 @@ STEP_FILES = (
     ("OffsetPosition", "Retarget_OffsetPosition.py"),
     ("Mapping", "Retarget_Mapping.py"),
     ("MatchRotatePair", "Retarget_MatchRotatePair.py"),
+    ("MatchRotate", "Retarget_MatchRotate.py"),
     ("Animation", "Retarget_Animation.py"),
     ("Bake", "Retarget_Bake.py"),
     ("Script", "Retarget_Script.py"),
@@ -94,7 +95,7 @@ def _default_steps():
     # Optional modules require an object/file or a later Bake stage.
     for step in steps:
         if step["kind"] in ("Bake", "PythonFile", "Transform",
-                            "OffsetPosition", "SetValue", "MatchRotatePair"):
+                            "OffsetPosition", "SetValue", "MatchRotatePair", "MatchRotate"):
             step["enabled"] = False
     return steps
 
@@ -915,6 +916,8 @@ def _module_field_columns(kind, descriptors):
     """Partition UI fields without changing their keys or JSON values."""
     if kind in ("SetValue", "MatchRotatePair"):
         return "", [], "", [], descriptors
+    if kind == "MatchRotate":
+        return "", [field for field in descriptors if field[1] == "from_role"], "", [field for field in descriptors if field[1] == "to_role"], [field for field in descriptors if field[1] == "pairs"]
     paired = {
         "Scale": (("source_role", "old_low", "old_high"),
                   ("target_role", "new_low", "new_high"),
@@ -1079,7 +1082,7 @@ class RetargetCard(QtWidgets.QFrame):
         _STATE.setdefault("expanded", {})[self.identifier] = bool(expanded)
 
     def _add_field(self, parent, label, key, kind, value, options):
-        if kind == "rotate_pairs":
+        if kind in ("rotate_pairs", "match_rotate_pairs"):
             self._make_rotate_pairs(parent, value)
             self.widgets[key] = (kind, self.rotate_pair_rows)
             return
@@ -1306,7 +1309,7 @@ class RetargetCard(QtWidgets.QFrame):
         self.widgets[key] = (kind, widget)
 
     def _make_rotate_pairs(self, parent, pairs):
-        """One freely editable direction-pair list owned by Match Rotate Vector."""
+        """Editable manual pairs for either rotation matching module."""
         self.rotate_pair_rows = []
         self.rotate_pair_layout = QtWidgets.QVBoxLayout()
         self.rotate_pair_layout.setSpacing(5)
@@ -1317,9 +1320,14 @@ class RetargetCard(QtWidgets.QFrame):
         add.clicked.connect(
             lambda checked=False: self._add_rotate_pair_row())
         parent.addWidget(add)
+        if self.kind == "MatchRotate":
+            hint = QtWidgets.QLabel("No manual pairs: use existing Mapping or match unique names.")
+            hint.setWordWrap(True)
+            parent.addWidget(hint)
 
     def _add_rotate_pair_row(self, data=None):
-        data = _module("MatchRotatePair").PairData(
+        vector = self.kind == "MatchRotatePair"
+        data = _module(self.kind).PairData(
             data if isinstance(data, dict) else {})
         frame = QtWidgets.QFrame(self.details)
         frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
@@ -1331,25 +1339,29 @@ class RetargetCard(QtWidgets.QFrame):
         title = QtWidgets.QLabel()
         header.addWidget(title)
         header.addStretch(1)
-        mirror = QtWidgets.QCheckBox("Mirror")
-        mirror.setChecked(data["mirror"])
-        mirror.setToolTip("Also match the opposite-side From and To objects")
-        mirror.toggled.connect(_queue_save)
-        header.addWidget(mirror)
+        row = {"frame": frame, "title": title}
+        if vector:
+            mirror = QtWidgets.QCheckBox("Mirror")
+            mirror.setChecked(data["mirror"])
+            mirror.setToolTip("Also match the opposite-side From and To objects")
+            mirror.toggled.connect(_queue_save)
+            header.addWidget(mirror)
+            row["mirror"] = mirror
         delete = QtWidgets.QPushButton("X")
         delete.setFixedWidth(24)
-        delete.setToolTip("Delete this vector pair")
+        delete.setToolTip("Delete this pair")
         header.addWidget(delete)
         content.addLayout(header)
 
-        row = {"frame": frame, "title": title, "mirror": mirror}
         columns = QtWidgets.QHBoxLayout()
         columns.setSpacing(6)
         for side in ("from", "to"):
             column = QtWidgets.QVBoxLayout()
             column.setSpacing(3)
-            for key, placeholder in ((side, side.title()),
-                                     (side + "_child", side.title() + " Child")):
+            fields = [(side, side.title())]
+            if vector:
+                fields.append((side + "_child", side.title() + " Child"))
+            for key, placeholder in fields:
                 role = QtWidgets.QComboBox()
                 role.addItems(["Rig", "Anim", "REF"])
                 role.setCurrentText(data[key + "_role"])
@@ -1641,6 +1653,12 @@ class RetargetCard(QtWidgets.QFrame):
                 continue
             if kind == "pairs":
                 value = self._pairs()
+            elif kind == "match_rotate_pairs":
+                value = [
+                    {key: (row[key].currentText() if key.endswith("_role")
+                           else row[key].text().strip())
+                     for key in ("from_role", "from", "to_role", "to")}
+                    for row in widget]
             elif kind == "rotate_pairs":
                 value = [
                     dict({key: (row[key].currentText() if key.endswith("_role")
