@@ -32,6 +32,7 @@ class ConstraintTests(unittest.TestCase):
                          (False, True, False))
         self.assertFalse(pair["mirror"])
         self.assertTrue(settings["maintain_offset"])
+        self.assertTrue(settings["use_extra_joint"])
 
     def test_recover_pairs_saved_in_wrong_namespace_key(self):
         env = scope("PairData", "NormalizeSettings")
@@ -43,6 +44,8 @@ class ConstraintTests(unittest.TestCase):
         self.assertEqual(fixed["to_role"], "Rig")
         self.assertTrue(fixed["maintain_offset"])
         self.assertFalse(normalize({"maintain_offset": False})["maintain_offset"])
+        self.assertTrue(fixed["use_extra_joint"])
+        self.assertFalse(normalize({"use_extra_joint": False})["use_extra_joint"])
         for source in ("Rig", "Anim", "REF"):
             for target in ("Rig", "Anim", "REF"):
                 data = normalize({"from_role": source, "to_role": target})
@@ -164,6 +167,33 @@ class ConstraintTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cycle"):
             env["Run"]({"from_role": "Rig", "to_role": "Rig", "pairs": [
                 {"from": "Self", "to": "Self"}]}, context)
+
+    def test_direct_mode_skips_extra_joint_for_both_maintain_states(self):
+        for maintain in (True, False):
+            calls = []
+            def extra(*args):
+                self.fail("Direct mode must not build an extra joint")
+            def connect(driver, target, pair, maintain_offset):
+                calls.append((driver, target, maintain_offset, pair["rotate"]))
+                return ["constraint_" + target]
+            env = scope("PairData", "NormalizeSettings", "_mirror_name",
+                        "_expand_pairs", "_namespaces", "Run", re=re,
+                        _build_extra=extra, _connect=connect,
+                        _resolve=lambda ns, name: ns + ":" + name,
+                        rt=SimpleNamespace(leaf=lambda node: node.split(":")[-1]),
+                        cmds=SimpleNamespace(objExists=lambda node: True))
+            context = {"reference_pose_namespace": "REF", "target_namespace": "Rig"}
+            result = env["Run"]({"use_extra_joint": False,
+                                 "maintain_offset": maintain,
+                                 "pairs": [{"from": "R_Hand", "to": "R_Hand_FK",
+                                            "mirror": True}]}, context)
+            self.assertEqual(calls, [
+                ("REF:R_Hand", "Rig:R_Hand_FK", maintain, True),
+                ("REF:L_Hand", "Rig:L_Hand_FK", maintain, True)])
+            self.assertEqual(result["joints"], [])
+            self.assertEqual(result["constraints"], 2)
+            self.assertTrue(all(entry["extra_joint"] is None
+                                for entry in context["constraint_pairs"]))
 
     def test_mirror_copies_trs_and_respects_explicit_opposite(self):
         env = scope("PairData", "_mirror_name", "_expand_pairs", re=re,

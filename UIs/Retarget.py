@@ -1129,6 +1129,12 @@ class RetargetCard(QtWidgets.QFrame):
             maintain.toggled.connect(_queue_save)
             namespace_row.addWidget(maintain)
             self.widgets["maintain_offset"] = ("bool", maintain)
+            extra = QtWidgets.QCheckBox("Extra Joint")
+            extra.setToolTip("Create an aligned intermediate joint; otherwise constrain From directly to To")
+            extra.setChecked(data["use_extra_joint"])
+            extra.toggled.connect(_queue_save)
+            namespace_row.addWidget(extra)
+            self.widgets["use_extra_joint"] = ("bool", extra)
             parent.addLayout(namespace_row)
             self._make_rotate_pairs(parent, data["pairs"])
             self.widgets[key] = (kind, self.rotate_pair_rows)
@@ -1886,6 +1892,7 @@ class RetargetCard(QtWidgets.QFrame):
             values = {"from_role": values.get("from_role", "REF"),
                       "to_role": values.get("to_role", "Rig"),
                       "maintain_offset": bool(values.get("maintain_offset", True)),
+                      "use_extra_joint": bool(values.get("use_extra_joint", True)),
                       "pairs": values.get("pairs", [])}
         elif self.kind == "MatchTransform":
             values = {"pairs": values.get("pairs", [])}

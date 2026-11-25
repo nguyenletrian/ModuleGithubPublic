@@ -1,4 +1,4 @@
-"""Build live retarget constraints using a bind-pose-aligned extra joint."""
+"""Build live constraints directly or through an optional aligned extra joint."""
 import re
 import maya.cmds as cmds
 import NLTA_RetargetV2 as rt
@@ -17,7 +17,7 @@ def PairData(pair):
 
 def DefaultSetting():
     return {"from_role": "REF", "to_role": "Rig", "maintain_offset": True,
-            "pairs": [PairData({})]}
+            "use_extra_joint": True, "pairs": [PairData({})]}
 
 
 def NormalizeSettings(settings):
@@ -36,6 +36,7 @@ def NormalizeSettings(settings):
         raise ValueError("Constraint namespaces must be Rig, Anim or REF.")
     return {"from_role": from_role, "to_role": to_role,
             "maintain_offset": bool(settings.get("maintain_offset", True)),
+            "use_extra_joint": bool(settings.get("use_extra_joint", True)),
             "pairs": [PairData(row) for row in rows]}
 
 
@@ -171,14 +172,15 @@ def Run(settings, context):
 
     # Prepare every helper in the initial pose before driving any target.
     prepared = [(pair, source, target,
-                 _build_extra(source, target, pair, settings["maintain_offset"]))
+                 _build_extra(source, target, pair, settings["maintain_offset"])
+                 if settings["use_extra_joint"] else None)
                 for pair, source, target in pending]
     entries = []
     print("[Constraint] From {}={} -> {}={}".format(from_role, source_ns, to_role, target_ns))
     for pair, source, target, extra in prepared:
-        print("[Constraint] Source parent: {} | Driver: {} | Driven: {}".format(
-            source, extra, target))
-        constraints = _connect(extra, target, pair, settings["maintain_offset"])
+        driver = extra or source
+        print("[Constraint] From: {} | Driver: {} | To: {}".format(source, driver, target))
+        constraints = _connect(driver, target, pair, settings["maintain_offset"])
         entries.append({"reference": source if from_role == "REF" else None,
                         "source_role": from_role, "source": source,
                         "target_role": to_role, "target": target, "extra_joint": extra,
@@ -188,5 +190,6 @@ def Run(settings, context):
     context.setdefault("constraint_pairs", []).extend(entries)
     if entries:
         context["baked"] = False
-    return {"pairs": len(entries), "joints": [entry["extra_joint"] for entry in entries],
+    return {"pairs": len(entries),
+            "joints": [entry["extra_joint"] for entry in entries if entry["extra_joint"]],
             "constraints": sum(len(entry["constraints"]) for entry in entries)}
