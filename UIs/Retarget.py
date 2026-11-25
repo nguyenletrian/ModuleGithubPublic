@@ -914,10 +914,8 @@ def _mapping_item(pair):
 
 def _module_field_columns(kind, descriptors):
     """Partition UI fields without changing their keys or JSON values."""
-    if kind in ("SetValue", "MatchRotatePair"):
+    if kind in ("SetValue", "MatchRotatePair", "MatchRotate"):
         return "", [], "", [], descriptors
-    if kind == "MatchRotate":
-        return "", [field for field in descriptors if field[1] == "from_role"], "", [field for field in descriptors if field[1] == "to_role"], [field for field in descriptors if field[1] == "pairs"]
     paired = {
         "Scale": (("source_role", "old_low", "old_high"),
                   ("target_role", "new_low", "new_high"),
@@ -1320,10 +1318,6 @@ class RetargetCard(QtWidgets.QFrame):
         add.clicked.connect(
             lambda checked=False: self._add_rotate_pair_row())
         parent.addWidget(add)
-        if self.kind == "MatchRotate":
-            hint = QtWidgets.QLabel("No manual pairs: use existing Mapping or match unique names.")
-            hint.setWordWrap(True)
-            parent.addWidget(hint)
 
     def _add_rotate_pair_row(self, data=None):
         vector = self.kind == "MatchRotatePair"
@@ -1705,7 +1699,7 @@ class RetargetCard(QtWidgets.QFrame):
             values[key] = value
         if self.kind == "SetValue":
             values = {"items": values.get("items", [])}
-        elif self.kind == "MatchRotatePair":
+        elif self.kind in ("MatchRotatePair", "MatchRotate"):
             values = {"pairs": values.get("pairs", [])}
         return {"name": name, "order": self.order.value(),
                 "enabled": self.enabled.isChecked(), "data": values}

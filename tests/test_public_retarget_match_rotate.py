@@ -39,19 +39,35 @@ class MatchRotateTests(unittest.TestCase):
         target = ((0.8, 0.6, 0), (-0.6, 0.8, 0), (0, 0, 1))
         self.assertEqual(f(source, target), ((0, 1, 2), (1, 1, 1), source))
 
-    def test_auto_names_exclude_ambiguity(self):
-        f = scope("_unique_name_pairs", rt=SimpleNamespace(
-            leaf=lambda node: node.split(":")[-1]))["_unique_name_pairs"]
-        self.assertEqual(f(["a:Arm", "a:Leg", "b:Leg", "a:Head"],
-                           ["c:Arm", "c:Leg", "c:Other"]), [("a:Arm", "c:Arm")])
+    def test_only_explicit_pairs_are_resolved(self):
+        calls = []
+        def resolve(ns, name):
+            calls.append((ns, name))
+            return ns + ":" + name
 
-    def test_existing_mapping_used_for_different_names(self):
-        env = scope("_resolve_pairs", _namespace=lambda role, context: role,
-                    rt=SimpleNamespace(resolve=lambda ns, name: ns + ":" + name))
-        pairs, mode = env["_resolve_pairs"]({}, {"pairs": [
-            {"old": "Bip001Arm", "new": "R_Shoulder_FK"}]})
-        self.assertEqual(pairs, [("REF:Bip001Arm", "Rig:R_Shoulder_FK")])
-        self.assertEqual(mode, "existing mapping")
+        env = scope("PairData", "_resolve_pairs",
+                    _namespace=lambda role, context: role,
+                    rt=SimpleNamespace(resolve=resolve))
+        pairs = env["_resolve_pairs"]({"pairs": [
+            {"from_role": "REF", "from": "Bip001Arm",
+             "to_role": "Rig", "to": "R_Shoulder_FK"},
+            {"from_role": "Rig", "from": "ControlA",
+             "to_role": "Rig", "to": "ControlB"}]},
+            {"pairs": [{"old": "ignored", "new": "ignored"}]})
+        self.assertEqual(pairs, [("REF:Bip001Arm", "Rig:R_Shoulder_FK"),
+                                 ("Rig:ControlA", "Rig:ControlB")])
+        self.assertEqual(len(calls), 4)
+        with self.assertRaisesRegex(ValueError, "add at least one"):
+            env["_resolve_pairs"]({}, {"pairs": [{"old": "x", "new": "y"}]})
+        with self.assertRaisesRegex(ValueError, "select From and To"):
+            env["_resolve_pairs"]({"pairs": [{"from": "x"}]}, {})
+
+    def test_default_has_one_pair_and_no_namespace_wide_auto_mapping(self):
+        env = scope("PairData", "DefaultSetting", "Fields")
+        self.assertEqual(env["DefaultSetting"](), {"pairs": [
+            {"from_role": "REF", "from": "", "to_role": "Rig", "to": ""}]})
+        self.assertEqual(env["Fields"](),
+                         [("Rotation Pairs", "pairs", "match_rotate_pairs")])
 
     def test_new_module_is_registered_and_optional(self):
         ui = (ROOT / "UIs/Retarget.py").read_text(encoding="utf-8")

@@ -18,14 +18,11 @@ def PairData(pair):
 
 
 def DefaultSetting():
-    return {"from_role": "REF", "to_role": "Rig", "pairs": []}
+    return {"pairs": [PairData({})]}
 
 
 def Fields():
-    roles = ("REF", "Anim", "Rig")
-    return [("Auto Map From", "from_role", "choice", roles),
-            ("Auto Map To", "to_role", "choice", roles),
-            ("Rotation Pairs", "pairs", "match_rotate_pairs")]
+    return [("Rotation Pairs", "pairs", "match_rotate_pairs")]
 
 
 def _namespace(role, context):
@@ -46,46 +43,23 @@ def _namespace(role, context):
     return str(ns).strip(":")
 
 
-def _unique_name_pairs(source, target):
-    """Return only unambiguous equal leaf names, never guess unrelated names."""
-    groups = []
-    for nodes in (source, target):
-        index = {}
-        for node in nodes:
-            index.setdefault(rt.leaf(node), []).append(node)
-        groups.append(index)
-    old, new = groups
-    return [(old[name][0], new[name][0]) for name in sorted(old.keys() & new.keys())
-            if len(old[name]) == len(new[name]) == 1]
-
-
 def _resolve_pairs(settings, context):
-    manual = settings.get("pairs") or []
-    if manual:
-        result = []
-        for raw in manual:
-            pair = PairData(raw)
-            result.append((rt.resolve(_namespace(pair["from_role"], context),
-                                      pair["from"]),
-                           rt.resolve(_namespace(pair["to_role"], context),
-                                      pair["to"])))
-        return result, "manual"
-
-    from_role = settings.get("from_role", "REF")
-    to_role = settings.get("to_role", "Rig")
-    source = _namespace(from_role, context)
-    target = _namespace(to_role, context)
-    if source == target:
-        raise ValueError("Auto Map From and To must use different namespaces.")
-    saved = context.get("pairs") or []
-    if saved and from_role in ("REF", "Anim") and to_role == "Rig":
-        return [(rt.resolve(source, item["old"]), rt.resolve(target, item["new"]))
-                for item in saved], "existing mapping"
-    if saved and from_role == "Rig" and to_role in ("REF", "Anim"):
-        return [(rt.resolve(source, item["new"]), rt.resolve(target, item["old"]))
-                for item in saved], "existing mapping"
-    return _unique_name_pairs(rt.mapping_candidates(source),
-                              rt.mapping_candidates(target)), "unique names"
+    """Resolve only user-selected objects, never infer object pairings."""
+    pairs = settings.get("pairs") or []
+    if not isinstance(pairs, list) or not pairs:
+        raise ValueError("Match Rotate: add at least one From / To pair.")
+    result = []
+    for index, raw in enumerate(pairs, start=1):
+        if not isinstance(raw, dict):
+            raise ValueError("Invalid Match Rotate pair: " + str(index))
+        pair = PairData(raw)
+        source = pair["from"].strip()
+        target = pair["to"].strip()
+        if not source or not target:
+            raise ValueError("Match Rotate Pair {}: select From and To.".format(index))
+        result.append((rt.resolve(_namespace(pair["from_role"], context), source),
+                       rt.resolve(_namespace(pair["to_role"], context), target)))
+    return result
 
 
 def _axis_mapping(source_axes, target_axes):
@@ -124,9 +98,7 @@ def _quaternion(basis):
 
 
 def Run(settings, context):
-    pairs, mode = _resolve_pairs(settings, context)
-    if not pairs:
-        raise ValueError("Match Rotate: no unambiguous objects found. Add manual pairs or run Mapping first.")
+    pairs = _resolve_pairs(settings, context)
     pending = []
     used = set()
     for source, target in pairs:
@@ -167,5 +139,5 @@ def Run(settings, context):
         context["bind"] = rt.capture_bind(context["pairs"], context["source_namespace"],
                                           context["target_namespace"])
     context["rotate_matches"] = results
-    return {"matched": len(results), "mapping": mode,
+    return {"matched": len(results), "mapping": "automatic axes",
             "max_error_degrees": max(item["error_degrees"] for item in results)}
