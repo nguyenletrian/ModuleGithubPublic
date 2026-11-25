@@ -42,11 +42,21 @@ def _controls(namespace, role):
             yield node
 
 
-def _removal_indices(values):
-    """Compare consecutive original keys, not the changing index after deletion."""
-    if values and all(value == 0 for value in values):
-        return list(range(len(values))), True
-    return [i for i in range(1, len(values)) if values[i] == values[i - 1]], False
+def _removal_indices(values, trim_tail=True):
+    """Keep both boundaries of holds before a value change."""
+    if not values:
+        return [], False
+    if all(value == values[0] for value in values):
+        if values[0] == 0:
+            return list(range(len(values))), True
+        return list(range(1, len(values))), False
+    end = len(values) - 1
+    indices = [i for i in range(1, end)
+               if values[i - 1] == values[i] == values[i + 1]]
+    # Constant post-infinity extends the last pose without a trailing key.
+    if trim_tail and values[end] == values[end - 1]:
+        indices.append(end)
+    return indices, False
 
 
 def _ranges(indices):
@@ -88,7 +98,8 @@ def Run(settings, context):
                 skipped += 1
                 continue
             values = cmds.keyframe(curve, query=True, valueChange=True) or []
-            indices, zero = _removal_indices(values)
+            indices, zero = _removal_indices(
+                values, trim_tail=(cmds.getAttr(curve + ".postInfinity") == 0))
             if not indices:
                 continue
             for first, last in _ranges(indices):

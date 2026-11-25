@@ -22,7 +22,15 @@ class CleanAnimationTests(unittest.TestCase):
     def test_duplicate_values(self):
         env = scope()
         self.assertEqual(env["_removal_indices"]([0, 0, 0, 10, 10, 20, 0, 0]),
-                         ([1, 2, 4, 7], False))
+                         ([1, 7], False))
+        self.assertEqual(env["_removal_indices"]([0, 0, 0, 0, 10, 10]),
+                         ([1, 2, 5], False))
+        self.assertEqual(env["_removal_indices"]([0, 10, 10, 10, 20]),
+                         ([2], False))
+        self.assertEqual(env["_removal_indices"]([0, 0, 5, 5], trim_tail=False),
+                         ([], False))
+        self.assertEqual(env["_removal_indices"]([0, 5, 5, 5], trim_tail=False),
+                         ([2], False))
         self.assertEqual(env["_removal_indices"]([0, 0, 0]), ([0, 1, 2], True))
         self.assertEqual(env["_removal_indices"]([1, 1, 1]), ([1, 2], False))
         self.assertEqual(env["_removal_indices"]([0, 1e-9]), ([], False))
@@ -57,14 +65,14 @@ class CleanAnimationTests(unittest.TestCase):
                         keyframe=keyframe,
                         listConnections=lambda plug, **kw: ["a", "b"] if plug.startswith("shared") else ["a"],
                         cutKey=lambda curve, **kw: cuts.append((curve, kw["index"])),
-                        getAttr=lambda *args, **kw: True,
+                        getAttr=lambda plug, **kw: 0 if plug.endswith(".postInfinity") else True,
                         setAttr=lambda *args: writes.append(args)))
         result = env["Run"]({}, {"target_namespace": "Rig"})
         self.assertEqual(result["controls"], 1)
-        self.assertEqual(result["removed_keys"], 6)
+        self.assertEqual(result["removed_keys"], 5)
         self.assertEqual(result["zero_channels"], 1)
         self.assertEqual(result["skipped_channels"], 3)
-        self.assertEqual(cuts, [("moving", (3, 3)), ("moving", (1, 1)),
+        self.assertEqual(cuts, [("moving", (3, 3)),
                                 ("zero", (0, 2)), ("one", (1, 1))])
         self.assertEqual(writes, [("|Rig:FK.rotateY", 0)])
 
