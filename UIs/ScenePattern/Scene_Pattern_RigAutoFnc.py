@@ -265,12 +265,23 @@ def buildScript(config):
     lines = ["import maya.cmds as cmds", "", "", "def main():"]
     def emit(line=""):
         lines.append("    " + line if line else "")
-    seen_targets, seen_spheres = set(), set()
+    seen_spheres = set()
     control_counts = {}
+    target_counts = {}
     for reader in config["items"]:
         for spec in reader["drivens"]:
             control = shortName(spec["control"])
             control_counts[control] = control_counts.get(control, 0) + 1
+            target = shortName(spec.get("target") or control + "_Target")
+            output = spec.get("output", "rotateZ")
+            if output not in ("rotateX", "rotateY", "rotateZ"):
+                raise ValueError("Rig Auto Fnc: invalid output: " + output)
+            plug = target + "." + output
+            target_counts[plug] = target_counts.get(plug, 0) + 1
+            if target_counts[plug] > 2:
+                raise ValueError("Rig Auto Fnc: Akali supports at most two Items per output channel: " + plug)
+    paired = {plug: [] for plug, count in target_counts.items() if count == 2}
+    pair_numbers = {plug: i for i, plug in enumerate(paired, 1)}
     created_attrs = set()
     for reader in config["items"]:
         if not reader["drivens"]:
@@ -293,13 +304,8 @@ def buildScript(config):
         seen_spheres.add(pose_reader)
         outputs = [d.get("output", "rotateZ") for d in reader["drivens"]]
         attributes = ["AutoFollow" if control_counts[control] > 1 else attribute_name for control in controls]
-        for target, output in zip(targets, outputs):
-            if output not in ("rotateX", "rotateY", "rotateZ"):
-                raise ValueError("Rig Auto Fnc: invalid output: " + output)
-            plug = target + "." + output
-            if plug in seen_targets:
-                raise ValueError("Rig Auto Fnc: one connection per output channel: " + plug)
-            seen_targets.add(plug)
+        plugs = [target + "." + output for target, output in zip(targets, outputs)]
+        direct_indices = tuple(i for i, plug in enumerate(plugs) if plug not in paired)
         if len(set(shoulder_joints)) != len(shoulder_joints):
             raise ValueError("Rig Auto Fnc: duplicate shoulder joint name")
         emit()
@@ -323,6 +329,8 @@ def buildScript(config):
             emit("shoulderguard_controls = " + repr(controls))
         if not conventional_targets:
             emit("shoulderguard_targets = " + repr([target + "." + output for target, output in zip(targets, outputs)]))
+        if direct_indices and len(direct_indices) != len(controls):
+            emit("direct_output_indices = " + repr(direct_indices))
         if not simple_attributes:
             emit("attribute_names = " + repr(attributes))
             emit("create_attribute_indices = " + repr(tuple(create_indices)))
@@ -344,9 +352,42 @@ def buildScript(config):
             emit("    if i in create_attribute_indices:")
             emit('        cmds.addAttr(shoulderguard_control, ln=attribute_names[i], at="double", min=0, max=2, dv=1, k=True)')
             emit('    cmds.connectAttr(f"{shoulderguard_control}.{attribute_names[i]}", f"{raise_influence_nodes[i]}.input2X")')
+        if direct_indices:
+            emit()
+            emit("    # Connect lift influence")
+            connection = 'cmds.connectAttr(f"{raise_influence_nodes[i]}.outputX", f"{shoulderguard_control}_Target.rotateZ")' if conventional_targets else 'cmds.connectAttr(f"{raise_influence_nodes[i]}.outputX", shoulderguard_targets[i])'
+            if len(direct_indices) == len(controls):
+                emit("    " + connection)
+            else:
+                emit("    if i in direct_output_indices:")
+                emit("        " + connection)
+        for i, plug in enumerate(plugs):
+            if plug in paired:
+                variable = "pair_{:02d}_{}".format(pair_numbers[plug], "left" if not paired[plug] else "right")
+                emit("{} = raise_influence_nodes[{}] + '.outputX'".format(variable, i))
+                paired[plug].append(variable)
+    for plug, (left, right) in paired.items():
+        target_base = plug.replace(".", "_")
         emit()
-        emit("    # Connect lift influence")
-        emit('    cmds.connectAttr(f"{raise_influence_nodes[i]}.outputX", f"{shoulderguard_control}_Target.rotateZ")' if conventional_targets else '    cmds.connectAttr(f"{raise_influence_nodes[i]}.outputX", shoulderguard_targets[i])')
+        emit("# Akali: use the greater influence for the shared channel.")
+        emit("front_cond = cmds.createNode('condition', n={!r})".format(target_base + "_Condition"))
+        emit("cmds.setAttr(f'{front_cond}.operation', 3)")
+        emit("cmds.connectAttr({}, f'{{front_cond}}.firstTerm')".format(left))
+        emit("cmds.connectAttr({}, f'{{front_cond}}.colorIfTrueR')".format(left))
+        emit("cmds.connectAttr({}, f'{{front_cond}}.secondTerm')".format(right))
+        emit("cmds.connectAttr({}, f'{{front_cond}}.colorIfFalseR')".format(right))
+        emit("front_mult = cmds.createNode('multiplyDivide', n={!r})".format(target_base + "_RaiseValue_Mult"))
+        emit("cmds.connectAttr(f'{front_cond}.outColorR', f'{front_mult}.input1X')")
+        emit("cmds.setAttr(f'{front_mult}.input2X', 2)")
+        emit("raw_src_attr = f'{front_mult}.outputX'")
+        emit("val = cmds.getAttr(raw_src_attr) or 0.0")
+        emit("if abs(val) >= 0.0001:")
+        emit("    pma = cmds.createNode('plusMinusAverage', n={!r})".format(target_base + "_ZeroOut_PMA"))
+        emit("    cmds.setAttr(f'{pma}.operation', 2)")
+        emit("    cmds.connectAttr(raw_src_attr, f'{pma}.input1D[0]')")
+        emit("    cmds.setAttr(f'{pma}.input1D[1]', val)")
+        emit("    raw_src_attr = f'{pma}.output1D'")
+        emit("cmds.connectAttr(raw_src_attr, {!r})".format(plug))
     lines.extend(["", "", inspect.getsource(createPoseReaderSystem).rstrip(), "", "",
                   inspect.getsource(createSkirtRigSystem).rstrip(), "", "",
                   'if __name__ == "__main__":', "    main()", ""])
@@ -384,7 +425,7 @@ def Form(data, *args):
     cmds.button(parent=row, label="Save", command=partial(saveSettings, data))
     cmds.button(parent=row, label="Run", command=partial(runFromForm, data))
     cmds.button(parent=row, label="Export Py", command=partial(ExportPython, data))
-    cmds.text(parent=buttons, label="Ref V = -1 / Max Distance = 0: Auto. Multiple outputs on one Control share AutoFollow.", align="left")
+    cmds.text(parent=buttons, label="Ref V = -1 / Max Distance = 0: Auto. Two Items on one channel: Akali Max x 2.", align="left")
     loadForm(getData(data))
 
 
