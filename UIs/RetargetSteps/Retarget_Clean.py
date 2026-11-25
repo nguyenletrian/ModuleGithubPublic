@@ -2,7 +2,7 @@
 import maya.cmds as cmds
 import NLTA_RetargetV2 as rt
 
-LABEL = "Clean"
+LABEL = "Clean Scene"
 
 
 def DefaultSetting():

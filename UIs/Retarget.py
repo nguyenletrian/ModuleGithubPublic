@@ -248,6 +248,8 @@ def _validate_entries(records):
             label = "Match Rotate Vector"
         if kind == "MatchRotate":
             label = "Match Rotate"
+        if kind == "Clean":
+            label = "Clean Scene"
         cleaned.append({
             "id": key, "kind": kind,
             "name": label,
@@ -408,6 +410,8 @@ def _read_manifest():
             label = "Match Rotate Vector"
         if item["kind"] == "MatchRotate":
             label = "Match Rotate"
+        if item["kind"] == "Clean":
+            label = "Clean Scene"
         result.append({
             "id": identifier,
             "kind": item["kind"],
