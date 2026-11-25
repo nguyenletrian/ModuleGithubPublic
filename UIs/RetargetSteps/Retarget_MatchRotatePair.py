@@ -1,11 +1,12 @@
 """Align From -> From Child and To -> To Child using a one-time rotation."""
 import math
+import re
 
 import maya.cmds as cmds
 import maya.api.OpenMaya as om
 import NLTA_RetargetV2 as rt
 
-LABEL = "Match Rotate Pair"
+LABEL = "Match Rotate Vector"
 _AXES = "XYZ"
 _KEYS = ("from", "from_child", "to", "to_child")
 
@@ -23,6 +24,7 @@ def PairData(pair):
         "to": str(pair.get("to", pair.get("target", "")) or ""),
         "to_child_role": pair.get("to_child_role") or to_role,
         "to_child": str(pair.get("to_child") or ""),
+        "mirror": bool(pair.get("mirror", True)),
     }
 
 
@@ -65,6 +67,40 @@ def _resolve_pair(pair, context):
     if nodes["from"] == nodes["to"]:
         raise ValueError("From and To must be different objects.")
     return nodes
+
+
+def _mirror_name(name):
+    """Swap explicit side tokens without changing unrelated letters."""
+    swaps = {"L": "R", "R": "L", "l": "r", "r": "l",
+             "Left": "Right", "Right": "Left",
+             "left": "right", "right": "left",
+             "LEFT": "RIGHT", "RIGHT": "LEFT"}
+    patterns = (
+        r"(?<=FBXASC032)[LR](?=FBXASC032)",
+        r"(?<![A-Za-z0-9])(?:Left|Right|left|right|LEFT|RIGHT|L|R|l|r)(?![A-Za-z0-9])",
+        r"^(?:Left|Right)(?=[A-Z0-9])",
+        r"(?:Left|Right)$",
+    )
+    for pattern in patterns:
+        mirrored, count = re.subn(pattern, lambda match: swaps[match.group()], name)
+        if count:
+            return mirrored
+    return name
+
+
+def _mirror_pair(pair, nodes, context):
+    data = PairData(pair)
+    names = {key: rt.leaf(nodes[key]) for key in _KEYS}
+    mirrored = {key: _mirror_name(name) for key, name in names.items()}
+    # A center To cannot be rotated twice to independent directions.
+    if mirrored["to"] == names["to"]:
+        return None
+    if all(mirrored[key] == names[key] for key in ("from", "from_child")):
+        raise ValueError("Mirror needs a recognizable From-side name: " +
+                         names["from"])
+    for key in _KEYS:
+        data[key] = mirrored[key]
+    return _resolve_pair(data, context)
 
 
 def _direction(node, child):
@@ -138,24 +174,30 @@ def _similarity(nodes):
 def Run(settings, context):
     pairs = settings.get("pairs") or []
     if not isinstance(pairs, list) or not pairs:
-        raise ValueError("Match Rotate Pair needs at least one added Pair.")
+        raise ValueError("Match Rotate Vector needs at least one added Pair.")
     pending = []
     used = set()
     for index, pair in enumerate(pairs, start=1):
         if not isinstance(pair, dict):
-            raise ValueError("Invalid Match Rotate Pair item {}.".format(index))
+            raise ValueError("Invalid Match Rotate Vector item {}.".format(index))
         nodes = _resolve_pair(pair, context)
-        target = nodes["to"]
-        if target in used:
-            raise ValueError("Repeated To in Match Rotate Pair: " + target)
-        used.add(target)
-        _direction(nodes["from"], nodes["from_child"])
-        _direction(target, nodes["to_child"])
-        for axis in _AXES:
-            plug = target + ".rotate" + axis
-            if not cmds.getAttr(plug, settable=True):
-                raise ValueError("Rotate channel is locked/connected: " + plug)
-        pending.append(nodes)
+        expanded = [nodes]
+        if PairData(pair)["mirror"]:
+            opposite = _mirror_pair(pair, nodes, context)
+            if opposite is not None:
+                expanded.append(opposite)
+        for nodes in expanded:
+            target = nodes["to"]
+            if target in used:
+                raise ValueError("Repeated To in Match Rotate Vector: " + target)
+            used.add(target)
+            _direction(nodes["from"], nodes["from_child"])
+            _direction(target, nodes["to_child"])
+            for axis in _AXES:
+                plug = target + ".rotate" + axis
+                if not cmds.getAttr(plug, settable=True):
+                    raise ValueError("Rotate channel is locked/connected: " + plug)
+            pending.append(nodes)
 
     # Parent rotations must be applied before descendant rotations.
     for nodes in sorted(pending, key=lambda item: item["to"].count("|")):
@@ -171,7 +213,7 @@ def Run(settings, context):
                 .format(nodes["to"], nodes["to_child"]))
         result = dict(nodes, similarity=similarity)
         results.append(result)
-        print("[Match Rotate Pair] {} -> {} | angle {:.4f} deg".format(
+        print("[Match Rotate Vector] {} -> {} | angle {:.4f} deg".format(
             rt.leaf(nodes["from"]), rt.leaf(nodes["to"]),
             math.degrees(math.acos(similarity))))
 

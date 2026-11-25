@@ -235,6 +235,8 @@ def _validate_entries(records):
         label = str(item.get("name") or _module(kind).LABEL)
         if kind == "Transform" and label == "Transform":
             label = "Extra Transform"
+        if kind == "MatchRotatePair" and label in ("Match Rotate Pair", "MatchRotatePair"):
+            label = "Match Rotate Vector"
         cleaned.append({
             "id": key, "kind": kind,
             "name": label,
@@ -389,6 +391,8 @@ def _read_manifest():
         label = str(item.get("name") or item["kind"])
         if item["kind"] == "Transform" and label == "Transform":
             label = "Extra Transform"
+        if item["kind"] == "MatchRotatePair" and label in ("Match Rotate Pair", "MatchRotatePair"):
+            label = "Match Rotate Vector"
         result.append({
             "id": identifier,
             "kind": item["kind"],
@@ -1302,7 +1306,7 @@ class RetargetCard(QtWidgets.QFrame):
         self.widgets[key] = (kind, widget)
 
     def _make_rotate_pairs(self, parent, pairs):
-        """One freely editable direction-pair list owned by Match Rotate Pair."""
+        """One freely editable direction-pair list owned by Match Rotate Vector."""
         self.rotate_pair_rows = []
         self.rotate_pair_layout = QtWidgets.QVBoxLayout()
         self.rotate_pair_layout.setSpacing(5)
@@ -1315,51 +1319,61 @@ class RetargetCard(QtWidgets.QFrame):
         parent.addWidget(add)
 
     def _add_rotate_pair_row(self, data=None):
-        data = data if isinstance(data, dict) else {}
+        data = _module("MatchRotatePair").PairData(
+            data if isinstance(data, dict) else {})
         frame = QtWidgets.QFrame(self.details)
         frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
         content = QtWidgets.QVBoxLayout(frame)
-        content.setContentsMargins(6, 5, 6, 6)
-        content.setSpacing(4)
+        content.setContentsMargins(4, 3, 4, 3)
+        content.setSpacing(3)
 
         header = QtWidgets.QHBoxLayout()
         title = QtWidgets.QLabel()
         header.addWidget(title)
         header.addStretch(1)
+        mirror = QtWidgets.QCheckBox("Mirror")
+        mirror.setChecked(data["mirror"])
+        mirror.setToolTip("Also match the opposite-side From and To objects")
+        mirror.toggled.connect(_queue_save)
+        header.addWidget(mirror)
         delete = QtWidgets.QPushButton("X")
-        delete.setFixedWidth(28)
-        delete.setToolTip("Delete this rotation pair")
+        delete.setFixedWidth(24)
+        delete.setToolTip("Delete this vector pair")
         header.addWidget(delete)
         content.addLayout(header)
 
-        data = _module("MatchRotatePair").PairData(data)
-        row = {"frame": frame, "title": title}
-        for key, label in (("from", "From"), ("from_child", "From Child"),
-                           ("to", "To"), ("to_child", "To Child")):
-            role = QtWidgets.QComboBox()
-            role.addItems(["Rig", "Anim", "REF"])
-            role.setCurrentText(data[key + "_role"])
-            role.currentIndexChanged.connect(_queue_save)
-            field = QtWidgets.QLineEdit(data[key])
-            field.setPlaceholderText(label + " object")
-            field.setMinimumWidth(0)
-            field.textChanged.connect(_queue_save)
-            pick = QtWidgets.QPushButton("Pick")
-            pick.setFixedWidth(44)
-            pick.clicked.connect(
-                lambda checked=False, f=field, r=role: _safe(
-                    lambda: _pick_pair_object(f, r)))
-            line = QtWidgets.QHBoxLayout()
-            line.setSpacing(4)
-            caption = QtWidgets.QLabel(label)
-            caption.setMinimumWidth(72)
-            line.addWidget(caption)
-            line.addWidget(role)
-            line.addWidget(field, 1)
-            line.addWidget(pick)
-            content.addLayout(line)
-            row[key + "_role"] = role
-            row[key] = field
+        row = {"frame": frame, "title": title, "mirror": mirror}
+        columns = QtWidgets.QHBoxLayout()
+        columns.setSpacing(6)
+        for side in ("from", "to"):
+            column = QtWidgets.QVBoxLayout()
+            column.setSpacing(3)
+            for key, placeholder in ((side, side.title()),
+                                     (side + "_child", side.title() + " Child")):
+                role = QtWidgets.QComboBox()
+                role.addItems(["Rig", "Anim", "REF"])
+                role.setCurrentText(data[key + "_role"])
+                role.currentIndexChanged.connect(_queue_save)
+                field = QtWidgets.QLineEdit(data[key])
+                field.setPlaceholderText(placeholder)
+                field.setToolTip(placeholder)
+                field.setMinimumWidth(0)
+                field.textChanged.connect(_queue_save)
+                pick = QtWidgets.QPushButton("Pick")
+                pick.setFixedWidth(36)
+                pick.clicked.connect(
+                    lambda checked=False, f=field, r=role: _safe(
+                        lambda: _pick_pair_object(f, r)))
+                line = QtWidgets.QHBoxLayout()
+                line.setSpacing(3)
+                line.addWidget(role)
+                line.addWidget(field, 1)
+                line.addWidget(pick)
+                column.addLayout(line)
+                row[key + "_role"] = role
+                row[key] = field
+            columns.addLayout(column, 1)
+        content.addLayout(columns)
         delete.clicked.connect(
             lambda checked=False, selected=row:
             self._remove_rotate_pair_row(selected))
@@ -1629,11 +1643,12 @@ class RetargetCard(QtWidgets.QFrame):
                 value = self._pairs()
             elif kind == "rotate_pairs":
                 value = [
-                    {key: (row[key].currentText() if key.endswith("_role")
-                           else row[key].text().strip())
-                     for key in ("from_role", "from", "from_child_role",
-                                 "from_child", "to_role", "to",
-                                 "to_child_role", "to_child")}
+                    dict({key: (row[key].currentText() if key.endswith("_role")
+                                else row[key].text().strip())
+                          for key in ("from_role", "from", "from_child_role",
+                                      "from_child", "to_role", "to",
+                                      "to_child_role", "to_child")},
+                         mirror=row["mirror"].isChecked())
                     for row in widget]
             elif kind == "set_values":
                 value = [
