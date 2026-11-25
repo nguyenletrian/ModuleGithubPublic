@@ -9,6 +9,8 @@ import NLTA_RetargetV2 as rt
 
 LABEL = "Match Rotate"
 _AXES = "XYZ"
+_ANGLE_TOLERANCE = 0.01
+_MAX_PASSES = 6
 
 
 def PairData(pair):
@@ -139,6 +141,33 @@ def _quaternion(basis):
     return om.MTransformationMatrix(matrix).rotation(asQuaternion=True)
 
 
+def _orientation_error(actual, desired):
+    dot = abs(sum(a * b for a, b in zip(
+        (actual.x, actual.y, actual.z, actual.w),
+        (desired.x, desired.y, desired.z, desired.w))))
+    return math.degrees(2.0 * math.acos(min(1.0, max(0.0, dot))))
+
+
+def _apply_orientations(pending):
+    """Resolve DAG and constraint-driven dependencies with fixed world goals.
+
+    A control in another DAG branch (e.g. Hand FK) can drive the Finger Root
+    after its descendants were posed. Recheck every goal after the full pass;
+    never recalculate the signed axis mapping from an intermediate pose.
+    """
+    ordered = sorted(pending, key=lambda item: item[1].count("|"))
+    for pass_index in range(_MAX_PASSES):
+        for source, target, desired, mapping in ordered:
+            if _orientation_error(rt._rotation(target), desired) <= _ANGLE_TOLERANCE:
+                continue
+            values = rt._euler_angles(desired, cmds.getAttr(target + ".rotateOrder"))
+            cmds.xform(target, worldSpace=True, rotation=values)
+        if all(_orientation_error(rt._rotation(target), desired) <= _ANGLE_TOLERANCE
+               for _, target, desired, _ in ordered):
+            return pass_index + 1
+    return _MAX_PASSES
+
+
 def Run(settings, context):
     pairs = _resolve_pairs(settings, context)
     pending = []
@@ -155,31 +184,28 @@ def Run(settings, context):
                    for i in range(3)}
         pending.append((source, target, _quaternion(basis), mapping))
 
-    # Freeze each desired world orientation before moving any target parent.
-    for source, target, desired, mapping in sorted(
-            pending, key=lambda item: item[1].count("|")):
-        values = rt._euler_angles(desired, cmds.getAttr(target + ".rotateOrder"))
-        cmds.xform(target, worldSpace=True, rotation=values)
+    # Keep the precomputed desired orientations fixed across correction passes.
+    passes = _apply_orientations(pending)
 
     results = []
     for source, target, desired, mapping in pending:
-        actual = rt._rotation(target)
-        dot = abs(sum(a * b for a, b in zip(
-            (actual.x, actual.y, actual.z, actual.w),
-            (desired.x, desired.y, desired.z, desired.w))))
-        error = math.degrees(2.0 * math.acos(min(1.0, max(0.0, dot))))
-        if error > 0.1:
+        error = _orientation_error(rt._rotation(target), desired)
+        matched = error <= _ANGLE_TOLERANCE
+        if not matched:
             cmds.warning("Match Rotate: {} orientation error {:.3f} deg".format(
                 rt.leaf(target), error))
-        print("[Match Rotate] {} -> {} | {}".format(
+        print("[Match Rotate] {} -> {} | {} | angle {:.4f} deg".format(
             rt.leaf(source), rt.leaf(target),
-            ", ".join("{}:{}".format(axis, mapping[axis]) for axis in _AXES)))
+            ", ".join("{}:{}".format(axis, mapping[axis]) for axis in _AXES),
+            error))
         results.append({"from": source, "to": target, "axes": mapping,
-                        "error_degrees": error})
+                        "error_degrees": error, "matched": matched})
 
     if context.get("pairs") and context.get("bind"):
         context["bind"] = rt.capture_bind(context["pairs"], context["source_namespace"],
                                           context["target_namespace"])
     context["rotate_matches"] = results
-    return {"matched": len(results), "mapping": "automatic axes",
+    matched = sum(item["matched"] for item in results)
+    return {"matched": matched, "unmatched": len(results) - matched,
+            "mapping": "automatic axes", "passes": passes,
             "max_error_degrees": max(item["error_degrees"] for item in results)}

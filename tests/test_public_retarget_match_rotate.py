@@ -1,6 +1,7 @@
 """Offline tests for automatic Match Rotate mapping."""
 import ast
 import itertools
+import math
 import re
 import unittest
 from pathlib import Path
@@ -92,6 +93,59 @@ class MatchRotateTests(unittest.TestCase):
         self.assertEqual(len(pairs), 5)
         self.assertIn(("REF:LeftHand", "Rig:L_Wrist_FK"), pairs)
         self.assertNotIn(("REF:L_Hand", "Rig:L_Wrist_FK"), pairs)
+
+    def test_corrects_hand_driven_fingers_in_separate_dag_branch(self):
+        # Hand is deeper in the DAG, but drives the shallow Finger Root.
+        hand = "|Rig|World|Spine|Chest|Arm|Hand"
+        thumb = "|Rig|Fingers|Thumb1"
+        tip = thumb + "|Thumb2"
+        rotations = {hand: 0.0, thumb: 0.0, tip: 0.0}
+        goals = {hand: 16.538, thumb: 25.0, tip: 40.0}
+        writes = []
+
+        def xform(node, **kw):
+            desired = kw["rotation"]
+            delta = desired - rotations[node]
+            rotations[node] = desired
+            if node == hand:
+                rotations[thumb] += delta
+                rotations[tip] += delta
+            if node == thumb:
+                rotations[tip] += delta
+            writes.append(node)
+
+        env = scope("_apply_orientations",
+                    _MAX_PASSES=6, _ANGLE_TOLERANCE=0.01,
+                    _orientation_error=lambda actual, desired: abs(actual - desired),
+                    rt=SimpleNamespace(_rotation=rotations.__getitem__,
+                                       _euler_angles=lambda desired, order: desired),
+                    cmds=SimpleNamespace(getAttr=lambda plug: 0, xform=xform))
+        pending = [("old", node, goals[node], {}) for node in (hand, thumb, tip)]
+        self.assertEqual(env["_apply_orientations"](pending), 2)
+        self.assertEqual(rotations, goals)
+        self.assertEqual(writes.count(hand), 1)
+        self.assertEqual(writes.count(thumb), 2)
+
+    def test_correction_is_bounded_if_control_does_not_follow(self):
+        calls = []
+        env = scope("_apply_orientations",
+                    _MAX_PASSES=6, _ANGLE_TOLERANCE=0.01,
+                    _orientation_error=lambda actual, desired: abs(actual - desired),
+                    rt=SimpleNamespace(_rotation=lambda node: 0.0,
+                                       _euler_angles=lambda desired, order: desired),
+                    cmds=SimpleNamespace(getAttr=lambda plug: 0,
+                                         xform=lambda node, **kw: calls.append(node)))
+        self.assertEqual(env["_apply_orientations"]([("old", "|rig|ctrl", 20.0, {})]), 6)
+        self.assertEqual(len(calls), 6)
+
+    def test_quaternion_error_ignores_equivalent_quaternion_sign(self):
+        def q(x, y, z, w):
+            return SimpleNamespace(x=x, y=y, z=z, w=w)
+        f = scope("_orientation_error", math=math)["_orientation_error"]
+        self.assertAlmostEqual(f(q(0, 0, 0, 1), q(0, 0, 0, -1)), 0.0)
+        self.assertAlmostEqual(f(q(0, 0, 0, 1),
+                                 q(0, 0, math.sin(math.radians(8.269)),
+                                   math.cos(math.radians(8.269)))), 16.538)
 
     def test_new_module_is_registered_and_optional(self):
         ui = (ROOT / "UIs/Retarget.py").read_text(encoding="utf-8")
