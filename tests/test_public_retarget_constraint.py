@@ -1,5 +1,6 @@
 """Offline contracts for REF-aligned live retarget constraints."""
 import ast
+import re
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +30,7 @@ class ConstraintTests(unittest.TestCase):
         self.assertNotIn("to_role", pair)
         self.assertEqual((pair["translate"], pair["rotate"], pair["scale"]),
                          (False, True, False))
+        self.assertFalse(pair["mirror"])
 
     def test_constraint_types(self):
         calls = []
@@ -64,7 +66,8 @@ class ConstraintTests(unittest.TestCase):
         def connect(joint, target, pair):
             events.append(("constraint", joint, target))
             return ["constraint_" + target]
-        env = scope("PairData", "_namespaces", "Run",
+        env = scope("PairData", "_mirror_name", "_expand_pairs", "_namespaces", "Run",
+                    re=re,
                     _offset=offset, _build_extra=extra, _connect=connect,
                     rt=SimpleNamespace(resolve=lambda ns, name: ns + ":" + name,
                                        leaf=lambda node: node.split(":")[-1]),
@@ -88,6 +91,25 @@ class ConstraintTests(unittest.TestCase):
             {"from": "Hand", "to": "HandFK"}]}, context)
         self.assertEqual(events[0], ("offset", "REF:Hand", "Rig:HandFK"))
         self.assertEqual(events[1], ("extra", "Anim:Hand", "Rig:HandFK"))
+
+    def test_mirror_copies_trs_and_respects_explicit_opposite(self):
+        env = scope("PairData", "_mirror_name", "_expand_pairs", re=re,
+                    rt=SimpleNamespace(leaf=lambda node: node.split(":")[-1]))
+        expand = env["_expand_pairs"]
+        right = {"from": "Bip001FBXASC032RFBXASC032Hand",
+                 "to": "R_Hand_FK", "mirror": True,
+                 "translate": True, "rotate": False, "scale": True}
+        pairs = expand([right])
+        self.assertEqual(len(pairs), 2)
+        self.assertEqual(pairs[1]["from"], "Bip001FBXASC032LFBXASC032Hand")
+        self.assertEqual(pairs[1]["to"], "L_Hand_FK")
+        self.assertEqual((pairs[1]["translate"], pairs[1]["rotate"], pairs[1]["scale"]),
+                         (True, False, True))
+        explicit = {"from": "CustomLeft", "to": "L_Hand_FK", "mirror": True}
+        self.assertEqual(len(expand([right, explicit])), 2)
+        self.assertEqual(expand([right, explicit])[1]["from"], "CustomLeft")
+        self.assertEqual(len(expand([{"from": "Pelvis", "to": "Root", "mirror": True}])), 1)
+        self.assertEqual(len(expand([{"from": "R_Hand", "to": "R_Hand_FK"}])), 1)
 
     def test_extra_joint_uses_bind_offset_matrix(self):
         calls = []

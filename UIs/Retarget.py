@@ -1497,7 +1497,7 @@ class RetargetCard(QtWidgets.QFrame):
                 row[key] = field
             columns.addLayout(column, 1)
         if constraint:
-            for channel, short in (("translate", "T"), ("rotate", "R"), ("scale", "S")):
+            for channel, short in (("translate", "T"), ("rotate", "R"), ("scale", "S"), ("mirror", "M")):
                 check = QtWidgets.QCheckBox(short)
                 check.setToolTip(channel.title())
                 check.setChecked(data[channel])
@@ -1815,7 +1815,7 @@ class RetargetCard(QtWidgets.QFrame):
                 value = [
                     dict({key: row[key].text().strip() for key in ("from", "to")},
                          **{key: row[key].isChecked()
-                            for key in ("translate", "rotate", "scale")})
+                            for key in ("translate", "rotate", "scale", "mirror")})
                     for row in widget]
             elif kind == "match_rotate_pairs":
                 value = [

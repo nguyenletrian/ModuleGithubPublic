@@ -1,4 +1,5 @@
 """Build live retarget constraints using a bind-pose-aligned extra joint."""
+import re
 import maya.cmds as cmds
 import maya.api.OpenMaya as om
 import NLTA_RetargetV2 as rt
@@ -11,7 +12,8 @@ def PairData(pair):
             "to": str(pair.get("to") or ""),
             "translate": bool(pair.get("translate", False)),
             "rotate": bool(pair.get("rotate", True)),
-            "scale": bool(pair.get("scale", False))}
+            "scale": bool(pair.get("scale", False)),
+            "mirror": bool(pair.get("mirror", False))}
 
 
 def DefaultSetting():
@@ -70,6 +72,48 @@ def _connect(extra, target, pair):
     return nodes
 
 
+def _mirror_name(name):
+    """Swap explicit side tokens without changing unrelated letters."""
+    swaps = {"L": "R", "R": "L", "l": "r", "r": "l",
+             "Left": "Right", "Right": "Left",
+             "left": "right", "right": "left",
+             "LEFT": "RIGHT", "RIGHT": "LEFT"}
+    patterns = (
+        r"(?<=FBXASC032)[LR](?=FBXASC032)",
+        r"(?<![A-Za-z0-9])(?:Left|Right|left|right|LEFT|RIGHT|L|R|l|r)(?![A-Za-z0-9])",
+        r"^(?:Left|Right)(?=[A-Z0-9])",
+        r"(?:Left|Right)$",
+    )
+    for pattern in patterns:
+        mirrored, count = re.subn(pattern, lambda match: swaps[match.group()], name)
+        if count:
+            return mirrored
+    return name
+
+def _expand_pairs(rows):
+    pairs = [PairData(row) for row in rows]
+    pairs = [pair for pair in pairs
+             if any(pair[key] for key in ("translate", "rotate", "scale"))]
+    explicit = {rt.leaf(pair["to"]) for pair in pairs}
+    generated = set()
+    result = []
+    for pair in pairs:
+        result.append(pair)
+        if not pair["mirror"]:
+            continue
+        target = rt.leaf(pair["to"])
+        opposite = _mirror_name(target)
+        if opposite == target or opposite in explicit or opposite in generated:
+            continue
+        source = rt.leaf(pair["from"])
+        mirrored_source = _mirror_name(source)
+        if mirrored_source == source:
+            raise ValueError("Constraint Mirror needs a side token on From: " + source)
+        result.append(dict(pair, **{"from": mirrored_source, "to": opposite, "mirror": False}))
+        generated.add(opposite)
+    return result
+
+
 def Run(settings, context):
     ref_ns, anim_ns, rig_ns = _namespaces(context)
     from_role = settings.get("from_role", "REF")
@@ -80,10 +124,7 @@ def Run(settings, context):
     targets = set()
     existing = {entry["target"] for entry in context.get("constraint_pairs", [])
                 if any(cmds.objExists(node) for node in entry["constraints"])}
-    for raw in settings.get("pairs", []):
-        pair = PairData(raw)
-        if not any(pair[key] for key in ("translate", "rotate", "scale")):
-            continue
+    for pair in _expand_pairs(settings.get("pairs", [])):
         if from_role == "REF":
             ref = rt.resolve(ref_ns, pair["from"])
             anim = rt.resolve(anim_ns, rt.leaf(ref))
