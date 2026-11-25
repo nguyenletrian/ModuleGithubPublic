@@ -1,13 +1,15 @@
 import os
 import json
 import inspect
+import math
+import re
 from datetime import datetime
 from functools import partial
 
 import maya.cmds as cmds
 import NLTA_General
 
-STATE = {"rows": []}
+STATE = {"top": {}, "rows": []}
 
 
 def DefaultSetting(path, *args):
@@ -25,7 +27,7 @@ def dataPath(data):
 def getData(data):
     path = dataPath(data)
     if not os.path.isfile(path):
-        return {"version": 2, "group": "RigUtil", "items": []}
+        return {"version": 2, "name": "AutoSkirt_", "group": "RigUtil", "items": []}
     with open(path, encoding="utf-8") as stream:
         config = json.load(stream)
     return config if isinstance(config, dict) else {"version": 2, "group": "RigUtil", "items": []}
@@ -52,155 +54,663 @@ def referenceName(sphere, control, index=1):
     return next((name for name in names if cmds.objExists(name)), names[0])
 
 
-def pick(field, *args):
-    selection = cmds.ls(sl=True, objectsOnly=True) or []
-    if selection:
-        cmds.textField(field, e=True, text=selection[0])
+def pickSingle(widget, *args):
+    selection = cmds.ls(selection=True, objectsOnly=True) or []
+    if len(selection) != 1:
+        cmds.warning("AutoSkirt: select exactly one Maya object")
+        return
+    cmds.textField(widget, edit=True, text=selection[0])
 
 
-def textField(parent, label, value="", picker=True):
-    row = cmds.rowLayout(parent=parent, numberOfColumns=3, adjustableColumn=2, columnWidth3=(85, 190, 45))
-    cmds.text(parent=row, label=label, align="left")
-    field = cmds.textField(parent=row, text=value)
-    if picker:
-        cmds.button(parent=row, label="Pick", command=partial(pick, field))
-    else:
-        cmds.text(parent=row, label="")
-    return field
+def pickControls(widget, *args):
+    selection = cmds.ls(selection=True, objectsOnly=True) or []
+    if not selection:
+        cmds.warning("AutoSkirt: select one or more FK controls")
+        return
+    cmds.scrollField(widget, edit=True, text="\n".join(dict.fromkeys(selection)))
 
 
-def removeDriven(row, driven, *args):
-    row["drivens"].remove(driven)
-    cmds.deleteUI(driven["frame"])
+def addSelectedDrivens(row, *args):
+    """Append selected Driven controls and create one default Sub Item each."""
+    selection = cmds.ls(selection=True, objectsOnly=True) or []
+    if not selection:
+        cmds.warning("AutoSkirt: select Driven controls before Add")
+        return
+    existing = [name.strip() for name in cmds.scrollField(row["controls"], query=True, text=True).splitlines() if name.strip()]
+    added = [name for name in dict.fromkeys(selection) if name not in existing]
+    if not added: return
+    editor = row.get("subEditor")
+    if editor and cmds.window(editor["window"], exists=True):
+        editor["sync"]()
+        cmds.deleteUI(editor["window"])
+        row.pop("subEditor", None)
+    axis = str(STATE.get("defaultAxis", "rotateZ"))[-1:].upper()
+    for name in added:
+        row["settings"].setdefault(name, {"startAngle": 10.0})
+        row["subItems"].setdefault(name, normalizeSubItems(None, axis))
+    cmds.scrollField(row["controls"], edit=True, text="\n".join(existing + added))
 
 
-def addDriven(row, spec=None, *args):
-    spec = spec or {}
-    frame = cmds.frameLayout(parent=row["holder"], label="Driven", collapsable=True, marginWidth=4)
-    col = cmds.columnLayout(parent=frame, adjustableColumn=True, rowSpacing=3)
-    driven = {"frame": frame}
-    control = spec.get("control", "")
-    driven["control"] = textField(col, "Control", control)
-    driven["target"] = textField(col, "Target", spec.get("target", shortName(control) + "_Target" if control else ""))
-    line = cmds.rowLayout(parent=col, numberOfColumns=2, adjustableColumn=2, columnWidth2=(85, 150))
-    cmds.text(parent=line, label="Output", align="left")
-    driven["output"] = cmds.optionMenu(parent=line)
-    for channel in ("rotateX", "rotateY", "rotateZ"):
-        cmds.menuItem(parent=driven["output"], label=channel)
-    cmds.optionMenu(driven["output"], e=True, value=spec.get("output", "rotateZ"))
-    for key, label, default in (("refV", "Ref V", -1.0), ("minDistance", "Min Distance", 0.0),
-                                ("maxDistance", "Max Distance", 0.0), ("startAngle", "Start Angle", 10.0)):
-        line = cmds.rowLayout(parent=col, numberOfColumns=2, adjustableColumn=2, columnWidth2=(85, 150))
-        cmds.text(parent=line, label=label, align="left")
-        value = spec.get(key, default)
-        driven[key] = cmds.floatField(parent=line, value=default if value is None else float(value), precision=6)
-    cmds.button(parent=col, label="Remove Driven", command=partial(removeDriven, row, driven))
-    row["drivens"].append(driven)
+def mirrorLrName(name):
+    """Swap L/R name tokens without replacing letters inside ordinary words."""
+    def flip(match):
+        token = match.group(0)
+        return {"L": "R", "R": "L", "l": "r", "r": "l",
+                "Left": "Right", "Right": "Left",
+                "left": "right", "right": "left"}[token]
+    name = re.sub(r"(?<![A-Za-z0-9])[LRlr](?=$|[|:_.-])", flip, name)
+    return re.sub(r"(?<![A-Za-z0-9])(?:Left|Right|left|right)(?=$|[|:_.-]|[A-Z])",
+                  flip, name)
 
 
-def addSelected(row, *args):
-    for control in cmds.ls(sl=True, objectsOnly=True) or []:
-        addDriven(row, {"control": control})
-
-
-def removeReader(row, *args):
-    STATE["rows"].remove(row)
-    cmds.deleteUI(row["frame"])
-
-
-def addReader(spec=None, *args):
-    spec = spec or {}
-    frame = cmds.frameLayout(parent=STATE["holder"], label="Pose Reader", collapsable=True, marginWidth=5)
-    col = cmds.columnLayout(parent=frame, adjustableColumn=True, rowSpacing=4)
-    row = {"frame": frame, "drivens": []}
-    row["id"] = textField(col, "Reader ID", spec.get("id", "Reader{}".format(len(STATE["rows"]) + 1)), False)
-    row["attributeName"] = textField(col, "Attribute Name", spec.get("attributeName", "autoShoulderGuard"), False)
-    for key, label in (("sphere", "Sphere"), ("parent", "Parent"), ("end", "End")):
-        row[key] = textField(col, label, spec.get(key, ""))
-    actions = cmds.rowLayout(parent=col, numberOfColumns=3)
-    cmds.button(parent=actions, label="Add Driven", command=lambda *unused: addDriven(row))
-    cmds.button(parent=actions, label="Add Selected", command=partial(addSelected, row))
-    cmds.button(parent=actions, label="Remove Reader", command=partial(removeReader, row))
-    row["holder"] = cmds.columnLayout(parent=col, adjustableColumn=True, rowSpacing=3)
-    STATE["rows"].append(row)
-    for driven in spec.get("drivens", []):
-        addDriven(row, driven)
-
-
-def convertConfig(config):
-    result = {"version": 2, "group": "RigUtil", "items": []}
-    if config.get("group", "RigUtil") != "RigUtil":
-        cmds.warning("Rig Auto Fnc: original Diana code uses fixed RigUtil.")
-    discarded = 0
-    simplified = 0
-    for item in config.get("items", []):
-        reader = {key: item.get(key, "") for key in ("id", "sphere", "parent", "end")}
-        reader["attributeName"] = item.get("attributeName", "autoShoulderGuard")
-        reader["drivens"] = []
-        if "drivens" in item:
-            reader["drivens"] = item["drivens"]
-        else:
-            for index, control in enumerate(item.get("joints", [])):
-                entries = item.get("subItems", [])
-                subs = entries[index] if index < len(entries) else []
-                sub = subs[0] if subs else {}
-                discarded += max(0, len(subs) - 1)
-                if (sub.get("axis", "Z") != "Z" or sub.get("outputType", "rotate") != "rotate"
-                        or sub.get("reverseU") or sub.get("invertRotate") or sub.get("strength", 1) != 1):
-                    simplified += 1
-                v = sub.get("refV")
-                if v is None and index < len(item.get("refV", [])):
-                    v = item["refV"][index]
-                reader["drivens"].append(dict(control=control, target=shortName(control) + "_Target",
-                    refV=v, minDistance=sub.get("minDistance", 0), maxDistance=sub.get("maxDistance", 0),
-                    startAngle=sub.get("startAngle", 10)))
-        result["items"].append(reader)
-    if discarded:
-        cmds.warning("Rig Auto Fnc: {} extra Sub Items ignored; only the first is imported.".format(discarded))
-    if simplified:
-        cmds.warning("Rig Auto Fnc: {} Driven settings simplified to original Rotate Z.".format(simplified))
+def mirrorReaderData(reader, existing_ids):
+    """Copy one reader to its opposite side; leave UV and rotation signs editable."""
+    controls = list(reader["joints"])
+    converted = [mirrorLrName(control) for control in controls]
+    if not controls or any(a == b for a, b in zip(controls, converted)):
+        raise ValueError("AutoSkirt Mirror: every Driven must contain an L/R side token")
+    if len(set(converted)) != len(converted):
+        raise ValueError("AutoSkirt Mirror: mirrored Driven names are not unique")
+    # Prevent swapping both directions in the same source reader.
+    def side_of(name):
+        parts = re.search(r"(?<![A-Za-z0-9])([LRlr])(?=$|[|:_.-])", name)
+        if parts: return parts.group(1).upper()
+        words = re.search(r"(?<![A-Za-z0-9])(Left|Right|left|right)(?=$|[|:_.-]|[A-Z])", name)
+        return words.group(1)[0].upper() if words else None
+    sides = {side_of(name) for name in controls}
+    if None in sides or len(sides) != 1:
+        raise ValueError("AutoSkirt Mirror: Driven controls must all belong to the same side")
+    target_side = "L" if "R" in sides else "R"
+    result = json.loads(json.dumps(reader))
+    result["id"] = mirrorLrName(reader["id"])
+    if result["id"] == reader["id"]:
+        result["id"] = target_side + "_" + reader["id"]
+    if result["id"] in existing_ids:
+        raise ValueError("AutoSkirt Mirror: Reader ID already exists: " + result["id"])
+    for key in ("sphere", "parent", "start", "end"):
+        result[key] = mirrorLrName(reader.get(key, ""))
+    if result["sphere"] == reader["sphere"]:
+        result["sphere"] = target_side + "_" + reader["sphere"]
+    result["joints"] = converted
+    for entries in result.get("subItems", []):
+        for sub in entries:
+            if sub.get("target"): sub["target"] = mirrorLrName(sub["target"])
+    # A new side needs its own bind-pose V projection.
+    result["refV"] = []
+    # Keep manually edited Sub Item Ref V; nullable Auto values remain Auto.
     return result
 
 
-def loadForm(config):
-    for child in cmds.layout(STATE["list"], q=True, childArray=True) or []:
-        cmds.deleteUI(child)
-    config = convertConfig(config)
-    STATE["rows"] = []
-    cmds.text(parent=STATE["list"], label="Contain: RigUtil", align="left")
-    STATE["holder"] = cmds.columnLayout(parent=STATE["list"], adjustableColumn=True, rowSpacing=5)
-    for spec in config["items"]:
-        addReader(spec)
-    if not config["items"]:
-        addReader()
+def mirrorRow(row, *args):
+    """Add the mirrored reader to the form and persist it in one transaction."""
+    try:
+        config = readUi()  # Also synchronizes an open Sub Item editor.
+        source_id = cmds.textField(row["id"], query=True, text=True).strip()
+        reader = next(item for item in config["items"] if item["id"] == source_id)
+        clone = mirrorReaderData(reader, {item["id"] for item in config["items"]})
+        # Distinct Pose Readers may intentionally share the same Driven.
+        # Only duplicate controls inside one Reader remain invalid.
+        added = addRow(STATE["holder"], clone)
+        try:
+            saveSettings(STATE["data"])
+        except (OSError, ValueError, RuntimeError):
+            removeRow(added)
+            raise
+        print("AutoSkirt Mirror: {} -> {} (configuration saved; Run to build)".format(
+            source_id, clone["id"]))
+        return added
+    except (StopIteration, ValueError, RuntimeError, OSError) as exc:
+        cmds.warning("AutoSkirt Mirror: {}".format(exc))
+        return None
+
+
+def lineField(parent, label, initial, picker=True):
+    cmds.rowLayout(parent=parent, numberOfColumns=3, adjustableColumn=2, columnWidth3=(105, 160, 55))
+    cmds.text(label=label, align="left")
+    widget = cmds.textField(text=str(initial))
+    if picker:
+        cmds.button(label="Pick", command=partial(pickSingle, widget))
+    else:
+        cmds.text(label="")
+    cmds.setParent("..")
+    return widget
+
+
+def normalizeSubItems(entries, axis="Z", start_angle=10.0):
+    """Validate one Sub Item; Max Distance of zero enables geometry Auto mode."""
+    default = [{"axis": str(axis).upper()[-1:], "outputType": "rotate",
+                "reverseU": False, "invertRotate": False, "strength": 1.0,
+                "startAngle": float(start_angle), "maxDistance": 0.0,
+                "minDistance": 0.0, "refV": None}]
+    if entries is None:
+        entries = default
+    if not isinstance(entries, (list, tuple)) or not entries:
+        raise ValueError("AutoSkirt: every Driven needs at least one Sub Item")
+    result = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("AutoSkirt: Sub Item must contain settings")
+        output_axis = str(entry.get("axis", axis)).upper()[-1:]
+        output_type = entry.get("outputType", "rotate")
+        if not isinstance(output_type, str) or output_type.lower() not in ("rotate", "translate"):
+            raise ValueError("AutoSkirt: Sub Item Output Type must be Rotate or Translate")
+        output_type = output_type.lower()
+        reverse = entry.get("reverseU", False)
+        invert = entry.get("invertRotate", False)
+        strength = float(entry.get("strength", 1.0))
+        start = float(entry.get("startAngle", start_angle))
+        max_distance = float(entry.get("maxDistance", 0.0))
+        min_distance = float(entry.get("minDistance", 0.0))
+        ref_v = entry.get("refV")
+        ref_v = None if ref_v is None else float(ref_v)
+        if output_axis not in ("X", "Y", "Z"):
+            raise ValueError("AutoSkirt: Sub Item Output Axis must be X, Y or Z")
+        if not isinstance(reverse, bool):
+            raise ValueError("AutoSkirt: Reverse U must be a checkbox value")
+        if not isinstance(invert, bool):
+            raise ValueError("AutoSkirt: Invert Rotate must be a checkbox value")
+        if not math.isfinite(strength) or not 0 <= strength <= 2:
+            raise ValueError("AutoSkirt: Angle Strength must be between 0 and 2")
+        if not math.isfinite(start) or not 0 <= start < 180:
+            raise ValueError("AutoSkirt: Sub Item Start Angle must be 0..180")
+        if not math.isfinite(max_distance) or max_distance < 0 or 0 < max_distance < 0.001:
+            raise ValueError("AutoSkirt: Max Distance must be 0 (Auto) or at least 0.001")
+        if not math.isfinite(min_distance) or min_distance < 0:
+            raise ValueError("AutoSkirt: Max Effect Range must be nonnegative")
+        if max_distance > 0 and min_distance >= max_distance:
+            raise ValueError("AutoSkirt: Max Effect Range must be below Max Distance")
+        if ref_v is not None and (not math.isfinite(ref_v) or not 0 <= ref_v <= 1):
+            raise ValueError("AutoSkirt: Ref V must be between 0 and 1")
+        normalized = {"axis": output_axis, "outputType": output_type, "reverseU": reverse,
+                      "invertRotate": invert, "strength": strength,
+                      "startAngle": start, "maxDistance": max_distance,
+                      "minDistance": min_distance, "refV": ref_v}
+        if entry.get("target"): normalized["target"] = entry["target"]
+        for key in ("extraOffsetMatrix", "extraOffsetObject"):
+            if entry.get(key): normalized[key] = entry[key]
+        result.append(normalized)
+    return result
+
+
+def getControls(row):
+    raw = cmds.scrollField(row["controls"], query=True, text=True)
+    result = [name.strip() for name in raw.splitlines() if name.strip()]
+    if not result or len(result) != len(set(result)):
+        raise ValueError("AutoSkirt: each reader requires unique Driven controls")
+    return result
+
+
+def getSettings(row, control):
+    return row["settings"].setdefault(control, {"startAngle": 10.0})
+
+
+def sphereUvDomain(sphere):
+    shape = skirtShape(sphere, "nurbsSurface")
+    return {axis: (float(cmds.getAttr(shape + ".minValue" + axis)),
+                   float(cmds.getAttr(shape + ".maxValue" + axis)))
+            for axis in "UV"}
+
+
+def normalizeSphereUv(sphere):
+    """Normalize U/V without changing the Sphere orientation."""
+    domain = sphereUvDomain(sphere)
+    if all(abs(domain[axis][0]) < 1e-6 and abs(domain[axis][1] - 1.0) < 1e-6 for axis in "UV"):
+        return domain
+    shape = skirtShape(sphere, "nurbsSurface")
+    world = cmds.xform(sphere, query=True, worldSpace=True, matrix=True)
+    # Rebuild only the UV range.
+    cmds.rebuildSurface(sphere, constructionHistory=False, replaceOriginal=True, rebuildType=0, direction=2, keepControlPoints=True, keepCorners=True, keepRange=0, degreeU=0, degreeV=0, spansU=int(cmds.getAttr(shape + ".spansU")), spansV=int(cmds.getAttr(shape + ".spansV")))
+    domain = sphereUvDomain(sphere)
+    if not all(abs(domain[axis][0]) < 1e-5 and abs(domain[axis][1] - 1.0) < 1e-5 for axis in "UV"):
+        raise RuntimeError("AutoSkirt_: Maya did not normalize the Sphere U/V to 0-1")
+    after = cmds.xform(sphere, query=True, worldSpace=True, matrix=True)
+    if max(abs(float(a) - float(b)) for a, b in zip(world, after)) > 1e-5:
+        raise RuntimeError("AutoSkirt_: Sphere world transform changed during UV rebuild")
+    return domain
+
+
+def rebuildSphereUVButton(*unused):
+    """Normalize the listed Spheres from the form only."""
+    spheres = []
+    seen = set()
+    for row in STATE["rows"]:
+        name = cmds.textField(row["sphere"], query=True, text=True).strip()
+        if not name:
+            continue
+        matches = cmds.ls(name, long=True, type="transform") or []
+        if not matches:
+            raise ValueError("AutoSkirt_: Sphere does not exist: " + name)
+        if len(matches) != 1:
+            raise ValueError("AutoSkirt_: Sphere name is ambiguous: " + name)
+        sphere = matches[0]
+        shapes = cmds.listRelatives(sphere, shapes=True, noIntermediate=True, fullPath=True, type="nurbsSurface") or []
+        if len(shapes) != 1:
+            raise ValueError("AutoSkirt_: Sphere must have one NURBS Surface: " + sphere)
+        if sphere not in seen:
+            seen.add(sphere)
+            spheres.append(sphere)
+    if not spheres:
+        cmds.warning("AutoSkirt_: no existing Spheres to rebuild in the main form")
+        return []
+
+    cmds.undoInfo(openChunk=True, chunkName="AutoSkirt Sphere UV 0-1")
+    try:
+        domains = [(sphere, normalizeSphereUv(sphere)) for sphere in spheres]
+    except Exception:
+        cmds.undoInfo(closeChunk=True)
+        cmds.undo()
+        raise
+    else:
+        cmds.undoInfo(closeChunk=True)
+    for sphere, domain in domains:
+        print("AutoSkirt_: Sphere UV 0-1, orientation unchanged: {} {}".format(sphere, domain))
+    return domains
+
+
+def createSphereFromRow(row, *args):
+    """Create the original AutoSkirt-style sphere as a standalone preview.
+
+    Use the nearest Driven for radius, aim the surface-origin normal at End,
+    tilt 20 degrees away from Driven centroid and rebuild U/V to 0-1.
+    No Parent/SphereFollow constraints: the Func builder adds those on Run.
+    """
+    sphere_name = cmds.textField(row["sphere"], query=True, text=True).strip()
+    start_name = cmds.textField(row["start"], query=True, text=True).strip()
+    end_name = cmds.textField(row["end"], query=True, text=True).strip()
+    if not sphere_name or not start_name or not end_name:
+        cmds.warning("AutoSkirt Create Sphere: set Sphere Name, Start and End")
+        return None
+    if cmds.objExists(sphere_name):
+        cmds.warning("AutoSkirt Create Sphere: already exists: " + sphere_name)
+        return None
+    try:
+        driven_names = getControls(row)
+    except ValueError as exc:
+        cmds.warning(str(exc))
+        return None
+
+    def unique_transform(name):
+        found = cmds.ls(name, long=True) or []
+        if len(found) != 1 or cmds.nodeType(found[0]) not in ("transform", "joint"):
+            raise ValueError("AutoSkirt Create Sphere: missing or ambiguous object: " + name)
+        return found[0]
+
+    start = unique_transform(start_name)
+    end = unique_transform(end_name)
+    drivens = [unique_transform(name) for name in driven_names]
+    start_p = [float(x) for x in cmds.xform(start, query=True, worldSpace=True, rotatePivot=True)]
+    end_p = [float(x) for x in cmds.xform(end, query=True, worldSpace=True, rotatePivot=True)]
+    pivots = [[float(x) for x in cmds.xform(node, query=True, worldSpace=True, rotatePivot=True)]
+              for node in drivens]
+
+    def vector_length(vector):
+        return math.sqrt(sum(x * x for x in vector))
+
+    def perpendicular(direction):
+        candidate = min(((0.0, 1.0, 0.0), (1.0, 0.0, 0.0),
+                         (0.0, 0.0, 1.0)),
+                        key=lambda vector: abs(sum(a*b for a, b in zip(vector, direction))))
+        dot = sum(a*b for a, b in zip(candidate, direction))
+        tangent = [a - dot*b for a, b in zip(candidate, direction)]
+        length = vector_length(tangent)
+        return [value / length for value in tangent]
+
+    direction = [b - a for a, b in zip(start_p, end_p)]
+    length = vector_length(direction)
+    if length < 1e-7:
+        raise ValueError("AutoSkirt Create Sphere: Start and End must differ")
+    radius = min(vector_length([a-b for a, b in zip(pivot, start_p)])
+                 for pivot in pivots)
+    if radius < 1e-6:
+        raise ValueError("AutoSkirt Create Sphere: Driven must be away from Start")
+    world_aim = [value / length for value in direction]
+    centroid = [sum(p[i] for p in pivots) / len(pivots) for i in range(3)]
+    toward = [centroid[i] - start_p[i] for i in range(3)]
+    projection = sum(a*b for a, b in zip(toward, world_aim))
+    sideways = [toward[i] - projection * world_aim[i] for i in range(3)]
+    side_length = vector_length(sideways)
+    if side_length < 1e-6:
+        sideways = perpendicular(world_aim)
+        side_length = vector_length(sideways)
+    away = [-value / side_length for value in sideways]
+    tilt = math.radians(20.0)  # Same default as RigAutoSkirt.
+    tilted = [math.cos(tilt)*world_aim[i] + math.sin(tilt)*away[i]
+              for i in range(3)]
+
+    selection = cmds.ls(selection=True, long=True) or []
+    context = cmds.currentCtx()
+    prefix = re.sub(r"[^A-Za-z0-9_]", "_", sphere_name.rsplit("|", 1)[-1])
+    sphere = None
+    cmds.undoInfo(openChunk=True, chunkName="AutoSkirt Create Sphere")
+    try:
+        sphere = cmds.sphere(name=sphere_name, radius=radius, axis=(0, 1, 0),
+                             polygon=0, constructionHistory=False)[0]
+        shape = skirtShape(sphere, "nurbsSurface")
+        domain = sphereUvDomain(sphere)
+        u = domain["U"][0] + (domain["U"][1] - domain["U"][0]) * 0.002
+        v = domain["V"][0] + (domain["V"][1] - domain["V"][0]) * 0.002
+        origin_normal = [float(x) for x in cmds.pointOnSurface(
+            shape, parameterU=u, parameterV=v, normalizedNormal=True)]
+        magnitude = vector_length(origin_normal)
+        if magnitude < 1e-7:
+            raise RuntimeError("AutoSkirt Create Sphere: cannot read surface-origin normal")
+        origin_normal = [x / magnitude for x in origin_normal]
+        cmds.xform(sphere, worldSpace=True, translation=start_p)
+        # Match the legacy surface-normal orientation, not the sphere's Z axis.
+        target = cmds.spaceLocator(name=prefix + "_PreviewAim#")[0]
+        try:
+            cmds.xform(target, worldSpace=True,
+                       translation=[start_p[i] + length * tilted[i] for i in range(3)])
+            aim = cmds.aimConstraint(
+                target, sphere, aimVector=origin_normal,
+                upVector=perpendicular(origin_normal), worldUpType="vector",
+                worldUpVector=perpendicular(tilted), maintainOffset=False)[0]
+            cmds.delete(aim)
+        finally:
+            cmds.delete(target)
+        # Freeze only rotation/scale: keep the Sphere pivot at Start. Func's
+        # existing poseReaderCore constrains this very transform on Run.
+        cmds.makeIdentity(sphere, apply=True, translate=False, rotate=True, scale=True)
+        normalizeSphereUv(sphere)
+    except Exception:
+        cmds.undoInfo(closeChunk=True)
+        cmds.undo()
+        raise
+    else:
+        cmds.undoInfo(closeChunk=True)
+    finally:
+        if selection:
+            cmds.select(selection, replace=True)
+        else:
+            cmds.select(clear=True)
+        if cmds.currentCtx() != context:
+            cmds.setToolTo(context)
+    print("AutoSkirt Create Sphere: {} | radius {:.4f} | UV 0-1".format(
+        sphere, radius))
+    return sphere
+
+
+def addRow(parent, record=None):
+    record = record or {}
+    raw_controls = record.get("joints", [])
+    if isinstance(raw_controls, str):
+        raw_controls = [x.strip() for x in raw_controls.splitlines() if x.strip()]
+    saved_subs = record.get("subItems", [])
+    settings = {c: {"startAngle": 10.0} for c in raw_controls}
+    subs = {}
+    for i, control in enumerate(raw_controls):
+        entries = saved_subs[i] if i < len(saved_subs) else None
+        subs[control] = normalizeSubItems(entries)
+    saved_ref_values = record.get("refV", [])
+    row = {"settings": settings, "subItems": subs,
+           "referenceV": {control: float(v) for control, v in zip(raw_controls, saved_ref_values) if v is not None}}
+    frame = cmds.frameLayout(parent=parent, label="Pose Reader", collapsable=True, marginHeight=5, marginWidth=5)
+    col = cmds.columnLayout(adjustableColumn=True, rowSpacing=4)
+    row["frame"] = frame
+    rid = record.get("id") or "Knee{}".format(len(STATE["rows"]) + 1)
+    system = cmds.textField(STATE["top"]["name"], query=True, text=True).strip()
+    row["id"] = lineField(col, "Reader ID", rid, False)
+    row["sphere"] = lineField(col, "Sphere Name",
+                                record.get("sphere") or system + "_" + rid + "_Sphere", False)
+    row["attributeName"] = lineField(col, "Attribute Name", record.get("attributeName", "autoShoulderGuard"), False)
+    row["parent"] = lineField(col, "Parent", record.get("parent", ""))
+    row["start"] = lineField(col, "Start", record.get("start", ""))
+    row["end"] = lineField(col, "End", record.get("end", ""))
+    row["follicleSize"] = record.get("follicleSize", 1.0)
+    line = cmds.rowLayout(parent=col, numberOfColumns=3, adjustableColumn=2, columnWidth3=(115, 180, 74))
+    cmds.text(parent=line, label="Driven Controls")
+    row["controls"] = cmds.scrollField(parent=line, height=75, text="\n".join(raw_controls), wordWrap=False)
+    actions = cmds.columnLayout(parent=line, adjustableColumn=True, rowSpacing=4)
+    cmds.button(parent=actions, label="Pick All", width=68, height=34, command=partial(pickControls, row["controls"]))
+    cmds.button(parent=actions, label="Add", width=68, height=34, command=partial(addSelectedDrivens, row))
+    cmds.setParent(col)
+    line = cmds.rowLayout(parent=col, numberOfColumns=4,
+                         columnWidth4=(90, 90, 90, 90))
+    cmds.button(parent=line, label="Edit Sub Items", width=88, command=partial(editSubItems, row))
+    cmds.button(parent=line, label="Mirror Reader", width=88, command=partial(mirrorRow, row))
+    cmds.button(parent=line, label="Remove Reader", width=88, command=partial(removeRow, row))
+    cmds.button(parent=line, label="Create Sphere", width=88,
+                annotation="Create and aim a NURBS sphere; rebuild its UV to 0-1",
+                command=partial(createSphereFromRow, row))
+    cmds.setParent("..")
+    cmds.setParent("..")
+    cmds.setParent("..")
+    STATE["rows"].append(row)
+    return row
+
+
+def removeRow(row, *args):
+    if row in STATE["rows"]:
+        STATE["rows"].remove(row)
+    if cmds.layout(row["frame"], exists=True):
+        cmds.deleteUI(row["frame"])
+
+
+def readUi():
+    top = STATE["top"]
+    if not top:
+        raise RuntimeError("AutoSkirt: form is not open")
+    cfg = {"version": 2,
+           "name": cmds.textField(top["name"], query=True, text=True).strip(),
+           "group": STATE.get("group", "RigUtil"),
+           "items": []}
+    for row in STATE["rows"]:
+        editor = row.get("subEditor")
+        if editor and callable(editor.get("sync")):
+            if cmds.window(editor["window"], exists=True):
+                editor["sync"]()
+            else:
+                row.pop("subEditor", None)
+        controls = getControls(row)
+        reader = {
+            "mode": "autoSphere",
+            "id": cmds.textField(row["id"], query=True, text=True).strip(),
+            "sphere": cmds.textField(row["sphere"], query=True, text=True).strip(),
+            "parent": cmds.textField(row["parent"], query=True, text=True).strip(),
+            "start": cmds.textField(row["start"], query=True, text=True).strip(),
+            "end": cmds.textField(row["end"], query=True, text=True).strip(),
+            "follicleSize": row["follicleSize"],
+            "attributeName": cmds.textField(row["attributeName"], query=True, text=True).strip(),
+            "equatorU": 0.5,
+            "joints": controls,
+            "subItems": [normalizeSubItems(row["subItems"].get(c)) for c in controls],
+            "refV": ([row["referenceV"][c] for c in controls]
+                     if all(c in row["referenceV"] for c in controls) else [])}
+        if not all(reader.get(key) for key in ("id", "sphere", "parent", "end")):
+            raise ValueError("AutoSkirt: Reader ID, Sphere Name, Parent and End required")
+        cfg["items"].append(reader)
+    if not cfg["items"]:
+        raise ValueError("AutoSkirt: add at least one Pose Reader")
+    return cfg
+
+
+def addEmpty(*args):
+    addRow(STATE["holder"])
+
+
+def skirtShape(transform, kind):
+    return cmds.listRelatives(transform, shapes=True, noIntermediate=True, fullPath=True, type=kind)[0]
+
+
+def legacyConfig(config):
+    # Accept the original nested JSON and the previous RigAutoFnc flat JSON.
+    result = json.loads(json.dumps(config))
+    result.setdefault("name", "AutoSkirt_")
+    result.setdefault("group", "RigUtil")
+    for reader in result.get("items", []):
+        if "drivens" not in reader:
+            continue
+        groups = {}
+        for spec in reader.pop("drivens"):
+            control = spec["control"]
+            groups.setdefault(control, []).append(dict(
+                axis=spec.get("output", "rotateZ")[-1], outputType="rotate",
+                target=spec.get("target", ""), refV=spec.get("refV"),
+                minDistance=spec.get("minDistance", 0), maxDistance=spec.get("maxDistance", 0),
+                startAngle=spec.get("startAngle", 10)))
+        reader["joints"] = list(groups)
+        reader["subItems"] = list(groups.values())
+        reader.setdefault("start", "")
+    return result
 
 
 def saveSettings(data, *args):
-    config = {"version": 2, "group": "RigUtil", "items": []}
-    for row in STATE["rows"]:
-        reader = {key: cmds.textField(row[key], q=True, text=True).strip() for key in ("id", "sphere", "parent", "end", "attributeName")}
+    return writeData(data, readUi())
+
+
+def editSubItems(row, *args):
+    controls = getControls(row)
+    window = "NLTA_RigAutoFnc_SubItems"
+    if cmds.window(window, exists=True):
+        cmds.deleteUI(window)
+    window = cmds.window(window, title="RigAutoFnc - Driven Sub Items", widthHeight=(550, 555))
+    body = cmds.columnLayout(adjustableColumn=True, rowSpacing=4)
+    scroll = cmds.scrollLayout(parent=body, childResizable=True, height=455)
+    holder = cmds.columnLayout(parent=scroll, adjustableColumn=True, rowSpacing=4)
+    editor = {"window": window, "widgets": {}}
+    row["subEditor"] = editor
+    for control in controls:
+        row["subItems"].setdefault(control, normalizeSubItems(None))
+
+    def sync():
+        for control, widgets in editor["widgets"].items():
+            for sub, fields in zip(row["subItems"][control], widgets):
+                sub["axis"] = cmds.optionMenu(fields["axis"], q=True, value=True)
+                sub["target"] = cmds.textField(fields["target"], q=True, text=True).strip()
+                for key in ("refV", "minDistance", "maxDistance", "startAngle"):
+                    sub[key] = cmds.floatField(fields[key], q=True, value=True)
+                if sub["refV"] < 0: sub["refV"] = None
+            row["subItems"][control] = normalizeSubItems(row["subItems"][control])
+
+    def add(control, *unused):
+        sync()
+        row["subItems"][control].append(normalizeSubItems(None)[0])
+        draw()
+
+    def remove(control, index, *unused):
+        sync()
+        if len(row["subItems"][control]) > 1:
+            row["subItems"][control].pop(index)
+            draw()
+
+    def reset(control, index, *unused):
+        sync()
+        sub = row["subItems"][control][index]
+        sub.update(outputType="rotate", reverseU=False, invertRotate=False, strength=1.0)
+        sub.pop("extraOffsetMatrix", None)
+        sub.pop("extraOffsetObject", None)
+        draw()
+
+    def draw():
+        for child in cmds.layout(holder, q=True, childArray=True) or []:
+            cmds.deleteUI(child)
+        editor["widgets"] = {}
+        for control in controls:
+            frame = cmds.frameLayout(parent=holder, label=control, collapsable=True, marginWidth=6)
+            column = cmds.columnLayout(parent=frame, adjustableColumn=True, rowSpacing=4)
+            editor["widgets"][control] = []
+            for index, sub in enumerate(row["subItems"][control]):
+                item = cmds.frameLayout(parent=column, label="Sub Item {:02d}".format(index+1), collapsable=True)
+                col = cmds.columnLayout(parent=item, adjustableColumn=True, rowSpacing=4)
+                fields = {"target": lineField(col, "Target", sub.get("target") or shortName(control) + "_Target")}
+                line = cmds.rowLayout(parent=col, numberOfColumns=2, columnWidth2=(105, 160))
+                cmds.text(parent=line, label="Rotate Axis")
+                fields["axis"] = cmds.optionMenu(parent=line)
+                for axis in "XYZ": cmds.menuItem(parent=fields["axis"], label=axis)
+                cmds.optionMenu(fields["axis"], e=True, value=sub["axis"])
+                for key, label in (("refV", "Ref V (-1 Auto)"), ("startAngle", "Start Angle"),
+                                   ("minDistance", "Min Distance"), ("maxDistance", "Max Distance")):
+                    line = cmds.rowLayout(parent=col, numberOfColumns=2, columnWidth2=(125, 160))
+                    cmds.text(parent=line, label=label, align="left")
+                    fields[key] = cmds.floatField(parent=line, precision=6, value=-1 if sub[key] is None else sub[key])
+                unsupported = unsupportedSettings(sub)
+                if unsupported:
+                    cmds.text(parent=col, label="Legacy: " + ", ".join(unsupported), align="left")
+                    cmds.button(parent=col, label="Reset unsupported settings", command=partial(reset, control, index))
+                actions = cmds.rowLayout(parent=col, numberOfColumns=2)
+                cmds.button(parent=actions, label="Remove Sub Item", command=partial(remove, control, index))
+                cmds.button(parent=actions, label="+ Add Sub Item", command=partial(add, control))
+                editor["widgets"][control].append(fields)
+    def finish(*unused):
+        sync()
+        saveSettings(STATE["data"])
+    editor["sync"] = sync
+    draw()
+    cmds.text(parent=body, label="Ref V = -1, Max Distance = 0: Auto. Save then Run/Export.", align="left")
+    cmds.button(parent=body, label="Save Sub Items", height=28, command=finish)
+    cmds.showWindow(window)
+
+
+def unsupportedSettings(sub):
+    result = []
+    if sub.get("outputType", "rotate").lower() != "rotate": result.append("Translate")
+    if sub.get("reverseU"): result.append("Reverse U")
+    if sub.get("invertRotate"): result.append("Invert Output")
+    if float(sub.get("strength", 1)) != 1: result.append("Strength")
+    if sub.get("extraOffsetMatrix") or sub.get("extraOffsetObject"): result.append("Extra Offset")
+    return result
+
+
+def convertConfig(config):
+    if config.get("group", "RigUtil") != "RigUtil":
+        raise ValueError("RigAutoFnc: original Diana core requires RigUtil. Set Contain to RigUtil in JSON.")
+    result = {"version": 2, "group": "RigUtil", "items": []}
+    for item in legacyConfig(config).get("items", []):
+        reader = {key: item.get(key, "") for key in ("id", "sphere", "parent", "end")}
+        reader["attributeName"] = item.get("attributeName", "autoShoulderGuard")
         reader["drivens"] = []
-        for driven in row["drivens"]:
-            spec = {key: cmds.textField(driven[key], q=True, text=True).strip() for key in ("control", "target")}
-            spec["output"] = cmds.optionMenu(driven["output"], q=True, value=True)
-            for key in ("refV", "minDistance", "maxDistance", "startAngle"):
-                spec[key] = cmds.floatField(driven[key], q=True, value=True)
-            if spec["refV"] < 0:
-                spec["refV"] = None
-            if not spec["target"]:
-                spec["target"] = shortName(spec["control"]) + "_Target"
-            reader["drivens"].append(spec)
-        config["items"].append(reader)
-    return writeData(data, config)
+        refs = item.get("refV", [])
+        for i, control in enumerate(item.get("joints", [])):
+            entries = item.get("subItems", [])
+            for j, sub in enumerate(normalizeSubItems(entries[i] if i < len(entries) else None)):
+                unsupported = unsupportedSettings(sub)
+                if unsupported:
+                    raise ValueError("RigAutoFnc: {} Sub {:02d}: unsupported original-core settings: {}".format(control, j+1, ", ".join(unsupported)))
+                v = sub.get("refV")
+                if v is None and i < len(refs): v = refs[i]
+                reader["drivens"].append(dict(control=control, target=sub.get("target") or shortName(control)+"_Target",
+                    output="rotate"+sub["axis"], refV=v, minDistance=sub["minDistance"],
+                    maxDistance=sub["maxDistance"], startAngle=sub["startAngle"]))
+        result["items"].append(reader)
+    return result
+
+
+def Load(data, listUI, *args):
+    for child in cmds.layout(listUI, q=True, childArray=True) or []: cmds.deleteUI(child)
+    if cmds.window("NLTA_RigAutoFnc_SubItems", exists=True): cmds.deleteUI("NLTA_RigAutoFnc_SubItems")
+    STATE["top"], STATE["rows"], STATE["data"], STATE["listUI"] = {}, [], data, listUI
+    config = legacyConfig(getData(data))
+    STATE["group"] = config["group"]
+    frame = cmds.frameLayout(parent=listUI, label="AutoSkirt Settings", collapsable=True, marginWidth=5)
+    col = cmds.columnLayout(parent=frame, adjustableColumn=True)
+    STATE["top"]["name"] = lineField(col, "System Name", config["name"], False)
+    cmds.text(parent=col, label="Contain: " + STATE["group"] + " (original core: RigUtil)", align="left")
+    STATE["holder"] = cmds.columnLayout(parent=listUI, adjustableColumn=True)
+    for entry in config["items"]: addRow(STATE["holder"], entry)
+    if not config["items"]: addRow(STATE["holder"])
 
 
 def importJson(data, *args):
     paths = cmds.fileDialog2(fileMode=1, fileFilter="JSON (*.json)", caption="Import AutoSkirtFunc JSON")
     if paths:
         with open(paths[0], encoding="utf-8") as stream:
-            config = convertConfig(json.load(stream))
+            config = legacyConfig(json.load(stream))
         writeData(data, config)
-        loadForm(config)
+        Load(data, STATE["listUI"])
+
+
+def Form(data, *args):
+    ui = NLTA_General.LoadModule("Scene_Form").Create(data)
+    buttons = ui["buttonUI"]
+    row = cmds.rowColumnLayout(parent=buttons, numberOfColumns=5)
+    cmds.button(parent=row, label="Add", command=addEmpty)
+    cmds.button(parent=row, label="Import JSON", command=partial(importJson, data))
+    cmds.button(parent=row, label="Save", command=partial(saveSettings, data))
+    cmds.button(parent=row, label="Run", command=partial(runFromForm, data))
+    cmds.button(parent=row, label="Export Py", command=partial(ExportPython, data))
+    cmds.button(parent=buttons, label="Rebuild Sphere UV 0-1 (Keep Orientation)", command=rebuildSphereUVButton)
+    cmds.text(parent=buttons, label="Original Diana / Akali export. Save then Run on clean rig.", align="left")
+    Load(data, ui["listUI"])
 
 
 def resolve(reader):
@@ -248,7 +758,7 @@ def resolve(reader):
             if cmds.objExists(ref + ".maxDistance"):
                 maximum = cmds.getAttr(ref + ".maxDistance")
             else:
-                maximum = max(min((points[index].distanceTo(point) for i, point in enumerate(points) if i != index),
+                maximum = max(min((points[index].distanceTo(point) for i, point in enumerate(points) if i != index and shortName(specs[i]["control"]) != shortName(spec["control"])),
                                   default=radius), 0.001)
         if not 0 <= minimum < maximum <= 2:
             raise ValueError("Rig Auto Fnc: original Diana distance attributes require 0 <= Min < Max <= 2: " + spec["control"])
@@ -413,20 +923,6 @@ def Run(data, *args):
 def runFromForm(data, *args):
     saveSettings(data)
     return Run(data)
-
-
-def Form(data, *args):
-    ui = NLTA_General.LoadModule("Scene_Form").Create(data)
-    buttons = ui["buttonUI"]
-    STATE["list"] = ui["listUI"]
-    row = cmds.rowColumnLayout(parent=buttons, numberOfColumns=5)
-    cmds.button(parent=row, label="Add Reader", command=lambda *unused: addReader())
-    cmds.button(parent=row, label="Import JSON", command=partial(importJson, data))
-    cmds.button(parent=row, label="Save", command=partial(saveSettings, data))
-    cmds.button(parent=row, label="Run", command=partial(runFromForm, data))
-    cmds.button(parent=row, label="Export Py", command=partial(ExportPython, data))
-    cmds.text(parent=buttons, label="Ref V = -1 / Max Distance = 0: Auto. Two Items on one channel: Akali Max x 2.", align="left")
-    loadForm(getData(data))
 
 
 def createPoseReaderSystem(
