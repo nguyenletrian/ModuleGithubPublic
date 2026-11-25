@@ -238,6 +238,8 @@ def _validate_entries(records):
             label = "Extra Transform"
         if kind == "MatchRotatePair" and label in ("Match Rotate Pair", "MatchRotatePair"):
             label = "Match Rotate Vector"
+        if kind == "MatchRotate":
+            label = "Match Rotate"
         cleaned.append({
             "id": key, "kind": kind,
             "name": label,
@@ -394,6 +396,8 @@ def _read_manifest():
             label = "Extra Transform"
         if item["kind"] == "MatchRotatePair" and label in ("Match Rotate Pair", "MatchRotatePair"):
             label = "Match Rotate Vector"
+        if item["kind"] == "MatchRotate":
+            label = "Match Rotate"
         result.append({
             "id": identifier,
             "kind": item["kind"],
@@ -1018,11 +1022,13 @@ class RetargetCard(QtWidgets.QFrame):
         detail = QtWidgets.QVBoxLayout(self.details)
         detail.setContentsMargins(7, 5, 5, 3)
         detail.setSpacing(6)
-        name_label = QtWidgets.QLabel("Module Name")
-        detail.addWidget(name_label)
-        self.name = QtWidgets.QLineEdit(record["name"])
-        detail.addWidget(self.name)
-        self.name.textChanged.connect(_queue_save)
+        self.name = None
+        if self.kind != "MatchRotate":
+            name_label = QtWidgets.QLabel("Module Name")
+            detail.addWidget(name_label)
+            self.name = QtWidgets.QLineEdit(record["name"])
+            detail.addWidget(self.name)
+            self.name.textChanged.connect(_queue_save)
 
         fields = list(_module(self.kind).Fields())
         left_title, left, right_title, right, shared = (
@@ -1639,7 +1645,7 @@ class RetargetCard(QtWidgets.QFrame):
         """Return JSON-compatible data collected from this card."""
         record = _get_step(self.identifier)
         values = copy.deepcopy(record["data"])
-        name = self.name.text().strip()
+        name = self.name.text().strip() if self.name is not None else _module(self.kind).LABEL
         if not name:
             raise ValueError("Module Name cannot be empty.")
         for key, (kind, widget) in self.widgets.items():
@@ -1699,8 +1705,11 @@ class RetargetCard(QtWidgets.QFrame):
             values[key] = value
         if self.kind == "SetValue":
             values = {"items": values.get("items", [])}
-        elif self.kind in ("MatchRotatePair", "MatchRotate"):
+        elif self.kind == "MatchRotatePair":
             values = {"pairs": values.get("pairs", [])}
+        elif self.kind == "MatchRotate":
+            values = {"pairs": values.get("pairs", []),
+                      "mirror": bool(values.get("mirror", True))}
         return {"name": name, "order": self.order.value(),
                 "enabled": self.enabled.isChecked(), "data": values}
 

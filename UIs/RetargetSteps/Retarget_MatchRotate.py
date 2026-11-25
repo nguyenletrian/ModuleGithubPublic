@@ -1,6 +1,7 @@
 """One-time world orientation match using automatic signed local-axis mapping."""
 import itertools
 import math
+import re
 
 import maya.cmds as cmds
 import maya.api.OpenMaya as om
@@ -18,11 +19,12 @@ def PairData(pair):
 
 
 def DefaultSetting():
-    return {"pairs": [PairData({})]}
+    return {"mirror": True, "pairs": [PairData({})]}
 
 
 def Fields():
-    return [("Rotation Pairs", "pairs", "match_rotate_pairs")]
+    return [("Mirror", "mirror", "bool"),
+            ("Rotation Pairs", "pairs", "match_rotate_pairs")]
 
 
 def _namespace(role, context):
@@ -43,12 +45,32 @@ def _namespace(role, context):
     return str(ns).strip(":")
 
 
+def _mirror_name(name):
+    """Swap explicit side tokens without changing unrelated letters."""
+    swaps = {"L": "R", "R": "L", "l": "r", "r": "l",
+             "Left": "Right", "Right": "Left",
+             "left": "right", "right": "left",
+             "LEFT": "RIGHT", "RIGHT": "LEFT"}
+    patterns = (
+        r"(?<=FBXASC032)[LR](?=FBXASC032)",
+        r"(?<![A-Za-z0-9])(?:Left|Right|left|right|LEFT|RIGHT|L|R|l|r)(?![A-Za-z0-9])",
+        r"^(?:Left|Right)(?=[A-Z0-9])",
+        r"(?:Left|Right)$",
+    )
+    for pattern in patterns:
+        mirrored, count = re.subn(pattern, lambda match: swaps[match.group()], name)
+        if count:
+            return mirrored
+    return name
+
+
 def _resolve_pairs(settings, context):
-    """Resolve only user-selected objects, never infer object pairings."""
+    """Resolve explicit pairs and, when enabled, their opposite-side pairs."""
     pairs = settings.get("pairs") or []
     if not isinstance(pairs, list) or not pairs:
         raise ValueError("Match Rotate: add at least one From / To pair.")
     result = []
+    inputs = []
     for index, raw in enumerate(pairs, start=1):
         if not isinstance(raw, dict):
             raise ValueError("Invalid Match Rotate pair: " + str(index))
@@ -57,8 +79,28 @@ def _resolve_pairs(settings, context):
         target = pair["to"].strip()
         if not source or not target:
             raise ValueError("Match Rotate Pair {}: select From and To.".format(index))
-        result.append((rt.resolve(_namespace(pair["from_role"], context), source),
-                       rt.resolve(_namespace(pair["to_role"], context), target)))
+        from_ns = _namespace(pair["from_role"], context)
+        to_ns = _namespace(pair["to_role"], context)
+        resolved = (rt.resolve(from_ns, source), rt.resolve(to_ns, target))
+        result.append(resolved)
+        inputs.append((from_ns, to_ns, resolved))
+
+    if settings.get("mirror", True):
+        explicit_targets = {target for _, target in result}
+        for from_ns, to_ns, (source, target) in inputs:
+            source_name, target_name = rt.leaf(source), rt.leaf(target)
+            opposite_target = _mirror_name(target_name)
+            if opposite_target == target_name:
+                continue
+            mirror_target = rt.resolve(to_ns, opposite_target)
+            # An explicitly configured opposite side takes precedence.
+            if mirror_target in explicit_targets:
+                continue
+            opposite_source = _mirror_name(source_name)
+            if opposite_source == source_name:
+                raise ValueError("Mirror needs a recognizable From-side name: " +
+                                 source_name)
+            result.append((rt.resolve(from_ns, opposite_source), mirror_target))
     return result
 
 

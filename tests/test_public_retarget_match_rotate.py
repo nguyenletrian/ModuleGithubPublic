@@ -1,6 +1,7 @@
 """Offline tests for automatic Match Rotate mapping."""
 import ast
 import itertools
+import re
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -48,7 +49,7 @@ class MatchRotateTests(unittest.TestCase):
         env = scope("PairData", "_resolve_pairs",
                     _namespace=lambda role, context: role,
                     rt=SimpleNamespace(resolve=resolve))
-        pairs = env["_resolve_pairs"]({"pairs": [
+        pairs = env["_resolve_pairs"]({"mirror": False, "pairs": [
             {"from_role": "REF", "from": "Bip001Arm",
              "to_role": "Rig", "to": "R_Shoulder_FK"},
             {"from_role": "Rig", "from": "ControlA",
@@ -64,10 +65,33 @@ class MatchRotateTests(unittest.TestCase):
 
     def test_default_has_one_pair_and_no_namespace_wide_auto_mapping(self):
         env = scope("PairData", "DefaultSetting", "Fields")
-        self.assertEqual(env["DefaultSetting"](), {"pairs": [
+        self.assertEqual(env["DefaultSetting"](), {"mirror": True, "pairs": [
             {"from_role": "REF", "from": "", "to_role": "Rig", "to": ""}]})
-        self.assertEqual(env["Fields"](),
-                         [("Rotation Pairs", "pairs", "match_rotate_pairs")])
+        self.assertEqual(env["Fields"](), [
+            ("Mirror", "mirror", "bool"),
+            ("Rotation Pairs", "pairs", "match_rotate_pairs")])
+
+    def test_shared_mirror_expands_all_side_pairs_and_skips_center(self):
+        env = scope("PairData", "_mirror_name", "_resolve_pairs", re=re,
+                    _namespace=lambda role, context: role,
+                    rt=SimpleNamespace(resolve=lambda ns, name: ns + ":" + name,
+                                       leaf=lambda node: node.split(":")[-1]))
+        rows = [
+            {"from": "Bip001FBXASC032RFBXASC032UpperArm", "to": "R_Shoulder_FK"},
+            {"from": "R_Hand", "to": "R_Wrist_FK"},
+            {"from": "Spine", "to": "Chest_FK"}]
+        resolve = env["_resolve_pairs"]
+        pairs = resolve({"pairs": rows}, {})
+        self.assertEqual(len(pairs), 5)
+        self.assertIn(("REF:Bip001FBXASC032LFBXASC032UpperArm",
+                       "Rig:L_Shoulder_FK"), pairs)
+        self.assertIn(("REF:L_Hand", "Rig:L_Wrist_FK"), pairs)
+        self.assertEqual(len(resolve({"mirror": False, "pairs": rows}, {})), 3)
+        rows.append({"from": "LeftHand", "to": "L_Wrist_FK"})
+        pairs = resolve({"mirror": True, "pairs": rows}, {})
+        self.assertEqual(len(pairs), 5)
+        self.assertIn(("REF:LeftHand", "Rig:L_Wrist_FK"), pairs)
+        self.assertNotIn(("REF:L_Hand", "Rig:L_Wrist_FK"), pairs)
 
     def test_new_module_is_registered_and_optional(self):
         ui = (ROOT / "UIs/Retarget.py").read_text(encoding="utf-8")
