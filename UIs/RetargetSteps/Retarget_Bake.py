@@ -39,8 +39,7 @@ def _namespace(role, context):
 
 
 def _range(node):
-    keys = cmds.keyframe(node, query=True, timeChange=True, animation="objects",
-                         hierarchy="none", shape=False) or []
+    keys = cmds.keyframe(node, query=True, timeChange=True) or []
     if not keys:
         raise ValueError("Bake range object has no animation keys: " + node)
     return int(math.floor(min(keys))), int(math.ceil(max(keys)))

@@ -23,7 +23,7 @@ class BakeTests(unittest.TestCase):
         calls = []
         def keyframe(node, **kw):
             self.assertEqual(node, "Anim:Pelvis")
-            self.assertEqual(kw["hierarchy"], "none")
+            self.assertEqual(kw, {"query": True, "timeChange": True})
             return [-2.5, 10, 50.25]
         def get_attr(plug, **kw):
             self.assertNotIn("settable", kw)
