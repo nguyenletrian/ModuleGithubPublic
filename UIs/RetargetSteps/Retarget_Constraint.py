@@ -39,21 +39,24 @@ def Fields():
     return [("Constraint Pairs", "pairs", "constraint_pairs")]
 
 
-def _namespaces(context):
+def _namespaces(context, from_role="REF"):
     refs = context.get("reference_namespaces") or {}
-    # The General Setting role map is authoritative, including manual Run.
-    # Do not reuse an animation/source namespace left over from an earlier step.
-    ref = refs.get("reference_pose") or context.get("reference_pose_namespace")
-    anim = refs.get("old_animations") or context.get("source_namespace_animation")
+    # Resolve the selected driver only. REF -> Rig never needs Animation.
+    if from_role == "REF":
+        source = refs.get("reference_pose") or context.get("reference_pose_namespace")
+        if context.get("reference_pose_loaded") is False:
+            raise ValueError("Constraint requires a Reference Pose.")
+    elif from_role == "Anim":
+        source = refs.get("old_animations") or context.get("source_namespace_animation")
+    else:
+        raise ValueError("Invalid Constraint From namespace.")
     rig = refs.get("new_rig") or context.get("target_namespace")
-    if context.get("reference_pose_loaded") is False or not ref:
-        raise ValueError("Constraint requires a Reference Pose.")
-    if not anim or not rig:
-        raise ValueError("Constraint requires the Animation and Rig namespaces.")
-    ref, anim, rig = (str(ns).strip(":") for ns in (ref, anim, rig))
-    if len({ref, anim, rig}) != 3:
-        raise ValueError("Constraint requires separate REF, Anim and Rig namespaces.")
-    return ref, anim, rig
+    if not source or not rig:
+        raise ValueError("Constraint requires the selected From and Rig namespaces.")
+    source, rig = (str(ns).strip(":") for ns in (source, rig))
+    if source == rig:
+        raise ValueError("Constraint From and To must use different namespaces.")
+    return source, rig
 
 
 def _resolve(namespace, name):
@@ -77,15 +80,15 @@ def _world(node):
     return om.MMatrix(cmds.xform(node, query=True, worldSpace=True, matrix=True))
 
 
-def _offset(ref, target):
-    return list(_world(target) * _world(ref).inverse())
+def _offset(source, target):
+    return list(_world(target) * _world(source).inverse())
 
 
-def _build_extra(anim, target, matrix):
-    namespace = anim.split("|")[-1].rpartition(":")[0]
+def _build_extra(source, target, matrix):
+    namespace = source.split("|")[-1].rpartition(":")[0]
     name = ":" + (namespace + ":" if namespace else "") + rt.leaf(target) + "_extraJoint"
-    joint = cmds.createNode("joint", name=name, parent=anim, skipSelect=True)
-    joint = anim + "|" + joint.split("|")[-1] if not joint.startswith("|") else joint
+    joint = cmds.createNode("joint", name=name, parent=source, skipSelect=True)
+    joint = source + "|" + joint.split("|")[-1] if not joint.startswith("|") else joint
     # A fresh joint has identity local TRS and jointOrient. Store the entire
     # bind offset without Euler decomposition or joint scale compensation.
     cmds.setAttr(joint + ".segmentScaleCompensate", False)
@@ -150,38 +153,31 @@ def _expand_pairs(rows):
 
 def Run(settings, context):
     settings = NormalizeSettings(settings)
-    ref_ns, anim_ns, rig_ns = _namespaces(context)
-    from_role = settings.get("from_role", "REF")
-    to_role = settings.get("to_role", "Rig")
-    if from_role not in ("REF", "Anim") or to_role != "Rig":
-        raise ValueError("Constraint From must be REF or Anim, and To must be Rig.")
+    from_role = settings["from_role"]
+    source_ns, rig_ns = _namespaces(context, from_role)
     pending = []
     targets = set()
     existing = {entry["target"] for entry in context.get("constraint_pairs", [])
                 if any(cmds.objExists(node) for node in entry["constraints"])}
     for pair in _expand_pairs(settings.get("pairs", [])):
-        if from_role == "REF":
-            ref = _resolve(ref_ns, pair["from"])
-            anim = _resolve(anim_ns, rt.leaf(ref))
-        else:
-            anim = _resolve(anim_ns, pair["from"])
-            ref = _resolve(ref_ns, rt.leaf(anim))
+        source = _resolve(source_ns, pair["from"])
         target = _resolve(rig_ns, pair["to"])
         if target in targets or target in existing:
             raise ValueError("Constraint already configured for: " + target)
         targets.add(target)
-        pending.append((pair, ref, anim, target, _offset(ref, target)))
+        pending.append((pair, source, target, _offset(source, target)))
 
-    # Capture every REF/rig offset before any control receives a constraint.
-    # The animation can be at any frame when the helpers are created.
+    # Capture all source/rig offsets before any control receives a constraint.
     entries = []
-    print("[Constraint] REF={}, Anim={}, Rig={}".format(ref_ns, anim_ns, rig_ns))
-    for pair, ref, anim, target, offset in pending:
-        extra = _build_extra(anim, target, offset)
-        print("[Constraint] REF bind: {} | Animation parent: {} | Driver: {} | Driven: {}".format(
-            ref, anim, extra, target))
+    print("[Constraint] From {}={} -> Rig={}".format(from_role, source_ns, rig_ns))
+    for pair, source, target, offset in pending:
+        extra = _build_extra(source, target, offset)
+        print("[Constraint] Source parent: {} | Driver: {} | Driven: {}".format(
+            source, extra, target))
         constraints = _connect(extra, target, pair)
-        entries.append({"reference": ref, "source": anim, "target": target, "extra_joint": extra,
+        entries.append({"reference": source if from_role == "REF" else None,
+                        "source_role": from_role, "source": source,
+                        "target": target, "extra_joint": extra,
                         "constraints": constraints,
                         "translate": pair["translate"], "rotate": pair["rotate"],
                         "scale": pair["scale"]})
