@@ -1,6 +1,5 @@
 import os
 import json
-import math
 import inspect
 from datetime import datetime
 from functools import partial
@@ -28,7 +27,8 @@ def getData(data):
     if not os.path.isfile(path):
         return {"version": 2, "group": "RigUtil", "items": []}
     with open(path, encoding="utf-8") as stream:
-        return json.load(stream)
+        config = json.load(stream)
+    return config if isinstance(config, dict) else {"version": 2, "group": "RigUtil", "items": []}
 
 
 def writeData(data, config):
@@ -112,6 +112,7 @@ def addReader(spec=None, *args):
 def convertConfig(config):
     result = {"version": 2, "group": config.get("group", "RigUtil"), "items": []}
     discarded = 0
+    simplified = 0
     for item in config.get("items", []):
         reader = {key: item.get(key, "") for key in ("id", "sphere", "parent", "end")}
         reader["drivens"] = []
@@ -123,6 +124,9 @@ def convertConfig(config):
                 subs = entries[index] if index < len(entries) else []
                 sub = subs[0] if subs else {}
                 discarded += max(0, len(subs) - 1)
+                if (sub.get("axis", "Z") != "Z" or sub.get("outputType", "rotate") != "rotate"
+                        or sub.get("reverseU") or sub.get("invertRotate") or sub.get("strength", 1) != 1):
+                    simplified += 1
                 v = sub.get("refV")
                 if v is None and index < len(item.get("refV", [])):
                     v = item["refV"][index]
@@ -132,6 +136,8 @@ def convertConfig(config):
         result["items"].append(reader)
     if discarded:
         cmds.warning("Rig Auto Fnc: {} extra Sub Items ignored; only the first is imported.".format(discarded))
+    if simplified:
+        cmds.warning("Rig Auto Fnc: {} Driven settings simplified to original Rotate Z.".format(simplified))
     return result
 
 
@@ -228,6 +234,8 @@ def resolve(reader):
 
 def buildScript(config):
     config = convertConfig(config)
+    if not config["items"]:
+        raise ValueError("Rig Auto Fnc: add at least one Pose Reader")
     lines = ["import maya.cmds as cmds", "", "", "def main():"]
     def emit(line=""):
         lines.append("    " + line if line else "")
