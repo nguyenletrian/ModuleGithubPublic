@@ -46,8 +46,9 @@ def jointName(control):
     return name[:-3] if name.endswith("_FK") else name
 
 
-def referenceName(sphere, control):
-    names = [sphere + "_" + name + "_ref_follicle" for name in (jointName(control), shortName(control))]
+def referenceName(sphere, control, index=1):
+    suffix = "" if index == 1 else "_Sub{:02d}".format(index)
+    names = [sphere + "_" + name + suffix + "_ref_follicle" for name in (jointName(control), shortName(control))]
     return next((name for name in names if cmds.objExists(name)), names[0])
 
 
@@ -81,6 +82,12 @@ def addDriven(row, spec=None, *args):
     control = spec.get("control", "")
     driven["control"] = textField(col, "Control", control)
     driven["target"] = textField(col, "Target", spec.get("target", shortName(control) + "_Target" if control else ""))
+    line = cmds.rowLayout(parent=col, numberOfColumns=2, adjustableColumn=2, columnWidth2=(85, 150))
+    cmds.text(parent=line, label="Output", align="left")
+    driven["output"] = cmds.optionMenu(parent=line)
+    for channel in ("rotateX", "rotateY", "rotateZ"):
+        cmds.menuItem(parent=driven["output"], label=channel)
+    cmds.optionMenu(driven["output"], e=True, value=spec.get("output", "rotateZ"))
     for key, label, default in (("refV", "Ref V", -1.0), ("minDistance", "Min Distance", 0.0),
                                 ("maxDistance", "Max Distance", 0.0), ("startAngle", "Start Angle", 10.0)):
         line = cmds.rowLayout(parent=col, numberOfColumns=2, adjustableColumn=2, columnWidth2=(85, 150))
@@ -175,6 +182,7 @@ def saveSettings(data, *args):
         reader["drivens"] = []
         for driven in row["drivens"]:
             spec = {key: cmds.textField(driven[key], q=True, text=True).strip() for key in ("control", "target")}
+            spec["output"] = cmds.optionMenu(driven["output"], q=True, value=True)
             for key in ("refV", "minDistance", "maxDistance", "startAngle"):
                 spec[key] = cmds.floatField(driven[key], q=True, value=True)
             if spec["refV"] < 0:
@@ -208,9 +216,13 @@ def resolve(reader):
     specs = reader["drivens"]
     values = []
     points = []
+    counts = {}
+    ref_names = []
     for spec in specs:
         control = shortName(spec["control"])
-        ref = referenceName(sphere, control)
+        counts[control] = counts.get(control, 0) + 1
+        ref = referenceName(sphere, control, counts[control])
+        ref_names.append(ref)
         v = spec.get("refV")
         if v is None or v < 0:
             if cmds.objExists(ref + ".refV"):
@@ -232,7 +244,7 @@ def resolve(reader):
     for index, spec in enumerate(specs):
         minimum, maximum = float(spec["minDistance"]), float(spec["maxDistance"])
         if maximum == 0:
-            ref = referenceName(sphere, spec["control"])
+            ref = ref_names[index]
             if cmds.objExists(ref + ".maxDistance"):
                 maximum = cmds.getAttr(ref + ".maxDistance")
             else:
@@ -253,7 +265,13 @@ def buildScript(config):
     lines = ["import maya.cmds as cmds", "", "", "def main():"]
     def emit(line=""):
         lines.append("    " + line if line else "")
-    seen_targets, seen_controls, seen_spheres = set(), set(), set()
+    seen_targets, seen_spheres = set(), set()
+    control_counts = {}
+    for reader in config["items"]:
+        for spec in reader["drivens"]:
+            control = shortName(spec["control"])
+            control_counts[control] = control_counts.get(control, 0) + 1
+    created_attrs = set()
     for reader in config["items"]:
         if not reader["drivens"]:
             raise ValueError("Rig Auto Fnc: add Driven controls to " + reader["id"])
@@ -263,16 +281,25 @@ def buildScript(config):
         ref_parameterV, min_max_distance = resolve(reader)
         pose_reader = shortName(reader["sphere"])
         controls = [shortName(d["control"]) for d in reader["drivens"]]
-        shoulder_joints = [jointName(control) for control in controls]
+        shoulder_joints = []
+        counts = {}
+        for control in controls:
+            counts[control] = counts.get(control, 0) + 1
+            suffix = "" if counts[control] == 1 else "_Sub{:02d}".format(counts[control])
+            shoulder_joints.append(jointName(control) + suffix)
         targets = [shortName(d.get("target") or shortName(d["control"]) + "_Target") for d in reader["drivens"]]
         if pose_reader in seen_spheres:
             raise ValueError("Rig Auto Fnc: one item per original pose reader: " + pose_reader)
         seen_spheres.add(pose_reader)
-        for control, target in zip(controls, targets):
-            if control in seen_controls or target in seen_targets:
-                raise ValueError("Rig Auto Fnc: original script requires one output per Control and Target: " + control)
-            seen_controls.add(control)
-            seen_targets.add(target)
+        outputs = [d.get("output", "rotateZ") for d in reader["drivens"]]
+        attributes = ["AutoFollow" if control_counts[control] > 1 else attribute_name for control in controls]
+        for target, output in zip(targets, outputs):
+            if output not in ("rotateX", "rotateY", "rotateZ"):
+                raise ValueError("Rig Auto Fnc: invalid output: " + output)
+            plug = target + "." + output
+            if plug in seen_targets:
+                raise ValueError("Rig Auto Fnc: one connection per output channel: " + plug)
+            seen_targets.add(plug)
         if len(set(shoulder_joints)) != len(shoulder_joints):
             raise ValueError("Rig Auto Fnc: duplicate shoulder joint name")
         emit()
@@ -284,11 +311,21 @@ def buildScript(config):
         emit()
         emit("shoulder_joints = " + repr(shoulder_joints))
         conventional_controls = controls == [name + "_FK" for name in shoulder_joints]
-        conventional_targets = targets == [name + "_Target" for name in controls]
+        conventional_targets = targets == [name + "_Target" for name in controls] and all(output == "rotateZ" for output in outputs)
+        create_indices = []
+        for i, (control, attribute) in enumerate(zip(controls, attributes)):
+            key = (control, attribute)
+            if key not in created_attrs:
+                create_indices.append(i)
+                created_attrs.add(key)
+        simple_attributes = len(set(attributes)) == 1 and len(create_indices) == len(controls)
         if not conventional_controls:
             emit("shoulderguard_controls = " + repr(controls))
         if not conventional_targets:
-            emit("shoulderguard_targets = " + repr(targets))
+            emit("shoulderguard_targets = " + repr([target + "." + output for target, output in zip(targets, outputs)]))
+        if not simple_attributes:
+            emit("attribute_names = " + repr(attributes))
+            emit("create_attribute_indices = " + repr(tuple(create_indices)))
         emit("cp_follicle_shape, cpos = createPoseReaderSystem({!r}, {!r}, {!r})".format(pose_reader, shortName(reader["parent"]), shortName(reader["end"])))
         emit()
         emit("raise_influence_nodes = createSkirtRigSystem(")
@@ -300,11 +337,16 @@ def buildScript(config):
         emit("# Connect master control")
         emit("for i, shoulder_joint in enumerate(shoulder_joints):")
         emit('    shoulderguard_control = f"{shoulder_joint}_FK"' if conventional_controls else "    shoulderguard_control = shoulderguard_controls[i]")
-        emit('    cmds.addAttr(shoulderguard_control, ln="autoShoulderGuard", at="double", min=0, max=2, dv=1, k=True)'.replace("autoShoulderGuard", attribute_name))
-        emit('    cmds.connectAttr(f"{shoulderguard_control}.autoShoulderGuard", f"{raise_influence_nodes[i]}.input2X")'.replace("autoShoulderGuard", attribute_name))
+        if simple_attributes:
+            emit('    cmds.addAttr(shoulderguard_control, ln="autoShoulderGuard", at="double", min=0, max=2, dv=1, k=True)'.replace("autoShoulderGuard", attributes[0]))
+            emit('    cmds.connectAttr(f"{shoulderguard_control}.autoShoulderGuard", f"{raise_influence_nodes[i]}.input2X")'.replace("autoShoulderGuard", attributes[0]))
+        else:
+            emit("    if i in create_attribute_indices:")
+            emit('        cmds.addAttr(shoulderguard_control, ln=attribute_names[i], at="double", min=0, max=2, dv=1, k=True)')
+            emit('    cmds.connectAttr(f"{shoulderguard_control}.{attribute_names[i]}", f"{raise_influence_nodes[i]}.input2X")')
         emit()
         emit("    # Connect lift influence")
-        emit('    cmds.connectAttr(f"{raise_influence_nodes[i]}.outputX", f"{shoulderguard_control}_Target.rotateZ")' if conventional_targets else '    cmds.connectAttr(f"{raise_influence_nodes[i]}.outputX", f"{shoulderguard_targets[i]}.rotateZ")')
+        emit('    cmds.connectAttr(f"{raise_influence_nodes[i]}.outputX", f"{shoulderguard_control}_Target.rotateZ")' if conventional_targets else '    cmds.connectAttr(f"{raise_influence_nodes[i]}.outputX", shoulderguard_targets[i])')
     lines.extend(["", "", inspect.getsource(createPoseReaderSystem).rstrip(), "", "",
                   inspect.getsource(createSkirtRigSystem).rstrip(), "", "",
                   'if __name__ == "__main__":', "    main()", ""])
@@ -342,7 +384,7 @@ def Form(data, *args):
     cmds.button(parent=row, label="Save", command=partial(saveSettings, data))
     cmds.button(parent=row, label="Run", command=partial(runFromForm, data))
     cmds.button(parent=row, label="Export Py", command=partial(ExportPython, data))
-    cmds.text(parent=buttons, label="Ref V = -1 / Max Distance = 0: Auto. Range 0-2. Original Rotate Z. Clean rig.", align="left")
+    cmds.text(parent=buttons, label="Ref V = -1 / Max Distance = 0: Auto. Multiple outputs on one Control share AutoFollow.", align="left")
     loadForm(getData(data))
 
 
