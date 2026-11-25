@@ -209,7 +209,8 @@ class ConstraintTests(unittest.TestCase):
                                 parentConstraint=constraint("parentConstraint"),
                                 scaleConstraint=constraint("scaleConstraint"),
                                 delete=lambda nodes: calls.append(("delete", nodes)),
-                                parent=reparent, ls=lambda joint, **kw: [joint]))
+                                parent=reparent, ls=lambda joint, **kw: [joint],
+                                makeIdentity=lambda joint, **kw: calls.append(("freeze", joint, kw))))
                 joint = env["_build_extra"](parent, target, {"scale": scale}, maintain)
                 match = target if maintain else parent
                 expected = [
@@ -222,6 +223,8 @@ class ConstraintTests(unittest.TestCase):
                         ("scaleConstraint", match, name, {"maintainOffset": False}),
                         ("delete", ["scaleConstraint_temp"])])
                 expected.append(("parent", name, parent, {"absolute": True}))
+                expected.append(("freeze", parent + "|" + name,
+                                 {"apply": True, "translate": False, "rotate": True, "scale": False}))
                 self.assertEqual(calls, expected)
                 self.assertEqual(joint, parent + "|" + name)
 

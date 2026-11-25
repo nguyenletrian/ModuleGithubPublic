@@ -91,7 +91,9 @@ def _build_extra(source, target, pair, maintain_offset=True):
     if pair["scale"]:
         cmds.delete(cmds.scaleConstraint(match, joint, maintainOffset=False))
     joint = cmds.parent(joint, source, absolute=True)[0]
-    return cmds.ls(joint, long=True)[0]
+    joint = cmds.ls(joint, long=True)[0]
+    cmds.makeIdentity(joint, apply=True, translate=False, rotate=True, scale=False)
+    return joint
 
 
 def _connect(extra, target, pair, maintain_offset=True):
