@@ -1302,7 +1302,7 @@ class RetargetCard(QtWidgets.QFrame):
         self.widgets[key] = (kind, widget)
 
     def _make_rotate_pairs(self, parent, pairs):
-        """One freely editable source/target list owned by Match Rotate Pair."""
+        """One freely editable direction-pair list owned by Match Rotate Pair."""
         self.rotate_pair_rows = []
         self.rotate_pair_layout = QtWidgets.QVBoxLayout()
         self.rotate_pair_layout.setSpacing(5)
@@ -1326,75 +1326,40 @@ class RetargetCard(QtWidgets.QFrame):
         title = QtWidgets.QLabel()
         header.addWidget(title)
         header.addStretch(1)
-        preview = QtWidgets.QPushButton("Analyze Axes")
-        preview.setToolTip("Preview axis matches at the current Maya pose")
-        header.addWidget(preview)
         delete = QtWidgets.QPushButton("X")
         delete.setFixedWidth(28)
         delete.setToolTip("Delete this rotation pair")
         header.addWidget(delete)
         content.addLayout(header)
 
-        source_role = QtWidgets.QComboBox()
-        source_role.addItems(["Rig", "Anim", "REF"])
-        source_role.setCurrentText(str(data.get("source_role") or "Anim"))
-        source_role.currentIndexChanged.connect(_queue_save)
-        source = QtWidgets.QLineEdit(str(data.get("source") or ""))
-        source.setPlaceholderText("Source object")
-        source.setMinimumWidth(0)
-        source.textChanged.connect(_queue_save)
-        source_pick = QtWidgets.QPushButton("Pick")
-        source_pick.setFixedWidth(44)
-        source_pick.clicked.connect(
-            lambda checked=False: _safe(
-                lambda: _pick_pair_object(source, source_role)))
-        source_line = QtWidgets.QHBoxLayout()
-        source_line.setSpacing(4)
-        source_line.addWidget(QtWidgets.QLabel("Source"))
-        source_line.addWidget(source_role)
-        source_line.addWidget(source, 1)
-        source_line.addWidget(source_pick)
-        content.addLayout(source_line)
-
-        target_role = QtWidgets.QComboBox()
-        target_role.addItems(["Rig", "Anim", "REF"])
-        target_role.setCurrentText(str(data.get("target_role") or "Rig"))
-        target_role.currentIndexChanged.connect(_queue_save)
-        target = QtWidgets.QLineEdit(str(data.get("target") or ""))
-        target.setPlaceholderText("Target object")
-        target.setMinimumWidth(0)
-        target.textChanged.connect(_queue_save)
-        target_pick = QtWidgets.QPushButton("Pick")
-        target_pick.setFixedWidth(44)
-        target_pick.clicked.connect(
-            lambda checked=False: _safe(
-                lambda: _pick_pair_object(target, target_role)))
-        target_line = QtWidgets.QHBoxLayout()
-        target_line.setSpacing(4)
-        target_line.addWidget(QtWidgets.QLabel("Target"))
-        target_line.addWidget(target_role)
-        target_line.addWidget(target, 1)
-        target_line.addWidget(target_pick)
-        content.addLayout(target_line)
-
-        axis_label = QtWidgets.QLabel("Axis Map: Not analyzed")
-        axis_label.setWordWrap(True)
-        content.addWidget(axis_label)
-        for field in (source, target):
-            field.textChanged.connect(
-                lambda text, label=axis_label:
-                label.setText("Axis Map: Not analyzed"))
-        for combo in (source_role, target_role):
-            combo.currentIndexChanged.connect(
-                lambda index, label=axis_label:
-                label.setText("Axis Map: Not analyzed"))
-        row = {"frame": frame, "title": title,
-               "source_role": source_role, "source": source,
-               "target_role": target_role, "target": target,
-               "axis_label": axis_label}
-        preview.clicked.connect(
-            lambda checked=False, selected=row: _safe(
-                lambda: self._analyze_rotate_pair(selected)))
+        data = _module("MatchRotatePair").PairData(data)
+        row = {"frame": frame, "title": title}
+        for key, label in (("from", "From"), ("from_child", "From Child"),
+                           ("to", "To"), ("to_child", "To Child")):
+            role = QtWidgets.QComboBox()
+            role.addItems(["Rig", "Anim", "REF"])
+            role.setCurrentText(data[key + "_role"])
+            role.currentIndexChanged.connect(_queue_save)
+            field = QtWidgets.QLineEdit(data[key])
+            field.setPlaceholderText(label + " object")
+            field.setMinimumWidth(0)
+            field.textChanged.connect(_queue_save)
+            pick = QtWidgets.QPushButton("Pick")
+            pick.setFixedWidth(44)
+            pick.clicked.connect(
+                lambda checked=False, f=field, r=role: _safe(
+                    lambda: _pick_pair_object(f, r)))
+            line = QtWidgets.QHBoxLayout()
+            line.setSpacing(4)
+            caption = QtWidgets.QLabel(label)
+            caption.setMinimumWidth(72)
+            line.addWidget(caption)
+            line.addWidget(role)
+            line.addWidget(field, 1)
+            line.addWidget(pick)
+            content.addLayout(line)
+            row[key + "_role"] = role
+            row[key] = field
         delete.clicked.connect(
             lambda checked=False, selected=row:
             self._remove_rotate_pair_row(selected))
@@ -1413,26 +1378,6 @@ class RetargetCard(QtWidgets.QFrame):
     def _number_rotate_pairs(self):
         for index, row in enumerate(self.rotate_pair_rows, start=1):
             row["title"].setText("Pair {:02d}".format(index))
-
-    def _analyze_rotate_pair(self, row):
-        context = _general_context(
-            _general_from_form(), dict(_STATE.get("context") or {}))
-        settings = {
-            key: row[key].currentText() if key.endswith("_role")
-            else row[key].text().strip()
-            for key in ("source_role", "source", "target_role", "target")
-        }
-        minimum = self.widgets["minimum_alignment"][1].value()
-        result = _module("MatchRotatePair").AnalyzePair(
-            settings, context, minimum)
-        axes = result["axes"]
-        message = ", ".join(
-            "{} -> {}".format(axis, axes[axis]) for axis in "XYZ")
-        row["axis_label"].setText(
-            "Axis Map: {} | Similarity {:.3f}".format(
-                message, result["similarity"]))
-        _status(message)
-        return result
 
     def _make_set_values(self, parent, value):
         """Build editable, ordered values inside one Set Value module."""
@@ -1684,10 +1629,11 @@ class RetargetCard(QtWidgets.QFrame):
                 value = self._pairs()
             elif kind == "rotate_pairs":
                 value = [
-                    {"source_role": row["source_role"].currentText(),
-                     "source": row["source"].text().strip(),
-                     "target_role": row["target_role"].currentText(),
-                     "target": row["target"].text().strip()}
+                    {key: (row[key].currentText() if key.endswith("_role")
+                           else row[key].text().strip())
+                     for key in ("from_role", "from", "from_child_role",
+                                 "from_child", "to_role", "to",
+                                 "to_child_role", "to_child")}
                     for row in widget]
             elif kind == "set_values":
                 value = [
@@ -1726,6 +1672,8 @@ class RetargetCard(QtWidgets.QFrame):
             values[key] = value
         if self.kind == "SetValue":
             values = {"items": values.get("items", [])}
+        elif self.kind == "MatchRotatePair":
+            values = {"pairs": values.get("pairs", [])}
         return {"name": name, "order": self.order.value(),
                 "enabled": self.enabled.isChecked(), "data": values}
 
