@@ -17,7 +17,8 @@ def PairData(pair):
 
 
 def DefaultSetting():
-    return {"from_role": "REF", "to_role": "Rig", "pairs": [PairData({})]}
+    return {"from_role": "REF", "to_role": "Rig", "maintain_offset": True,
+            "pairs": [PairData({})]}
 
 
 def NormalizeSettings(settings):
@@ -32,6 +33,7 @@ def NormalizeSettings(settings):
     if role not in ("REF", "Anim"):
         raise ValueError("Invalid Constraint From namespace.")
     return {"from_role": role, "to_role": "Rig",
+            "maintain_offset": bool(settings.get("maintain_offset", True)),
             "pairs": [PairData(row) for row in rows]}
 
 
@@ -96,16 +98,16 @@ def _build_extra(source, target, matrix):
     return joint
 
 
-def _connect(extra, target, pair):
+def _connect(extra, target, pair, maintain_offset=True):
     nodes = []
     if pair["translate"] and pair["rotate"]:
-        nodes.extend(cmds.parentConstraint(extra, target, maintainOffset=True))
+        nodes.extend(cmds.parentConstraint(extra, target, maintainOffset=maintain_offset))
     elif pair["translate"]:
-        nodes.extend(cmds.pointConstraint(extra, target, maintainOffset=True))
+        nodes.extend(cmds.pointConstraint(extra, target, maintainOffset=maintain_offset))
     elif pair["rotate"]:
-        nodes.extend(cmds.orientConstraint(extra, target, maintainOffset=True))
+        nodes.extend(cmds.orientConstraint(extra, target, maintainOffset=maintain_offset))
     if pair["scale"]:
-        nodes.extend(cmds.scaleConstraint(extra, target, maintainOffset=True))
+        nodes.extend(cmds.scaleConstraint(extra, target, maintainOffset=maintain_offset))
     return nodes
 
 
@@ -174,7 +176,7 @@ def Run(settings, context):
         extra = _build_extra(source, target, offset)
         print("[Constraint] Source parent: {} | Driver: {} | Driven: {}".format(
             source, extra, target))
-        constraints = _connect(extra, target, pair)
+        constraints = _connect(extra, target, pair, settings["maintain_offset"])
         entries.append({"reference": source if from_role == "REF" else None,
                         "source_role": from_role, "source": source,
                         "target": target, "extra_joint": extra,

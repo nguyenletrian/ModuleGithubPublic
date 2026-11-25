@@ -31,6 +31,7 @@ class ConstraintTests(unittest.TestCase):
         self.assertEqual((pair["translate"], pair["rotate"], pair["scale"]),
                          (False, True, False))
         self.assertFalse(pair["mirror"])
+        self.assertTrue(settings["maintain_offset"])
 
     def test_recover_pairs_saved_in_wrong_namespace_key(self):
         env = scope("PairData", "NormalizeSettings")
@@ -40,6 +41,8 @@ class ConstraintTests(unittest.TestCase):
         fixed = normalize({"from_role": "Anim", "to_role": edited, "pairs": stale})
         self.assertEqual(fixed["from_role"], "Anim")
         self.assertEqual(fixed["to_role"], "Rig")
+        self.assertTrue(fixed["maintain_offset"])
+        self.assertFalse(normalize({"maintain_offset": False})["maintain_offset"])
         self.assertEqual(fixed["pairs"], [env["PairData"](edited[0])])
         self.assertEqual(normalize({"to_role": [], "pairs": stale})["pairs"], [])
         self.assertEqual(normalize({"to_role": "Rig", "pairs": stale})["pairs"],
@@ -78,8 +81,7 @@ class ConstraintTests(unittest.TestCase):
         def make(kind):
             def constraint(source, target, **kw):
                 self.assertEqual((source, target), ("Extra", "Control"))
-                self.assertTrue(kw["maintainOffset"])
-                calls.append(kind)
+                calls.append((kind, kw["maintainOffset"]))
                 return [kind]
             return constraint
         env = scope("_connect", cmds=SimpleNamespace(
@@ -90,11 +92,13 @@ class ConstraintTests(unittest.TestCase):
             (True, False, False, ["point"]),
             (False, True, False, ["orient"]),
             (False, False, True, ["scale"])]:
-            calls.clear()
-            result = env["_connect"]("Extra", "Control",
-                                    {"translate": tr, "rotate": ro, "scale": sc})
-            self.assertEqual(result, expected)
-            self.assertEqual(calls, expected)
+            for maintain in (True, False):
+                calls.clear()
+                result = env["_connect"]("Extra", "Control",
+                                        {"translate": tr, "rotate": ro, "scale": sc},
+                                        maintain)
+                self.assertEqual(result, expected)
+                self.assertEqual(calls, [(kind, maintain) for kind in expected])
 
     def test_offsets_captured_before_constraints_using_selected_driver(self):
         events = []
@@ -104,8 +108,8 @@ class ConstraintTests(unittest.TestCase):
         def extra(anim, target, matrix):
             events.append(("extra", anim, target))
             return anim + "|extra"
-        def connect(joint, target, pair):
-            events.append(("constraint", joint, target))
+        def connect(joint, target, pair, maintain_offset):
+            events.append(("constraint", joint, target, maintain_offset))
             return ["constraint_" + target]
         env = scope("PairData", "NormalizeSettings", "_mirror_name", "_expand_pairs", "_namespaces", "Run",
                     re=re,
@@ -122,6 +126,7 @@ class ConstraintTests(unittest.TestCase):
             ("offset", "REF:Hand", "Rig:HandFK"),
             ("offset", "REF:Finger", "Rig:FingerFK")])
         self.assertEqual(events[2], ("extra", "REF:Hand", "Rig:HandFK"))
+        self.assertEqual(events[3], ("constraint", "REF:Hand|extra", "Rig:HandFK", True))
         self.assertEqual(context["constraint_pairs"][0]["source"], "REF:Hand")
         self.assertEqual(context["constraint_pairs"][0]["source_role"], "REF")
         self.assertEqual(result["pairs"], 2)
@@ -130,10 +135,11 @@ class ConstraintTests(unittest.TestCase):
         events.clear()
         context = {"source_namespace_animation": "Anim", "target_namespace": "Rig",
                    "reference_pose_loaded": False}
-        env["Run"]({"from_role": "Anim", "to_role": "Rig", "pairs": [
+        env["Run"]({"from_role": "Anim", "to_role": "Rig", "maintain_offset": False, "pairs": [
             {"from": "Hand", "to": "HandFK"}]}, context)
         self.assertEqual(events[0], ("offset", "Anim:Hand", "Rig:HandFK"))
         self.assertEqual(events[1], ("extra", "Anim:Hand", "Rig:HandFK"))
+        self.assertEqual(events[2], ("constraint", "Anim:Hand|extra", "Rig:HandFK", False))
 
     def test_mirror_copies_trs_and_respects_explicit_opposite(self):
         env = scope("PairData", "_mirror_name", "_expand_pairs", re=re,

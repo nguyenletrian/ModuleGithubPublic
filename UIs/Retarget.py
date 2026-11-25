@@ -1123,6 +1123,12 @@ class RetargetCard(QtWidgets.QFrame):
                 namespace_row.addWidget(role, 1)
                 self.constraint_roles[role_key] = role
                 self.widgets[role_key] = ("choice", role)
+            maintain = QtWidgets.QCheckBox("Maintain")
+            maintain.setToolTip("Maintain Offset for all constraints in this module")
+            maintain.setChecked(data["maintain_offset"])
+            maintain.toggled.connect(_queue_save)
+            namespace_row.addWidget(maintain)
+            self.widgets["maintain_offset"] = ("bool", maintain)
             parent.addLayout(namespace_row)
             self._make_rotate_pairs(parent, data["pairs"])
             self.widgets[key] = (kind, self.rotate_pair_rows)
@@ -1879,6 +1885,7 @@ class RetargetCard(QtWidgets.QFrame):
         elif self.kind == "Constraint":
             values = {"from_role": values.get("from_role", "REF"),
                       "to_role": values.get("to_role", "Rig"),
+                      "maintain_offset": bool(values.get("maintain_offset", True)),
                       "pairs": values.get("pairs", [])}
         elif self.kind == "MatchTransform":
             values = {"pairs": values.get("pairs", [])}
