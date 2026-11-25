@@ -80,10 +80,10 @@ def _module(kind):
 
 def _new_step(kind, order):
     module = _module(kind)
-    # Stable 64-bit UUID suffix: unique per instance, even for Script copies.
-    identifier = uuid.uuid4().hex[:16]
+    # Every card is an independent module instance; its display name is not a key.
+    identifier = uuid.uuid4().hex
     while any(item["id"] == identifier for item in _STATE["steps"]):
-        identifier = uuid.uuid4().hex[:16]
+        identifier = uuid.uuid4().hex
     return {"id": identifier, "kind": kind,
             "name": module.LABEL, "order": int(order), "enabled": True,
             "data": module.DefaultSetting()}
@@ -1072,11 +1072,9 @@ class RetargetCard(QtWidgets.QFrame):
         self.refresh_title(record)
 
     def refresh_title(self, record):
-        # Keep friendly labels but identify repeatable instances by UUID.
-        suffix = ("  [{}]".format(record["id"][:8])
-                  if record["kind"] in ("Script", "PythonFile") else "")
-        self.title.setText("{}{}".format(record["name"], suffix))
-        self.title.setToolTip(record["name"])
+        # The visible name stays unchanged. The unique instance ID is in the tooltip.
+        self.title.setText(record["name"])
+        self.title.setToolTip("{}\nID: {}".format(record["name"], record["id"]))
         self.title.setEnabled(record.get("enabled", True))
 
     def _set_expanded(self, expanded):
@@ -1907,10 +1905,6 @@ def _add_step(*args):
     def work():
         _save_editor()
         kind = UIs["step_type"].currentData()
-        if kind not in ("Script", "PythonFile", "Transform",
-                         "OffsetPosition", "SetValue") and any(
-                s["kind"] == kind for s in _STATE["steps"]):
-            raise ValueError(kind + " already exists; edit its module.")
         record = _new_step(kind, max(
             (s["order"] for s in _STATE["steps"]), default=0) + 10)
         _STATE["steps"].append(record)
@@ -2080,11 +2074,6 @@ def _validate_sequence(batch, records=None):
     }
     for item in steps:
         kind = item["kind"]
-        if kind not in ("Script", "PythonFile", "Transform",
-                        "OffsetPosition", "SetValue") and kind in seen:
-            raise ValueError(
-                "Only Script, PythonFile, Extra Transform, Set Value and "
-                "Offset Position may be repeated: " + kind)
         if kind in ("Scale", "Rotate") and (
                 "Mapping" in seen or "Animation" in seen):
             raise ValueError(kind + " must run before Mapping / Animation.")
@@ -2119,7 +2108,7 @@ def _saved_execution_steps(batch):
 
 def _run_step(item, context):
     result = _module(item["kind"]).Run(copy.deepcopy(item["data"]), context)
-    _status("{}: {}".format(item["name"], result))
+    _status("{} [{}]: {}".format(item["name"], item["id"][:8], result))
     return result
 
 
