@@ -1,4 +1,4 @@
-"""Assign one Maya attribute directly to a value in a selected namespace."""
+"""Assign multiple Maya attribute values per object in a selected namespace."""
 import math
 import re
 
@@ -8,9 +8,23 @@ import NLTA_RetargetV2 as rt
 LABEL = "Set Value"
 
 
+def ItemData(item):
+    attributes = item.get("attributes")
+    if attributes is None:
+        attributes = [{"attribute": item.get("attribute", ""),
+                       "value": item.get("value", "0")}]
+    if not isinstance(attributes, list) or any(not isinstance(entry, dict) for entry in attributes):
+        raise ValueError("Set Value attributes must be a list of Attribute / Value entries.")
+    return {"source": item.get("source") or "Rig",
+            "object": str(item.get("object") or ""),
+            "mirror": bool(item.get("mirror", False)),
+            "attributes": [{"attribute": str(entry.get("attribute") or ""),
+                            "value": str(entry.get("value", "0"))}
+                           for entry in attributes]}
+
+
 def DefaultSetting():
-    return {"items": [{"source": "Rig", "object": "",
-                       "attribute": "", "value": "0", "mirror": False}]}
+    return {"items": [ItemData({})]}
 
 
 def Fields():
@@ -78,7 +92,7 @@ def _items(settings):
     """Accept current sub-items and one-value settings from older saved JSON."""
     if "items" in settings:
         items = settings["items"]
-    elif any(key in settings for key in ("source", "object", "attribute", "value")):
+    elif any(key in settings for key in ("source", "object", "attribute", "value", "attributes")):
         items = [settings]
     else:
         items = []
@@ -111,13 +125,11 @@ def Run(settings, context):
     for index, item in enumerate(_items(settings), start=1):
         if not isinstance(item, dict):
             raise ValueError("Set Value Sub Item {} is invalid.".format(index))
-        namespace = _namespace(item.get("source", "Rig"), context)
-        name = str(item.get("object") or "").strip()
-        attribute = str(item.get("attribute") or "").strip()
-        if not name or not attribute or "." in attribute:
-            raise ValueError(
-                "Set Value Sub Item {} needs an object and attribute.".format(
-                    index))
+        item = ItemData(item)
+        namespace = _namespace(item["source"], context)
+        name = item["object"].strip()
+        if not name or not item["attributes"]:
+            raise ValueError("Set Value Sub Item {} needs an object and attributes.".format(index))
         node = rt.resolve(namespace, name)
         nodes = [node]
         if item.get("mirror", False):
@@ -127,15 +139,19 @@ def Run(settings, context):
                 mirrored = rt.resolve(namespace, opposite)
                 if mirrored != node:
                     nodes.append(mirrored)
-        for destination in nodes:
-            plug = "{}.{}".format(destination, attribute)
-            if not cmds.objExists(plug):
-                raise ValueError("Set Value attribute not found: " + plug)
-            if not cmds.getAttr(plug, settable=True):
-                raise ValueError("Set Value attribute locked or connected: " + plug)
-            kind = cmds.getAttr(plug, type=True)
-            value = _attribute_value(kind, item.get("value", ""), plug)
-            changes.append((plug, kind, value))
+        for entry in item["attributes"]:
+            attribute = entry["attribute"].strip()
+            if not attribute or "." in attribute:
+                raise ValueError("Set Value Sub Item {} needs a valid attribute.".format(index))
+            for destination in nodes:
+                plug = "{}.{}".format(destination, attribute)
+                if not cmds.objExists(plug):
+                    raise ValueError("Set Value attribute not found: " + plug)
+                if not cmds.getAttr(plug, settable=True):
+                    raise ValueError("Set Value attribute locked or connected: " + plug)
+                kind = cmds.getAttr(plug, type=True)
+                value = _attribute_value(kind, entry["value"], plug)
+                changes.append((plug, kind, value))
 
     # Resolve every sub-item before making scene changes.
     for plug, kind, value in changes:

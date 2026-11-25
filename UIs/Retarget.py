@@ -728,7 +728,7 @@ def _pick_pair_object(field, role):
 
 
 def _pick_channel_attribute(attribute_field, object_field):
-    """Pick one Channel Box attribute and its object together."""
+    """Pick an attribute without changing the Sub Item's object."""
     selected = cmds.ls(selection=True, long=True, objectsOnly=True) or []
     if len(selected) != 1:
         raise ValueError("Select one object and one Channel Box attribute.")
@@ -742,7 +742,10 @@ def _pick_channel_attribute(attribute_field, object_field):
     attribute = str(attributes[0]).strip()
     if not attribute or not cmds.objExists("{}.{}".format(node, attribute)):
         raise ValueError("Selected Channel Box attribute does not exist.")
-    object_field.setText(rt.leaf(node))
+    if not object_field.text().strip():
+        raise ValueError("Pick the Sub Item object first.")
+    if rt.leaf(node) != rt.leaf(object_field.text().strip()):
+        raise ValueError("Select the Sub Item object to pick its attribute.")
     attribute_field.setText(attribute)
 
 
@@ -1492,7 +1495,7 @@ class RetargetCard(QtWidgets.QFrame):
         parent.addWidget(add)
 
     def _add_set_value_row(self, data=None):
-        data = data if isinstance(data, dict) else {}
+        data = _module("SetValue").ItemData(data if isinstance(data, dict) else {})
         frame = QtWidgets.QFrame(self.details)
         frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
         content = QtWidgets.QVBoxLayout(frame)
@@ -1525,7 +1528,7 @@ class RetargetCard(QtWidgets.QFrame):
         pick_obj = QtWidgets.QPushButton("Pick")
         pick_obj.setFixedWidth(44)
         pick_obj.clicked.connect(
-            lambda checked=False: _safe(lambda: _pick_transform(obj)))
+            lambda checked=False: _safe(lambda: _pick_pair_object(obj, namespace)))
 
         first = QtWidgets.QHBoxLayout()
         first.setSpacing(4)
@@ -1536,39 +1539,63 @@ class RetargetCard(QtWidgets.QFrame):
         first.addWidget(pick_obj)
         content.addLayout(first)
 
-        attribute = QtWidgets.QLineEdit(str(data.get("attribute") or ""))
-        attribute.setMinimumWidth(0)
-        attribute.setPlaceholderText("Attribute")
-        attribute.textChanged.connect(_queue_save)
-        pick_attr = QtWidgets.QPushButton("Pick")
-        pick_attr.setFixedWidth(44)
-        pick_attr.setToolTip("Pick one attribute in Maya Channel Box")
-        pick_attr.clicked.connect(
-            lambda checked=False: _safe(
-                lambda: _pick_channel_attribute(attribute, obj)))
-        value = QtWidgets.QLineEdit(str(data.get("value", "0")))
-        value.setMinimumWidth(75)
-        value.setPlaceholderText("Value")
-        value.textChanged.connect(_queue_save)
-
-        second = QtWidgets.QHBoxLayout()
-        second.setSpacing(4)
-        second.addWidget(QtWidgets.QLabel("Attribute"))
-        second.addWidget(attribute, 1)
-        second.addWidget(pick_attr)
-        second.addWidget(QtWidgets.QLabel("Value"))
-        second.addWidget(value, 1)
-        content.addLayout(second)
-
+        attributes = QtWidgets.QVBoxLayout()
+        attributes.setSpacing(3)
+        content.addLayout(attributes)
         row = {"frame": frame, "title": title, "source": namespace,
-               "object": obj, "attribute": attribute, "value": value,
-               "mirror": mirror}
+               "object": obj, "mirror": mirror, "attributes": [],
+               "attribute_layout": attributes}
+        for entry in data["attributes"]:
+            self._add_set_value_attribute(row, entry)
+        add_attribute = QtWidgets.QPushButton("+ Add Attribute")
+        add_attribute.clicked.connect(
+            lambda checked=False: self._add_set_value_attribute(row))
+        content.addWidget(add_attribute)
         delete.clicked.connect(
             lambda checked=False, selected=row:
             self._remove_set_value_row(selected))
         self.set_value_rows.append(row)
         self.set_value_list.addWidget(frame)
         self._number_set_value_rows()
+        _queue_save()
+
+    def _add_set_value_attribute(self, row, data=None):
+        data = data or {}
+        line = QtWidgets.QWidget(row["frame"])
+        layout = QtWidgets.QHBoxLayout(line)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        attribute = QtWidgets.QLineEdit(str(data.get("attribute") or ""))
+        attribute.setMinimumWidth(0)
+        attribute.setPlaceholderText("Attribute")
+        attribute.textChanged.connect(_queue_save)
+        pick = QtWidgets.QPushButton("Pick")
+        pick.setFixedWidth(44)
+        pick.setToolTip("Pick one attribute from the Sub Item object's Channel Box")
+        pick.clicked.connect(lambda checked=False: _safe(
+            lambda: _pick_channel_attribute(attribute, row["object"])))
+        value = QtWidgets.QLineEdit(str(data.get("value", "0")))
+        value.setMinimumWidth(75)
+        value.setPlaceholderText("Value / X, Y, Z")
+        value.setToolTip("For translate, rotate or scale, enter three values: X, Y, Z")
+        value.textChanged.connect(_queue_save)
+        delete = QtWidgets.QPushButton("X")
+        delete.setFixedWidth(24)
+        delete.setToolTip("Remove this attribute")
+        layout.addWidget(attribute, 1)
+        layout.addWidget(pick)
+        layout.addWidget(value, 1)
+        layout.addWidget(delete)
+        entry = {"frame": line, "attribute": attribute, "value": value}
+        row["attributes"].append(entry)
+        row["attribute_layout"].addWidget(line)
+        delete.clicked.connect(lambda checked=False: self._remove_set_value_attribute(row, entry))
+        _queue_save()
+
+    def _remove_set_value_attribute(self, row, entry):
+        row["attributes"].remove(entry)
+        row["attribute_layout"].removeWidget(entry["frame"])
+        entry["frame"].deleteLater()
         _queue_save()
 
     def _remove_set_value_row(self, row):
@@ -1753,8 +1780,10 @@ class RetargetCard(QtWidgets.QFrame):
                 value = [
                     {"source": row["source"].currentText(),
                      "object": row["object"].text().strip(),
-                     "attribute": row["attribute"].text().strip(),
-                     "value": row["value"].text(),
+                     "attributes": [
+                         {"attribute": entry["attribute"].text().strip(),
+                          "value": entry["value"].text()}
+                         for entry in row["attributes"]],
                      "mirror": row["mirror"].isChecked()}
                     for row in widget]
             elif kind == "bool":
