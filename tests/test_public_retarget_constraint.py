@@ -223,6 +223,20 @@ class ConstraintTests(unittest.TestCase):
         self.assertEqual(env["MatchByName"]({"from_role": "REF", "to_role": "REF"},
                                              context), [])
 
+    def test_empty_placeholder_ignored_and_partial_pair_identified(self):
+        env = scope("PairData", "_mirror_name", "_expand_pairs", re=re,
+                    rt=SimpleNamespace(leaf=lambda node: node.split(":")[-1]))
+        expand = env["_expand_pairs"]
+        valid = {"from": "Hand", "to": "HandFK"}
+        self.assertEqual(expand([{}, valid, {"from": " ", "to": " "},
+                                 {"from": "OnlyFrom", "rotate": False}]),
+                         [env["PairData"](valid)])
+        self.assertEqual(expand([{}]), [])
+        with self.assertRaisesRegex(ValueError, "Pair 2: missing From"):
+            expand([valid, {"to": "Gun_Body_FK"}])
+        with self.assertRaisesRegex(ValueError, "Pair 3: missing To"):
+            expand([{}, valid, {"from": "Hand"}])
+
     def test_mirror_copies_trs_and_respects_explicit_opposite(self):
         env = scope("PairData", "_mirror_name", "_expand_pairs", re=re,
                     rt=SimpleNamespace(leaf=lambda node: node.split(":")[-1]))

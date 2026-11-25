@@ -7,8 +7,8 @@ LABEL = "Constraint"
 
 
 def PairData(pair):
-    return {"from": str(pair.get("from") or ""),
-            "to": str(pair.get("to") or ""),
+    return {"from": str(pair.get("from") or "").strip(),
+            "to": str(pair.get("to") or "").strip(),
             "translate": bool(pair.get("translate", False)),
             "rotate": bool(pair.get("rotate", True)),
             "scale": bool(pair.get("scale", False)),
@@ -129,9 +129,18 @@ def _mirror_name(name):
     return name
 
 def _expand_pairs(rows):
-    pairs = [PairData(row) for row in rows]
-    pairs = [pair for pair in pairs
-             if any(pair[key] for key in ("translate", "rotate", "scale"))]
+    pairs = []
+    for index, row in enumerate(rows, 1):
+        pair = PairData(row)
+        if not any(pair[key] for key in ("translate", "rotate", "scale")):
+            continue
+        if not pair["from"] and not pair["to"]:
+            continue  # Empty editor placeholder, not a mapping.
+        if not pair["from"] or not pair["to"]:
+            missing = "From" if not pair["from"] else "To"
+            raise ValueError("Constraint Pair {}: missing {} object (From={!r}, To={!r})".format(
+                index, missing, pair["from"], pair["to"]))
+        pairs.append(pair)
     explicit = {rt.leaf(pair["to"]) for pair in pairs}
     generated = set()
     result = []
