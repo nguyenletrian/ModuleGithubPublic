@@ -1093,29 +1093,50 @@ class RetargetCard(QtWidgets.QFrame):
         if kind == "create_joint":
             data = _module("CreateJoint").JointData(value if isinstance(value, dict) else {})
             fields = {}
-            for key, placeholder in (("object", "Object (World Matrix)"), ("parent", "Parent")):
-                line = QtWidgets.QHBoxLayout()
-                line.setSpacing(4)
-                role = QtWidgets.QComboBox()
-                role.addItems(["Rig", "Anim", "REF"])
-                role.setCurrentText(data[key + "_role"])
-                role.currentIndexChanged.connect(_queue_save)
-                field = QtWidgets.QLineEdit(data[key])
-                field.setMinimumWidth(0)
-                field.setPlaceholderText(placeholder)
-                field.setToolTip(placeholder)
-                field.textChanged.connect(_queue_save)
-                pick = QtWidgets.QPushButton("Pick")
-                pick.setFixedWidth(44)
-                pick.clicked.connect(
-                    lambda checked=False, f=field, r=role: _safe(
-                        lambda: _pick_pair_object(f, r)))
-                line.addWidget(role)
-                line.addWidget(field, 1)
-                line.addWidget(pick)
-                parent.addLayout(line)
-                fields[key + "_role"] = role
-                fields[key] = field
+            matrix_row = QtWidgets.QHBoxLayout()
+            matrix_row.setSpacing(4)
+            matrix_field = QtWidgets.QLineEdit()
+            matrix_field.setReadOnly(True)
+            matrix_field.setMinimumWidth(0)
+            matrix_field.setPlaceholderText("World Matrix")
+            def show_matrix(values):
+                text = json.dumps(values, separators=(",", ":")) if values else ""
+                matrix_field.setText(text)
+                matrix_field.setToolTip(text or "Select an object and Pick Matrix")
+            show_matrix(data["matrix"])
+            def pick_matrix():
+                selected = cmds.ls(selection=True, long=True, objectsOnly=True) or []
+                if len(selected) != 1 or cmds.nodeType(selected[0]) not in ("transform", "joint"):
+                    raise ValueError("Select exactly one Maya transform or joint.")
+                show_matrix(cmds.xform(selected[0], query=True, worldSpace=True, matrix=True))
+            matrix_field.textChanged.connect(_queue_save)
+            matrix_pick = QtWidgets.QPushButton("Pick Matrix")
+            matrix_pick.clicked.connect(lambda checked=False: _safe(pick_matrix))
+            matrix_row.addWidget(matrix_field, 1)
+            matrix_row.addWidget(matrix_pick)
+            parent.addLayout(matrix_row)
+            fields["matrix"] = matrix_field
+
+            line = QtWidgets.QHBoxLayout()
+            line.setSpacing(4)
+            role = QtWidgets.QComboBox()
+            role.addItems(["Rig", "Anim", "REF"])
+            role.setCurrentText(data["parent_role"])
+            role.currentIndexChanged.connect(_queue_save)
+            field = QtWidgets.QLineEdit(data["parent"])
+            field.setMinimumWidth(0)
+            field.setPlaceholderText("Parent")
+            field.textChanged.connect(_queue_save)
+            pick = QtWidgets.QPushButton("Pick")
+            pick.setFixedWidth(44)
+            pick.clicked.connect(lambda checked=False: _safe(
+                lambda: _pick_pair_object(field, role)))
+            line.addWidget(role)
+            line.addWidget(field, 1)
+            line.addWidget(pick)
+            parent.addLayout(line)
+            fields["parent_role"] = role
+            fields["parent"] = field
 
             name = QtWidgets.QLineEdit(data["name"])
             name.setMinimumWidth(0)
@@ -1706,9 +1727,11 @@ class RetargetCard(QtWidgets.QFrame):
             if kind == "pairs":
                 value = self._pairs()
             elif kind == "create_joint":
-                value = {key: (control.currentText() if key.endswith("_role")
-                               else control.text().strip())
-                         for key, control in widget.items()}
+                value = {"matrix": json.loads(widget["matrix"].text())
+                                   if widget["matrix"].text() else [],
+                         "parent_role": widget["parent_role"].currentText(),
+                         "parent": widget["parent"].text().strip(),
+                         "name": widget["name"].text().strip()}
             elif kind == "match_rotate_pairs":
                 value = [
                     {key: (row[key].currentText() if key.endswith("_role")

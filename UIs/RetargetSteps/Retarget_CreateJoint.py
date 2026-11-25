@@ -1,4 +1,5 @@
-"""Create a joint at an object's live world matrix under a chosen parent."""
+"""Create a joint from a captured world matrix under a chosen parent."""
+import math
 import maya.cmds as cmds
 import NLTA_RetargetV2 as rt
 
@@ -6,8 +7,7 @@ LABEL = "Create Joint"
 
 
 def JointData(data):
-    return {"object_role": data.get("object_role") or "REF",
-            "object": str(data.get("object") or ""),
+    return {"matrix": list(data.get("matrix") or []),
             "parent_role": data.get("parent_role") or "Rig",
             "parent": str(data.get("parent") or ""),
             "name": str(data.get("name") or "")}
@@ -41,7 +41,10 @@ def _namespace(role, context):
 
 def Run(settings, context):
     data = JointData(settings.get("joint") or {})
-    source = rt.resolve(_namespace(data["object_role"], context), data["object"])
+    matrix = data["matrix"]
+    if len(matrix) != 16 or not all(isinstance(value, (int, float)) and
+                                    math.isfinite(value) for value in matrix):
+        raise ValueError("Create Joint: Pick Matrix first (16 finite values).")
     parent = rt.resolve(_namespace(data["parent_role"], context), data["parent"])
     name = data["name"].strip() or rt.leaf(parent) + "_extraJoint"
     if "|" in name or ":" in name:
@@ -51,7 +54,6 @@ def Run(settings, context):
     parent_name = parent.split("|")[-1]
     namespace = parent_name.rpartition(":")[0]
     qualified = ":" + (namespace + ":" if namespace else "") + name
-    matrix = cmds.xform(source, query=True, worldSpace=True, matrix=True)
 
     # Create directly under the parent to avoid joint reparenting inserting
     # an intermediate transform. Solve the matrix in the final hierarchy.
@@ -60,5 +62,4 @@ def Run(settings, context):
     cmds.setAttr(joint + ".segmentScaleCompensate", False)
     cmds.xform(joint, worldSpace=True, matrix=matrix)
 
-    return {"joint": joint, "object": rt.leaf(source),
-            "parent": parent}
+    return {"joint": joint, "parent": parent}
