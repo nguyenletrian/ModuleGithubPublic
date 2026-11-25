@@ -728,6 +728,20 @@ def _pick_pair_object(field, role):
     field.setText(rt.leaf(node))
 
 
+def _pick_constraint_object(field, role):
+    """Pick a name without changing the module-wide namespace."""
+    selected = cmds.ls(selection=True, long=True, objectsOnly=True) or []
+    if len(selected) != 1 or cmds.nodeType(selected[0]) not in ("transform", "joint"):
+        raise ValueError("Select exactly one Maya transform or joint.")
+    node = selected[0].split("|")[-1]
+    namespace = node.rpartition(":")[0]
+    key = {"Rig": "new_namespace", "Anim": "old_animations_namespace",
+           "REF": "reference_pose_namespace"}[role.currentText()]
+    if namespace != _general_from_form().get(key, "").strip(":"):
+        raise ValueError("Select an object in the module's {} namespace.".format(role.currentText()))
+    field.setText(rt.leaf(node))
+
+
 def _pick_channel_attribute(attribute_field, object_field):
     """Pick an attribute without changing the Sub Item's object."""
     selected = cmds.ls(selection=True, long=True, objectsOnly=True) or []
@@ -1092,7 +1106,26 @@ class RetargetCard(QtWidgets.QFrame):
         _STATE.setdefault("expanded", {})[self.identifier] = bool(expanded)
 
     def _add_field(self, parent, label, key, kind, value, options):
-        if kind in ("rotate_pairs", "match_rotate_pairs", "constraint_pairs"):
+        if kind == "constraint_pairs":
+            data = _get_step(self.identifier)["data"]
+            namespace_row = QtWidgets.QHBoxLayout()
+            namespace_row.setSpacing(4)
+            self.constraint_roles = {}
+            for key, label, roles in (("from_role", "From", ["REF", "Anim"]),
+                                      ("to_role", "To", ["Rig"])):
+                role = QtWidgets.QComboBox()
+                role.addItems(roles)
+                role.setCurrentText(data.get(key, roles[0]))
+                role.currentIndexChanged.connect(_queue_save)
+                namespace_row.addWidget(QtWidgets.QLabel(label))
+                namespace_row.addWidget(role, 1)
+                self.constraint_roles[key] = role
+                self.widgets[key] = ("choice", role)
+            parent.addLayout(namespace_row)
+            self._make_rotate_pairs(parent, value)
+            self.widgets[key] = (kind, self.rotate_pair_rows)
+            return
+        if kind in ("rotate_pairs", "match_rotate_pairs"):
             self._make_rotate_pairs(parent, value)
             self.widgets[key] = (kind, self.rotate_pair_rows)
             return
@@ -1433,10 +1466,13 @@ class RetargetCard(QtWidgets.QFrame):
             if vector:
                 fields.append((side + "_child", side.title() + " Child"))
             for key, placeholder in fields:
-                role = QtWidgets.QComboBox()
-                role.addItems([data[key + "_role"]] if constraint else ["Rig", "Anim", "REF"])
-                role.setCurrentText(data[key + "_role"])
-                role.currentIndexChanged.connect(_queue_save)
+                if constraint:
+                    role = self.constraint_roles[key + "_role"]
+                else:
+                    role = QtWidgets.QComboBox()
+                    role.addItems(["Rig", "Anim", "REF"])
+                    role.setCurrentText(data[key + "_role"])
+                    role.currentIndexChanged.connect(_queue_save)
                 field = QtWidgets.QLineEdit(data[key])
                 field.setPlaceholderText(placeholder)
                 field.setToolTip(placeholder)
@@ -1444,32 +1480,33 @@ class RetargetCard(QtWidgets.QFrame):
                 field.textChanged.connect(_queue_save)
                 pick = QtWidgets.QPushButton("Pick")
                 pick.setFixedWidth(36)
-                pick.clicked.connect(
-                    lambda checked=False, f=field, r=role: _safe(
-                        lambda: _pick_pair_object(f, r)))
+                if constraint:
+                    pick.clicked.connect(lambda checked=False, f=field, r=role:
+                                         _safe(lambda: _pick_constraint_object(f, r)))
+                else:
+                    pick.clicked.connect(lambda checked=False, f=field, r=role:
+                                         _safe(lambda: _pick_pair_object(f, r)))
                 line = QtWidgets.QHBoxLayout()
                 line.setSpacing(3)
-                line.addWidget(role)
+                if not constraint:
+                    line.addWidget(role)
                 line.addWidget(field, 1)
                 line.addWidget(pick)
                 column.addLayout(line)
                 row[key + "_role"] = role
                 row[key] = field
             columns.addLayout(column, 1)
+        if constraint:
+            for channel, short in (("translate", "T"), ("rotate", "R"), ("scale", "S")):
+                check = QtWidgets.QCheckBox(short)
+                check.setToolTip(channel.title())
+                check.setChecked(data[channel])
+                check.toggled.connect(_queue_save)
+                columns.addWidget(check)
+                row[channel] = check
         if not vector:
             columns.addWidget(delete)
         content.addLayout(columns)
-        if constraint:
-            options = QtWidgets.QHBoxLayout()
-            options.setSpacing(6)
-            for channel in ("translate", "rotate", "scale"):
-                check = QtWidgets.QCheckBox(channel.title())
-                check.setChecked(data[channel])
-                check.toggled.connect(_queue_save)
-                options.addWidget(check)
-                row[channel] = check
-            options.addStretch(1)
-            content.addLayout(options)
         delete.clicked.connect(
             lambda checked=False, selected=row:
             self._remove_rotate_pair_row(selected))
@@ -1777,7 +1814,6 @@ class RetargetCard(QtWidgets.QFrame):
             elif kind == "constraint_pairs":
                 value = [
                     dict({key: row[key].text().strip() for key in ("from", "to")},
-                         from_role="REF", to_role="Rig",
                          **{key: row[key].isChecked()
                             for key in ("translate", "rotate", "scale")})
                     for row in widget]
@@ -1838,7 +1874,11 @@ class RetargetCard(QtWidgets.QFrame):
             values = {"items": values.get("items", [])}
         elif self.kind == "MatchRotatePair":
             values = {"pairs": values.get("pairs", [])}
-        elif self.kind in ("MatchTransform", "Constraint"):
+        elif self.kind == "Constraint":
+            values = {"from_role": values.get("from_role", "REF"),
+                      "to_role": values.get("to_role", "Rig"),
+                      "pairs": values.get("pairs", [])}
+        elif self.kind == "MatchTransform":
             values = {"pairs": values.get("pairs", [])}
         elif self.kind == "MatchRotate":
             values = {"pairs": values.get("pairs", []),

@@ -22,8 +22,11 @@ def scope(*names, **dependencies):
 class ConstraintTests(unittest.TestCase):
     def test_defaults(self):
         env = scope("PairData", "DefaultSetting", "Fields")
-        pair = env["DefaultSetting"]()["pairs"][0]
-        self.assertEqual((pair["from_role"], pair["to_role"]), ("REF", "Rig"))
+        settings = env["DefaultSetting"]()
+        pair = settings["pairs"][0]
+        self.assertEqual((settings["from_role"], settings["to_role"]), ("REF", "Rig"))
+        self.assertNotIn("from_role", pair)
+        self.assertNotIn("to_role", pair)
         self.assertEqual((pair["translate"], pair["rotate"], pair["scale"]),
                          (False, True, False))
 
@@ -79,6 +82,12 @@ class ConstraintTests(unittest.TestCase):
         self.assertEqual(result["pairs"], 2)
         self.assertFalse(context["baked"])
         self.assertEqual(len(context["constraint_pairs"]), 2)
+        events.clear()
+        context["constraint_pairs"] = []
+        env["Run"]({"from_role": "Anim", "to_role": "Rig", "pairs": [
+            {"from": "Hand", "to": "HandFK"}]}, context)
+        self.assertEqual(events[0], ("offset", "REF:Hand", "Rig:HandFK"))
+        self.assertEqual(events[1], ("extra", "Anim:Hand", "Rig:HandFK"))
 
     def test_extra_joint_uses_bind_offset_matrix(self):
         calls = []

@@ -7,15 +7,15 @@ LABEL = "Constraint"
 
 
 def PairData(pair):
-    return {"from_role": "REF", "from": str(pair.get("from") or ""),
-            "to_role": "Rig", "to": str(pair.get("to") or ""),
+    return {"from": str(pair.get("from") or ""),
+            "to": str(pair.get("to") or ""),
             "translate": bool(pair.get("translate", False)),
             "rotate": bool(pair.get("rotate", True)),
             "scale": bool(pair.get("scale", False))}
 
 
 def DefaultSetting():
-    return {"pairs": [PairData({})]}
+    return {"from_role": "REF", "to_role": "Rig", "pairs": [PairData({})]}
 
 
 def Fields():
@@ -72,6 +72,10 @@ def _connect(extra, target, pair):
 
 def Run(settings, context):
     ref_ns, anim_ns, rig_ns = _namespaces(context)
+    from_role = settings.get("from_role", "REF")
+    to_role = settings.get("to_role", "Rig")
+    if from_role not in ("REF", "Anim") or to_role != "Rig":
+        raise ValueError("Constraint From must be REF or Anim, and To must be Rig.")
     pending = []
     targets = set()
     existing = {entry["target"] for entry in context.get("constraint_pairs", [])
@@ -80,8 +84,12 @@ def Run(settings, context):
         pair = PairData(raw)
         if not any(pair[key] for key in ("translate", "rotate", "scale")):
             continue
-        ref = rt.resolve(ref_ns, pair["from"])
-        anim = rt.resolve(anim_ns, rt.leaf(ref))
+        if from_role == "REF":
+            ref = rt.resolve(ref_ns, pair["from"])
+            anim = rt.resolve(anim_ns, rt.leaf(ref))
+        else:
+            anim = rt.resolve(anim_ns, pair["from"])
+            ref = rt.resolve(ref_ns, rt.leaf(anim))
         target = rt.resolve(rig_ns, pair["to"])
         if target in targets or target in existing:
             raise ValueError("Constraint already configured for: " + target)
