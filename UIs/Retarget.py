@@ -43,6 +43,7 @@ STEP_FILES = (
     ("Animation", "Retarget_Animation.py"),
     ("Constraint", "Retarget_Constraint.py"),
     ("Bake", "Retarget_Bake.py"),
+    ("CleanAnimation", "Retarget_CleanAnimation.py"),
     ("Clean", "Retarget_Clean.py"),
     ("Script", "Retarget_Script.py"),
     ("PythonFile", "Retarget_PythonFile.py"),
@@ -97,7 +98,7 @@ def _default_steps():
              for index, (kind, _) in enumerate(STEP_FILES)]
     # Optional modules require an object/file or a later Bake stage.
     for step in steps:
-        if step["kind"] in ("Bake", "Clean", "PythonFile", "Transform",
+        if step["kind"] in ("Bake", "CleanAnimation", "Clean", "PythonFile", "Transform",
                             "OffsetPosition", "SetValue", "MatchTransform", "MatchRotatePair", "MatchRotate", "CreateJoint", "Constraint"):
             step["enabled"] = False
     return steps
@@ -949,7 +950,7 @@ def _mapping_item(pair):
 
 def _module_field_columns(kind, descriptors):
     """Partition UI fields without changing their keys or JSON values."""
-    if kind in ("SetValue", "Transform", "MatchRotatePair", "MatchRotate", "MatchTransform", "Constraint", "Bake", "Clean"):
+    if kind in ("SetValue", "Transform", "MatchRotatePair", "MatchRotate", "MatchTransform", "Constraint", "Bake", "Clean", "CleanAnimation"):
         return "", [], "", [], descriptors
     paired = {
         "Scale": (("source_role", "old_low", "old_high"),
@@ -1052,7 +1053,7 @@ class RetargetCard(QtWidgets.QFrame):
         detail.setContentsMargins(7, 5, 5, 3)
         detail.setSpacing(6)
         self.name = None
-        if self.kind not in ("MatchTransform", "MatchRotate", "CreateJoint", "Constraint", "Bake", "Clean"):
+        if self.kind not in ("MatchTransform", "MatchRotate", "CreateJoint", "Constraint", "Bake", "Clean", "CleanAnimation"):
             name_label = QtWidgets.QLabel("Module Name")
             detail.addWidget(name_label)
             self.name = QtWidgets.QLineEdit(record["name"])
