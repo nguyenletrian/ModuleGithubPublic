@@ -1,4 +1,4 @@
-"""Bake unlocked keyable TRS channels in a selected namespace."""
+"""Bake animation controls, not the internal rigging hierarchy."""
 import math
 
 import maya.cmds as cmds
@@ -45,13 +45,22 @@ def _range(node):
     return int(math.floor(min(keys))), int(math.ceil(max(keys)))
 
 
-def _channels(namespace):
+def _channels(namespace, role="Rig"):
     nodes = []
     plugs = []
-    for node in dict.fromkeys(rt.namespace_nodes(namespace)):
+    for node in dict.fromkeys(rt.mapping_candidates(namespace)):
         if node.split("|")[-1].lstrip(":").rpartition(":")[0] != namespace:
             continue
-        if cmds.nodeType(node) not in ("transform", "joint"):
+        kind = cmds.nodeType(node)
+        # Rig animation is authored on curve controllers, never deform/IK joints.
+        # Anim and REF may themselves be skeletons, so allow their joints too.
+        if kind == "joint":
+            if role == "Rig":
+                continue
+        elif kind != "transform" or not cmds.listRelatives(
+                node, shapes=True, noIntermediate=True, type="nurbsCurve"):
+            continue
+        if rt.leaf(node).endswith("_extraJoint"):
             continue
         unlocked = []
         for attr in _CHANNELS:
@@ -74,9 +83,11 @@ def Run(settings, context):
         raise ValueError("Pick an animation object to determine Bake Start / End.")
     range_node = rt.resolve(range_ns, data["range_object"])
     start, end = _range(range_node)
-    nodes, plugs = _channels(namespace)
+    nodes, plugs = _channels(namespace, data["namespace_role"])
     if not plugs:
-        raise ValueError("No unlocked keyable TRS channels in namespace " + namespace)
+        raise ValueError("No animation controls with unlocked keyable TRS in namespace " + namespace)
+    print("[Bake] {}: {} animation objects, {} TRS channels, frames {}-{}".format(
+        namespace, len(nodes), len(plugs), start, end))
     previous_time = cmds.currentTime(query=True)
     try:
         count = cmds.bakeResults(plugs, animation="objects", hierarchy="none", shape=False,
