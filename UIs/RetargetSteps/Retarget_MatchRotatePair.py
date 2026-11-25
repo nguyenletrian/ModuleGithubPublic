@@ -9,6 +9,9 @@ import NLTA_RetargetV2 as rt
 LABEL = "Match Rotate Vector"
 _AXES = "XYZ"
 _KEYS = ("from", "from_child", "to", "to_child")
+_ALIGNMENT = 1.0 - 1e-6
+_MAX_PASSES = 4
+_MAX_CORRECTIONS = 4
 
 
 def PairData(pair):
@@ -162,13 +165,72 @@ def _match_pair(nodes):
     after = (before.asQuaternion() * delta).asEulerRotation()
     after.reorderIt(order)
     after = after.closestSolution(before)
-    for axis, value in zip(_AXES, (after.x, after.y, after.z)):
-        cmds.setAttr(target + ".rotate" + axis, math.degrees(value))
+    _set_rotation(target, tuple(math.degrees(value)
+                                for value in (after.x, after.y, after.z)))
+
+
+def _set_rotation(node, values):
+    for axis, value in zip(_AXES, values):
+        cmds.setAttr(node + ".rotate" + axis, value)
 
 
 def _similarity(nodes):
     return (_direction(nodes["from"], nodes["from_child"]) *
             _direction(nodes["to"], nodes["to_child"]))
+
+
+def _fit_pair(nodes):
+    """Re-evaluate live rig directions and keep only improving rotations."""
+    target = nodes["to"]
+    best_score = _similarity(nodes)
+    if best_score >= _ALIGNMENT:
+        return False
+    best_rotation = tuple(cmds.getAttr(target + ".rotate")[0])
+    improved = False
+    for _ in range(_MAX_CORRECTIONS):
+        _match_pair(nodes)
+        score = _similarity(nodes)
+        if score <= best_score + 1e-10:
+            # A constrained child may not follow the rotate channels exactly.
+            # Never leave a failed correction on the control.
+            _set_rotation(target, best_rotation)
+            break
+        improved = True
+        best_score = score
+        best_rotation = tuple(cmds.getAttr(target + ".rotate")[0])
+        if score >= _ALIGNMENT:
+            break
+    return improved
+
+
+def _fit_pairs(pending):
+    """Revisit parent-first chains if another pair changes a solved direction."""
+    ordered = sorted(pending, key=lambda item: item["to"].count("|"))
+    for _ in range(_MAX_PASSES):
+        improved = False
+        for nodes in ordered:
+            if _fit_pair(nodes):
+                improved = True
+        if all(_similarity(nodes) >= _ALIGNMENT for nodes in ordered):
+            break
+        if not improved:
+            break
+
+
+def _result(nodes):
+    similarity = max(-1.0, min(1.0, _similarity(nodes)))
+    angle = math.degrees(math.acos(similarity))
+    matched = similarity >= _ALIGNMENT
+    print("[Match Rotate Vector] {} -> {} | angle {:.4f} deg{}".format(
+        rt.leaf(nodes["from"]), rt.leaf(nodes["to"]), angle,
+        "" if matched else " (remaining error)"))
+    if not matched:
+        cmds.warning(
+            "Match Rotate Vector: {} -> {} | remaining angle {:.4f} deg. "
+            "Check child follow, constraints or other pairs.".format(
+                rt.leaf(nodes["to"]), rt.leaf(nodes["to_child"]), angle))
+    return dict(nodes, similarity=similarity, angle_degrees=angle,
+                matched=matched)
 
 
 def Run(settings, context):
@@ -199,23 +261,8 @@ def Run(settings, context):
                     raise ValueError("Rotate channel is locked/connected: " + plug)
             pending.append(nodes)
 
-    # Parent rotations must be applied before descendant rotations.
-    for nodes in sorted(pending, key=lambda item: item["to"].count("|")):
-        _match_pair(nodes)
-
-    results = []
-    for nodes in pending:
-        similarity = max(-1.0, min(1.0, _similarity(nodes)))
-        if similarity < 1.0 - 1e-6:
-            raise ValueError(
-                "Directions are not aligned: {} -> {}. Check that To Child "
-                "follows To and that later pairs do not move its direction."
-                .format(nodes["to"], nodes["to_child"]))
-        result = dict(nodes, similarity=similarity)
-        results.append(result)
-        print("[Match Rotate Vector] {} -> {} | angle {:.4f} deg".format(
-            rt.leaf(nodes["from"]), rt.leaf(nodes["to"]),
-            math.degrees(math.acos(similarity))))
+    _fit_pairs(pending)
+    results = [_result(nodes) for nodes in pending]
 
     # Preserve the existing bind refresh for the subsequent animation steps.
     if context.get("pairs") and context.get("bind"):
@@ -224,4 +271,7 @@ def Run(settings, context):
             context["target_namespace"])
     context.pop("axis_maps", None)
     context["vector_matches"] = results
-    return {"matched": len(results), "vector_matches": results}
+    matched = sum(item["matched"] for item in results)
+    return {"matched": matched, "unmatched": len(results) - matched,
+            "max_error_degrees": max(item["angle_degrees"] for item in results),
+            "vector_matches": results}
