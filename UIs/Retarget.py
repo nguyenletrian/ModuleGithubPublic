@@ -1467,27 +1467,28 @@ class RetargetCard(QtWidgets.QFrame):
         header.addWidget(pick)
         header.addWidget(delete)
         content.addLayout(header)
-        grid = QtWidgets.QGridLayout()
-        grid.setHorizontalSpacing(5)
-        grid.setVerticalSpacing(3)
-        for column, axis in enumerate("XYZ", 1):
-            grid.addWidget(QtWidgets.QLabel(axis), 0, column)
+        line = QtWidgets.QHBoxLayout()
+        line.setSpacing(3)
         offsets = {}
-        for index, group in enumerate(("translate", "rotate", "scale"), 1):
-            grid.addWidget(QtWidgets.QLabel(group.title()), index, 0)
+        for group, short in (("translate", "T"), ("rotate", "R"), ("scale", "S")):
+            label = QtWidgets.QLabel(short)
+            label.setToolTip(group.title() + " offsets: X, Y, Z")
+            line.addWidget(label)
             offsets[group] = []
-            for column, number in enumerate(data["offsets"][group], 1):
+            for axis, number in zip("XYZ", data["offsets"][group]):
                 control = QtWidgets.QLineEdit(str(number))
                 validator = QtGui.QDoubleValidator(control)
                 validator.setLocale(QtCore.QLocale.c())
                 control.setValidator(validator)
                 control.setAlignment(QtCore.Qt.AlignRight)
                 control.setMinimumWidth(0)
+                control.setSizePolicy(QtWidgets.QSizePolicy.Ignored,
+                                      QtWidgets.QSizePolicy.Fixed)
                 control.textChanged.connect(_queue_save)
-                control.setToolTip("Additive local {} offset".format(group))
-                grid.addWidget(control, index, column)
+                control.setToolTip("Additive local {} {}".format(group, axis))
+                line.addWidget(control, 1)
                 offsets[group].append(control)
-        content.addLayout(grid)
+        content.addLayout(line)
         row = {"frame": frame, "source": role, "object": field, "offsets": offsets}
         self.transform_rows.append(row)
         self.transform_list.addWidget(frame)
