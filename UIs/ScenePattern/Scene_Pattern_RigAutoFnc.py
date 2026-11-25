@@ -559,6 +559,67 @@ def saveSettings(data, *args):
     return writeData(data, readUi())
 
 
+def liveRef(row, control, index):
+    sphere = shortName(cmds.textField(row["sphere"], q=True, text=True).strip())
+    suffix = "" if index == 0 else "_Sub{:02d}".format(index+1)
+    prefix = sphere + "_" + jointName(control) + suffix
+    refs = cmds.ls(prefix + "_ref_follicle", long=True, type="transform") or []
+    if len(refs) != 1: return None
+    ref = refs[0]
+    shapes = cmds.listRelatives(ref, shapes=True, noIntermediate=True, type="follicle", fullPath=True) or []
+    if len(shapes) != 1: return None
+    if not cmds.isConnected(ref + ".minDistance", prefix + "_Remap_Distance.inputMin"): return None
+    return ref, shapes[0]
+
+
+def liveAutoValue(row, control, index, key):
+    import maya.api.OpenMaya as om
+    sphere = shortName(cmds.textField(row["sphere"], q=True, text=True).strip())
+    selection = om.MSelectionList()
+    selection.add(skirtShape(sphere, "nurbsSurface"))
+    surface = om.MFnNurbsSurface(selection.getDagPath(0))
+    if key == "refV":
+        if control in row["referenceV"]: return row["referenceV"][control]
+        pos = cmds.xform(control, q=True, ws=True, rp=True)
+        _, _, v = surface.closestPoint(om.MPoint(*pos), space=om.MSpace.kWorld)
+        return v
+    ref = liveRef(row, control, index)
+    point = surface.getPointAtParam(0.5, cmds.getAttr(ref[1] + ".parameterV"), om.MSpace.kWorld)
+    distances = []
+    for other in getControls(row):
+        if shortName(other) == shortName(control): continue
+        for i, sub in enumerate(row["subItems"].get(other, normalizeSubItems(None))):
+            other_ref = liveRef(row, other, i)
+            if other_ref:
+                v = cmds.getAttr(other_ref[1] + ".parameterV")
+                distances.append(point.distanceTo(surface.getPointAtParam(0.5, v, om.MSpace.kWorld)))
+    bounds = cmds.exactWorldBoundingBox(sphere)
+    radius = max(bounds[i+3] - bounds[i] for i in range(3)) * 0.5
+    return max(min(distances, default=radius), 0.001)
+
+
+def applyLiveValue(row, control, index, key):
+    ref = liveRef(row, control, index)
+    if not ref: return False
+    spec = row["subItems"][control][index]
+    plug = ref[1] + ".parameterV" if key == "refV" else ref[0] + "." + {
+        "minDistance": "minDistance", "maxDistance": "maxDistance", "startAngle": "raiseStartAngle"}[key]
+    value = spec[key]
+    if (key == "refV" and value is None) or (key == "maxDistance" and value == 0):
+        value = liveAutoValue(row, control, index, key)
+    if key in ("minDistance", "maxDistance"):
+        minimum = value if key == "minDistance" else cmds.getAttr(ref[0] + ".minDistance")
+        maximum = value if key == "maxDistance" else cmds.getAttr(ref[0] + ".maxDistance")
+        if not 0 <= minimum < maximum <= 2:
+            raise ValueError("Original Diana range: 0 <= Min < Max <= 2")
+    if key == "refV" and not 0 <= value <= 1:
+        raise ValueError("Ref V must be 0-1")
+    if key == "startAngle" and not 0 <= value <= 180:
+        raise ValueError("Start Angle must be 0-180")
+    cmds.setAttr(plug, value)
+    return True
+
+
 def editSubItems(row, *args):
     controls = getControls(row)
     window = "NLTA_RigAutoFnc_SubItems"
@@ -583,14 +644,30 @@ def editSubItems(row, *args):
                 if sub["refV"] < 0: sub["refV"] = None
             row["subItems"][control] = normalizeSubItems(row["subItems"][control])
 
+    def live(control, index, key, *unused):
+        try:
+            sync()
+            if row.get("liveDirty") or unsupportedSettings(row["subItems"][control][index]):
+                cmds.warning("RigAutoFnc: structural or legacy settings changed; Run on a clean scene first.")
+                return
+            if not applyLiveValue(row, control, index, key):
+                cmds.warning("RigAutoFnc: Ref not built; saved UI value will be used on Run/Export.")
+        except (ValueError, RuntimeError) as exc:
+            cmds.warning("RigAutoFnc Live: " + str(exc))
+
+    def markDirty(*unused):
+        row["liveDirty"] = True
+
     def add(control, *unused):
         sync()
+        markDirty()
         row["subItems"][control].append(normalizeSubItems(None)[0])
         draw()
 
     def remove(control, index, *unused):
         sync()
         if len(row["subItems"][control]) > 1:
+            markDirty()
             row["subItems"][control].pop(index)
             draw()
 
@@ -618,12 +695,13 @@ def editSubItems(row, *args):
                 cmds.text(parent=line, label="Rotate Axis")
                 fields["axis"] = cmds.optionMenu(parent=line)
                 for axis in "XYZ": cmds.menuItem(parent=fields["axis"], label=axis)
-                cmds.optionMenu(fields["axis"], e=True, value=sub["axis"])
+                cmds.optionMenu(fields["axis"], e=True, value=sub["axis"], changeCommand=markDirty)
+                cmds.textField(fields["target"], e=True, changeCommand=markDirty)
                 for key, label in (("refV", "Ref V (-1 Auto)"), ("startAngle", "Start Angle"),
                                    ("minDistance", "Min Distance"), ("maxDistance", "Max Distance")):
                     line = cmds.rowLayout(parent=col, numberOfColumns=2, columnWidth2=(125, 160))
                     cmds.text(parent=line, label=label, align="left")
-                    fields[key] = cmds.floatField(parent=line, precision=6, value=-1 if sub[key] is None else sub[key])
+                    fields[key] = cmds.floatField(parent=line, precision=6, value=-1 if sub[key] is None else sub[key], changeCommand=partial(live, control, index, key))
                 unsupported = unsupportedSettings(sub)
                 if unsupported:
                     cmds.text(parent=col, label="Legacy: " + ", ".join(unsupported), align="left")
@@ -637,7 +715,8 @@ def editSubItems(row, *args):
         saveSettings(STATE["data"])
     editor["sync"] = sync
     draw()
-    cmds.text(parent=body, label="Ref V = -1, Max Distance = 0: Auto. Save then Run/Export.", align="left")
+    cmds.text(parent=body, label="Live: Ref V, Min/Max Distance, Start Angle. Ref V -1 / Max 0 = Auto.", align="left")
+    cmds.text(parent=body, label="Add/Remove/Axis/Target: Save, then Run on a clean scene.", align="left")
     cmds.button(parent=body, label="Save Sub Items", height=28, command=finish)
     cmds.showWindow(window)
 
@@ -924,7 +1003,10 @@ def Run(data, *args):
 
 def runFromForm(data, *args):
     saveSettings(data)
-    return Run(data)
+    result = Run(data)
+    for row in STATE["rows"]:
+        row.pop("liveDirty", None)
+    return result
 
 
 def createPoseReaderSystem(
