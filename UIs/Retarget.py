@@ -43,6 +43,7 @@ STEP_FILES = (
     ("Animation", "Retarget_Animation.py"),
     ("Constraint", "Retarget_Constraint.py"),
     ("Bake", "Retarget_Bake.py"),
+    ("Clean", "Retarget_Clean.py"),
     ("Script", "Retarget_Script.py"),
     ("PythonFile", "Retarget_PythonFile.py"),
     ("Save", "Retarget_Save.py"),
@@ -96,7 +97,7 @@ def _default_steps():
              for index, (kind, _) in enumerate(STEP_FILES)]
     # Optional modules require an object/file or a later Bake stage.
     for step in steps:
-        if step["kind"] in ("Bake", "PythonFile", "Transform",
+        if step["kind"] in ("Bake", "Clean", "PythonFile", "Transform",
                             "OffsetPosition", "SetValue", "MatchTransform", "MatchRotatePair", "MatchRotate", "CreateJoint", "Constraint"):
             step["enabled"] = False
     return steps
@@ -944,7 +945,7 @@ def _mapping_item(pair):
 
 def _module_field_columns(kind, descriptors):
     """Partition UI fields without changing their keys or JSON values."""
-    if kind in ("SetValue", "Transform", "MatchRotatePair", "MatchRotate", "MatchTransform", "Constraint", "Bake"):
+    if kind in ("SetValue", "Transform", "MatchRotatePair", "MatchRotate", "MatchTransform", "Constraint", "Bake", "Clean"):
         return "", [], "", [], descriptors
     paired = {
         "Scale": (("source_role", "old_low", "old_high"),
@@ -1047,7 +1048,7 @@ class RetargetCard(QtWidgets.QFrame):
         detail.setContentsMargins(7, 5, 5, 3)
         detail.setSpacing(6)
         self.name = None
-        if self.kind not in ("MatchTransform", "MatchRotate", "CreateJoint", "Constraint", "Bake"):
+        if self.kind not in ("MatchTransform", "MatchRotate", "CreateJoint", "Constraint", "Bake", "Clean"):
             name_label = QtWidgets.QLabel("Module Name")
             detail.addWidget(name_label)
             self.name = QtWidgets.QLineEdit(record["name"])
@@ -1108,6 +1109,20 @@ class RetargetCard(QtWidgets.QFrame):
         _STATE.setdefault("expanded", {})[self.identifier] = bool(expanded)
 
     def _add_field(self, parent, label, key, kind, value, options):
+        if kind == "clean_namespaces":
+            data = _get_step(self.identifier)["data"]
+            line = QtWidgets.QHBoxLayout()
+            line.setSpacing(6)
+            for role, field_key in (("Rig", "rig"), ("Anim", "anim"), ("REF", "ref")):
+                check = QtWidgets.QCheckBox(role)
+                check.setChecked(bool(data.get(field_key, False)))
+                check.setToolTip("Delete the " + role + " namespace and its contents from the scene")
+                check.toggled.connect(_queue_save)
+                line.addWidget(check)
+                self.widgets[field_key] = ("bool", check)
+            line.addStretch(1)
+            parent.addLayout(line)
+            return
         if kind == "bake_settings":
             data = _module("Bake").NormalizeSettings(_get_step(self.identifier)["data"])
             line = QtWidgets.QHBoxLayout()
