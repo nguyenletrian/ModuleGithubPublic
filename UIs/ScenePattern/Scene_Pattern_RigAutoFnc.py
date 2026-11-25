@@ -107,6 +107,7 @@ def addReader(spec=None, *args):
     col = cmds.columnLayout(parent=frame, adjustableColumn=True, rowSpacing=4)
     row = {"frame": frame, "drivens": []}
     row["id"] = textField(col, "Reader ID", spec.get("id", "Reader{}".format(len(STATE["rows"]) + 1)), False)
+    row["attributeName"] = textField(col, "Attribute Name", spec.get("attributeName", "autoShoulderGuard"), False)
     for key, label in (("sphere", "Sphere"), ("parent", "Parent"), ("end", "End")):
         row[key] = textField(col, label, spec.get(key, ""))
     actions = cmds.rowLayout(parent=col, numberOfColumns=3)
@@ -127,6 +128,7 @@ def convertConfig(config):
     simplified = 0
     for item in config.get("items", []):
         reader = {key: item.get(key, "") for key in ("id", "sphere", "parent", "end")}
+        reader["attributeName"] = item.get("attributeName", "autoShoulderGuard")
         reader["drivens"] = []
         if "drivens" in item:
             reader["drivens"] = item["drivens"]
@@ -169,7 +171,7 @@ def loadForm(config):
 def saveSettings(data, *args):
     config = {"version": 2, "group": "RigUtil", "items": []}
     for row in STATE["rows"]:
-        reader = {key: cmds.textField(row[key], q=True, text=True).strip() for key in ("id", "sphere", "parent", "end")}
+        reader = {key: cmds.textField(row[key], q=True, text=True).strip() for key in ("id", "sphere", "parent", "end", "attributeName")}
         reader["drivens"] = []
         for driven in row["drivens"]:
             spec = {key: cmds.textField(driven[key], q=True, text=True).strip() for key in ("control", "target")}
@@ -255,6 +257,9 @@ def buildScript(config):
     for reader in config["items"]:
         if not reader["drivens"]:
             raise ValueError("Rig Auto Fnc: add Driven controls to " + reader["id"])
+        attribute_name = reader["attributeName"].strip()
+        if not attribute_name.isascii() or not attribute_name.isidentifier():
+            raise ValueError("Rig Auto Fnc: invalid Attribute Name: " + attribute_name)
         ref_parameterV, min_max_distance = resolve(reader)
         pose_reader = shortName(reader["sphere"])
         controls = [shortName(d["control"]) for d in reader["drivens"]]
@@ -295,8 +300,8 @@ def buildScript(config):
         emit("# Connect master control")
         emit("for i, shoulder_joint in enumerate(shoulder_joints):")
         emit('    shoulderguard_control = f"{shoulder_joint}_FK"' if conventional_controls else "    shoulderguard_control = shoulderguard_controls[i]")
-        emit('    cmds.addAttr(shoulderguard_control, ln="autoShoulderGuard", at="double", min=0, max=2, dv=1, k=True)')
-        emit('    cmds.connectAttr(f"{shoulderguard_control}.autoShoulderGuard", f"{raise_influence_nodes[i]}.input2X")')
+        emit('    cmds.addAttr(shoulderguard_control, ln="autoShoulderGuard", at="double", min=0, max=2, dv=1, k=True)'.replace("autoShoulderGuard", attribute_name))
+        emit('    cmds.connectAttr(f"{shoulderguard_control}.autoShoulderGuard", f"{raise_influence_nodes[i]}.input2X")'.replace("autoShoulderGuard", attribute_name))
         emit()
         emit("    # Connect lift influence")
         emit('    cmds.connectAttr(f"{raise_influence_nodes[i]}.outputX", f"{shoulderguard_control}_Target.rotateZ")' if conventional_targets else '    cmds.connectAttr(f"{raise_influence_nodes[i]}.outputX", f"{shoulderguard_targets[i]}.rotateZ")')
