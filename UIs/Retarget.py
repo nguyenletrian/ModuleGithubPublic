@@ -1438,7 +1438,28 @@ class RetargetCard(QtWidgets.QFrame):
         add = QtWidgets.QPushButton("+ Add Pair")
         add.clicked.connect(
             lambda checked=False: self._add_rotate_pair_row())
-        parent.addWidget(add)
+        if self.kind == "Constraint":
+            buttons = QtWidgets.QHBoxLayout()
+            buttons.addWidget(add, 1)
+            match = QtWidgets.QPushButton("Match by Name")
+            match.setToolTip("Add unique matching joint/control names from From and To namespaces")
+            match.clicked.connect(lambda checked=False: _safe(self._constraint_match_by_name))
+            buttons.addWidget(match, 1)
+            parent.addLayout(buttons)
+        else:
+            parent.addWidget(add)
+
+    def _constraint_match_by_name(self):
+        settings = self.settings()["data"]
+        context = _general_context(_general_from_form(), {})
+        pairs = _module("Constraint").MatchByName(settings, context)
+        if pairs:
+            for row in list(self.rotate_pair_rows):
+                if not row["from"].text().strip() and not row["to"].text().strip():
+                    self._remove_rotate_pair_row(row)
+            for pair in pairs:
+                self._add_rotate_pair_row(pair)
+        _status("Constraint: added {} matching name pair(s).".format(len(pairs)))
 
     def _add_rotate_pair_row(self, data=None):
         vector = self.kind == "MatchRotatePair"

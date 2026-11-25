@@ -195,6 +195,34 @@ class ConstraintTests(unittest.TestCase):
             self.assertTrue(all(entry["extra_joint"] is None
                                 for entry in context["constraint_pairs"]))
 
+    def test_match_by_name_adds_unique_missing_pairs_without_overwriting(self):
+        shared = ["Root", "R_Hand", "L_Hand", "Finger", "AlreadyTarget",
+                  "AlreadySource", "Duplicate", "Root_extraJoint1"]
+        nodes = {ns: ["|" + ns + ":Root" if name == "Root" else
+                      "|" + ns + ":Root|" + ns + ":" + name
+                      for name in shared] for ns in ("Anim", "REF")}
+        nodes["Anim"].append("|Anim:Other|Anim:Duplicate")
+        nodes["Anim"].append("|Anim:Root|Anim:OnlyAnim")
+        nodes["REF"].append("|REF:Root|REF:OnlyREF")
+        env = scope("PairData", "NormalizeSettings", "_namespaces", "_mirror_name",
+                    "MatchByName", re=re, rt=SimpleNamespace(
+                        leaf=lambda node: node.split("|")[-1].split(":")[-1],
+                        mapping_candidates=lambda ns: nodes[ns]))
+        settings = {"from_role": "Anim", "to_role": "REF", "pairs": [
+            {"from": "R_Hand", "to": "R_Hand", "mirror": True},
+            {"from": "Other", "to": "AlreadyTarget", "rotate": False},
+            {"from": "AlreadySource", "to": "OtherTarget"}]}
+        context = {"source_namespace_animation": "Anim",
+                   "reference_pose_namespace": "REF"}
+        result = env["MatchByName"](settings, context)
+        self.assertEqual(result, [env["PairData"]({"from": name, "to": name})
+                                  for name in ("Root", "Finger")])
+        self.assertEqual(len(settings["pairs"]), 3)
+        settings["pairs"].extend(result)
+        self.assertEqual(env["MatchByName"](settings, context), [])
+        self.assertEqual(env["MatchByName"]({"from_role": "REF", "to_role": "REF"},
+                                             context), [])
+
     def test_mirror_copies_trs_and_respects_explicit_opposite(self):
         env = scope("PairData", "_mirror_name", "_expand_pairs", re=re,
                     rt=SimpleNamespace(leaf=lambda node: node.split(":")[-1]))

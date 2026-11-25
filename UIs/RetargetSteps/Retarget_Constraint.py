@@ -152,6 +152,36 @@ def _expand_pairs(rows):
     return result
 
 
+def MatchByName(settings, context):
+    """Return only new, unique same-name joints/controllers for the current roles."""
+    settings = NormalizeSettings(settings)
+    source_ns, target_ns = _namespaces(context, settings["from_role"], settings["to_role"])
+    if source_ns == target_ns:
+        return []  # Same-name objects in the same namespace would constrain themselves.
+
+    def candidates(namespace):
+        names = {}
+        for node in dict.fromkeys(rt.mapping_candidates(namespace)):
+            qualified = node.split("|")[-1].lstrip(":")
+            name = rt.leaf(node)
+            if qualified != namespace + ":" + name or re.search(r"_extraJoint\d*$", name):
+                continue
+            names.setdefault(name, []).append(node)
+        return {name: nodes[0] for name, nodes in names.items() if len(nodes) == 1}
+
+    sources, targets = candidates(source_ns), candidates(target_ns)
+    used = set()
+    for pair in settings["pairs"]:
+        source, target = rt.leaf(pair["from"]), rt.leaf(pair["to"])
+        used.update((source, target))
+        if pair["mirror"] and any(pair[key] for key in ("translate", "rotate", "scale")):
+            if target and _mirror_name(target) != target:
+                used.update((_mirror_name(source), _mirror_name(target)))
+    names = sorted((sources.keys() & targets.keys()) - used,
+                   key=lambda name: (sources[name].count("|"), name))
+    return [PairData({"from": name, "to": name}) for name in names]
+
+
 def Run(settings, context):
     settings = NormalizeSettings(settings)
     from_role, to_role = settings["from_role"], settings["to_role"]
