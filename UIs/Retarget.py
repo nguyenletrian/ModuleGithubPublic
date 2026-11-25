@@ -1113,8 +1113,8 @@ class RetargetCard(QtWidgets.QFrame):
             namespace_row = QtWidgets.QHBoxLayout()
             namespace_row.setSpacing(4)
             self.constraint_roles = {}
-            for role_key, role_label, roles in (("from_role", "From", ["REF", "Anim"]),
-                                                ("to_role", "To", ["Rig"])):
+            for role_key, role_label in (("from_role", "From"), ("to_role", "To")):
+                roles = ["Rig", "Anim", "REF"]
                 role = QtWidgets.QComboBox()
                 role.addItems(roles)
                 role.setCurrentText(data[role_key])

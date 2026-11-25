@@ -43,6 +43,10 @@ class ConstraintTests(unittest.TestCase):
         self.assertEqual(fixed["to_role"], "Rig")
         self.assertTrue(fixed["maintain_offset"])
         self.assertFalse(normalize({"maintain_offset": False})["maintain_offset"])
+        for source in ("Rig", "Anim", "REF"):
+            for target in ("Rig", "Anim", "REF"):
+                data = normalize({"from_role": source, "to_role": target})
+                self.assertEqual((data["from_role"], data["to_role"]), (source, target))
         self.assertEqual(fixed["pairs"], [env["PairData"](edited[0])])
         self.assertEqual(normalize({"to_role": [], "pairs": stale})["pairs"], [])
         self.assertEqual(normalize({"to_role": "Rig", "pairs": stale})["pairs"],
@@ -67,6 +71,16 @@ class ConstraintTests(unittest.TestCase):
         self.assertEqual(env["_namespaces"]({
             "reference_pose_namespace": "REF", "target_namespace": "Rig"}),
                          ("REF", "Rig"))
+
+    def test_all_namespace_directions(self):
+        env = scope("_namespaces")
+        context = {"reference_namespaces": {"reference_pose": "PoseNS",
+                   "old_animations": "ClipNS", "new_rig": "RigNS"}}
+        roles = {"REF": "PoseNS", "Anim": "ClipNS", "Rig": "RigNS"}
+        for source in roles:
+            for target in roles:
+                self.assertEqual(env["_namespaces"](context, source, target),
+                                 (roles[source], roles[target]))
 
     def test_resolve_absolute_namespace_ignores_wrong_namespace_matches(self):
         def ls(name, **kwargs):
@@ -140,6 +154,21 @@ class ConstraintTests(unittest.TestCase):
         self.assertEqual(events[0], ("offset", "Anim:Hand", "Rig:HandFK"))
         self.assertEqual(events[1], ("extra", "Anim:Hand", "Rig:HandFK"))
         self.assertEqual(events[2], ("constraint", "Anim:Hand|extra", "Rig:HandFK", False))
+        events.clear()
+        context = {"reference_pose_namespace": "REF", "source_namespace_animation": "Anim"}
+        env["Run"]({"from_role": "Anim", "to_role": "REF", "pairs": [
+            {"from": "Hand", "to": "Hand"}]}, context)
+        self.assertEqual(events[0], ("offset", "Anim:Hand", "REF:Hand"))
+        self.assertEqual(events[2], ("constraint", "Anim:Hand|extra", "REF:Hand", True))
+        self.assertEqual(context["constraint_pairs"][0]["target_role"], "REF")
+        events.clear()
+        context = {"target_namespace": "Rig"}
+        env["Run"]({"from_role": "Rig", "to_role": "Rig", "pairs": [
+            {"from": "Driver", "to": "Driven"}]}, context)
+        self.assertEqual(events[0], ("offset", "Rig:Driver", "Rig:Driven"))
+        with self.assertRaisesRegex(ValueError, "cycle"):
+            env["Run"]({"from_role": "Rig", "to_role": "Rig", "pairs": [
+                {"from": "Self", "to": "Self"}]}, context)
 
     def test_mirror_copies_trs_and_respects_explicit_opposite(self):
         env = scope("PairData", "_mirror_name", "_expand_pairs", re=re,

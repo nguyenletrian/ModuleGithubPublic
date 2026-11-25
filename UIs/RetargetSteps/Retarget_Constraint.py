@@ -29,10 +29,13 @@ def NormalizeSettings(settings):
         rows = settings.get("pairs", [PairData({})])
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
         raise ValueError("Invalid Constraint Pair data.")
-    role = settings.get("from_role", "REF")
-    if role not in ("REF", "Anim"):
-        raise ValueError("Invalid Constraint From namespace.")
-    return {"from_role": role, "to_role": "Rig",
+    from_role = settings.get("from_role", "REF")
+    to_role = settings.get("to_role", "Rig")
+    if isinstance(to_role, list):
+        to_role = "Rig"  # Recover legacy misplaced Pair list.
+    if from_role not in ("Rig", "Anim", "REF") or to_role not in ("Rig", "Anim", "REF"):
+        raise ValueError("Constraint namespaces must be Rig, Anim or REF.")
+    return {"from_role": from_role, "to_role": to_role,
             "maintain_offset": bool(settings.get("maintain_offset", True)),
             "pairs": [PairData(row) for row in rows]}
 
@@ -41,24 +44,25 @@ def Fields():
     return [("Constraint Pairs", "pairs", "constraint_pairs")]
 
 
-def _namespaces(context, from_role="REF"):
+def _namespaces(context, from_role="REF", to_role="Rig"):
     refs = context.get("reference_namespaces") or {}
-    # Resolve the selected driver only. REF -> Rig never needs Animation.
-    if from_role == "REF":
-        source = refs.get("reference_pose") or context.get("reference_pose_namespace")
-        if context.get("reference_pose_loaded") is False:
-            raise ValueError("Constraint requires a Reference Pose.")
-    elif from_role == "Anim":
-        source = refs.get("old_animations") or context.get("source_namespace_animation")
-    else:
-        raise ValueError("Invalid Constraint From namespace.")
-    rig = refs.get("new_rig") or context.get("target_namespace")
-    if not source or not rig:
-        raise ValueError("Constraint requires the selected From and Rig namespaces.")
-    source, rig = (str(ns).strip(":") for ns in (source, rig))
-    if source == rig:
-        raise ValueError("Constraint From and To must use different namespaces.")
-    return source, rig
+
+    def namespace(role):
+        if role == "REF":
+            value = refs.get("reference_pose") or context.get("reference_pose_namespace")
+            if context.get("reference_pose_loaded") is False:
+                raise ValueError("Constraint requires a Reference Pose for the selected REF role.")
+        elif role == "Anim":
+            value = refs.get("old_animations") or context.get("source_namespace_animation")
+        elif role == "Rig":
+            value = refs.get("new_rig") or context.get("target_namespace")
+        else:
+            raise ValueError("Invalid Constraint namespace role: " + str(role))
+        if not value:
+            raise ValueError("Constraint namespace is unavailable: " + role)
+        return str(value).strip(":")
+
+    return namespace(from_role), namespace(to_role)
 
 
 def _resolve(namespace, name):
@@ -155,23 +159,25 @@ def _expand_pairs(rows):
 
 def Run(settings, context):
     settings = NormalizeSettings(settings)
-    from_role = settings["from_role"]
-    source_ns, rig_ns = _namespaces(context, from_role)
+    from_role, to_role = settings["from_role"], settings["to_role"]
+    source_ns, target_ns = _namespaces(context, from_role, to_role)
     pending = []
     targets = set()
     existing = {entry["target"] for entry in context.get("constraint_pairs", [])
                 if any(cmds.objExists(node) for node in entry["constraints"])}
     for pair in _expand_pairs(settings.get("pairs", [])):
         source = _resolve(source_ns, pair["from"])
-        target = _resolve(rig_ns, pair["to"])
+        target = _resolve(target_ns, pair["to"])
+        if source == target or source.startswith(target + "|"):
+            raise ValueError("Constraint would create a cycle: {} -> {}".format(source, target))
         if target in targets or target in existing:
             raise ValueError("Constraint already configured for: " + target)
         targets.add(target)
         pending.append((pair, source, target, _offset(source, target)))
 
-    # Capture all source/rig offsets before any control receives a constraint.
+    # Capture all source/target offsets before creating any constraints.
     entries = []
-    print("[Constraint] From {}={} -> Rig={}".format(from_role, source_ns, rig_ns))
+    print("[Constraint] From {}={} -> {}={}".format(from_role, source_ns, to_role, target_ns))
     for pair, source, target, offset in pending:
         extra = _build_extra(source, target, offset)
         print("[Constraint] Source parent: {} | Driver: {} | Driven: {}".format(
@@ -179,7 +185,7 @@ def Run(settings, context):
         constraints = _connect(extra, target, pair, settings["maintain_offset"])
         entries.append({"reference": source if from_role == "REF" else None,
                         "source_role": from_role, "source": source,
-                        "target": target, "extra_joint": extra,
+                        "target_role": to_role, "target": target, "extra_joint": extra,
                         "constraints": constraints,
                         "translate": pair["translate"], "rotate": pair["rotate"],
                         "scale": pair["scale"]})
