@@ -86,7 +86,13 @@ def _world(node):
     return om.MMatrix(cmds.xform(node, query=True, worldSpace=True, matrix=True))
 
 
-def _offset(source, target):
+def _offset(source, target, maintain_offset=True):
+    if not maintain_offset:
+        # No bind offset: the helper inherits the From world matrix exactly.
+        return [1.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 1.0]
     return list(_world(target) * _world(source).inverse())
 
 
@@ -173,7 +179,8 @@ def Run(settings, context):
         if target in targets or target in existing:
             raise ValueError("Constraint already configured for: " + target)
         targets.add(target)
-        pending.append((pair, source, target, _offset(source, target)))
+        pending.append((pair, source, target,
+                        _offset(source, target, settings["maintain_offset"])))
 
     # Capture all source/target offsets before creating any constraints.
     entries = []

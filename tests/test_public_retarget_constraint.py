@@ -116,8 +116,8 @@ class ConstraintTests(unittest.TestCase):
 
     def test_offsets_captured_before_constraints_using_selected_driver(self):
         events = []
-        def offset(ref, target):
-            events.append(("offset", ref, target))
+        def offset(ref, target, maintain_offset):
+            events.append(("offset", ref, target, maintain_offset))
             return [1.0] * 16
         def extra(anim, target, matrix):
             events.append(("extra", anim, target))
@@ -137,8 +137,8 @@ class ConstraintTests(unittest.TestCase):
             {"from": "Finger", "to": "FingerFK"},
             {"from": "", "to": "", "rotate": False}]}, context)
         self.assertEqual(events[:2], [
-            ("offset", "REF:Hand", "Rig:HandFK"),
-            ("offset", "REF:Finger", "Rig:FingerFK")])
+            ("offset", "REF:Hand", "Rig:HandFK", True),
+            ("offset", "REF:Finger", "Rig:FingerFK", True)])
         self.assertEqual(events[2], ("extra", "REF:Hand", "Rig:HandFK"))
         self.assertEqual(events[3], ("constraint", "REF:Hand|extra", "Rig:HandFK", True))
         self.assertEqual(context["constraint_pairs"][0]["source"], "REF:Hand")
@@ -151,21 +151,21 @@ class ConstraintTests(unittest.TestCase):
                    "reference_pose_loaded": False}
         env["Run"]({"from_role": "Anim", "to_role": "Rig", "maintain_offset": False, "pairs": [
             {"from": "Hand", "to": "HandFK"}]}, context)
-        self.assertEqual(events[0], ("offset", "Anim:Hand", "Rig:HandFK"))
+        self.assertEqual(events[0], ("offset", "Anim:Hand", "Rig:HandFK", False))
         self.assertEqual(events[1], ("extra", "Anim:Hand", "Rig:HandFK"))
         self.assertEqual(events[2], ("constraint", "Anim:Hand|extra", "Rig:HandFK", False))
         events.clear()
         context = {"reference_pose_namespace": "REF", "source_namespace_animation": "Anim"}
         env["Run"]({"from_role": "Anim", "to_role": "REF", "pairs": [
             {"from": "Hand", "to": "Hand"}]}, context)
-        self.assertEqual(events[0], ("offset", "Anim:Hand", "REF:Hand"))
+        self.assertEqual(events[0], ("offset", "Anim:Hand", "REF:Hand", True))
         self.assertEqual(events[2], ("constraint", "Anim:Hand|extra", "REF:Hand", True))
         self.assertEqual(context["constraint_pairs"][0]["target_role"], "REF")
         events.clear()
         context = {"target_namespace": "Rig"}
         env["Run"]({"from_role": "Rig", "to_role": "Rig", "pairs": [
             {"from": "Driver", "to": "Driven"}]}, context)
-        self.assertEqual(events[0], ("offset", "Rig:Driver", "Rig:Driven"))
+        self.assertEqual(events[0], ("offset", "Rig:Driver", "Rig:Driven", True))
         with self.assertRaisesRegex(ValueError, "cycle"):
             env["Run"]({"from_role": "Rig", "to_role": "Rig", "pairs": [
                 {"from": "Self", "to": "Self"}]}, context)
@@ -188,6 +188,24 @@ class ConstraintTests(unittest.TestCase):
         self.assertEqual(expand([right, explicit])[1]["from"], "CustomLeft")
         self.assertEqual(len(expand([{"from": "Pelvis", "to": "Root", "mirror": True}])), 1)
         self.assertEqual(len(expand([{"from": "R_Hand", "to": "R_Hand_FK"}])), 1)
+
+    def test_maintain_off_uses_identity_instead_of_target_offset(self):
+        calls = []
+        class Matrix:
+            def inverse(self):
+                calls.append("inverse")
+                return self
+            def __mul__(self, other):
+                return [2.0] * 16
+        def world(node):
+            calls.append(node)
+            return Matrix()
+        env = scope("_offset", _world=world)
+        identity = [float(i % 5 == 0) for i in range(16)]
+        self.assertEqual(env["_offset"]("From", "To", False), identity)
+        self.assertEqual(calls, [])
+        self.assertEqual(env["_offset"]("From", "To", True), [2.0] * 16)
+        self.assertEqual(calls, ["To", "From", "inverse"])
 
     def test_extra_joint_uses_bind_offset_matrix(self):
         calls = []
