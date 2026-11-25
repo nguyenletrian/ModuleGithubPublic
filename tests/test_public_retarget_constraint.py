@@ -78,7 +78,7 @@ class ConstraintTests(unittest.TestCase):
         def make(kind):
             def constraint(source, target, **kw):
                 self.assertEqual((source, target), ("Extra", "Control"))
-                self.assertFalse(kw["maintainOffset"])
+                self.assertTrue(kw["maintainOffset"])
                 calls.append(kind)
                 return [kind]
             return constraint

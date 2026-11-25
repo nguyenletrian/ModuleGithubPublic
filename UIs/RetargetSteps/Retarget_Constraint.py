@@ -99,13 +99,13 @@ def _build_extra(source, target, matrix):
 def _connect(extra, target, pair):
     nodes = []
     if pair["translate"] and pair["rotate"]:
-        nodes.extend(cmds.parentConstraint(extra, target, maintainOffset=False))
+        nodes.extend(cmds.parentConstraint(extra, target, maintainOffset=True))
     elif pair["translate"]:
-        nodes.extend(cmds.pointConstraint(extra, target, maintainOffset=False))
+        nodes.extend(cmds.pointConstraint(extra, target, maintainOffset=True))
     elif pair["rotate"]:
-        nodes.extend(cmds.orientConstraint(extra, target, maintainOffset=False))
+        nodes.extend(cmds.orientConstraint(extra, target, maintainOffset=True))
     if pair["scale"]:
-        nodes.extend(cmds.scaleConstraint(extra, target, maintainOffset=False))
+        nodes.extend(cmds.scaleConstraint(extra, target, maintainOffset=True))
     return nodes
 
 
