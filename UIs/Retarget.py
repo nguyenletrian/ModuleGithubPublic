@@ -39,6 +39,7 @@ STEP_FILES = (
     ("Mapping", "Retarget_Mapping.py"),
     ("MatchRotatePair", "Retarget_MatchRotatePair.py"),
     ("MatchRotate", "Retarget_MatchRotate.py"),
+    ("CreateJoint", "Retarget_CreateJoint.py"),
     ("Animation", "Retarget_Animation.py"),
     ("Bake", "Retarget_Bake.py"),
     ("Script", "Retarget_Script.py"),
@@ -95,7 +96,7 @@ def _default_steps():
     # Optional modules require an object/file or a later Bake stage.
     for step in steps:
         if step["kind"] in ("Bake", "PythonFile", "Transform",
-                            "OffsetPosition", "SetValue", "MatchRotatePair", "MatchRotate"):
+                            "OffsetPosition", "SetValue", "MatchRotatePair", "MatchRotate", "CreateJoint"):
             step["enabled"] = False
     return steps
 
@@ -1024,7 +1025,7 @@ class RetargetCard(QtWidgets.QFrame):
         detail.setContentsMargins(7, 5, 5, 3)
         detail.setSpacing(6)
         self.name = None
-        if self.kind != "MatchRotate":
+        if self.kind not in ("MatchRotate", "CreateJoint"):
             name_label = QtWidgets.QLabel("Module Name")
             detail.addWidget(name_label)
             self.name = QtWidgets.QLineEdit(record["name"])
@@ -1088,6 +1089,47 @@ class RetargetCard(QtWidgets.QFrame):
         if kind in ("rotate_pairs", "match_rotate_pairs"):
             self._make_rotate_pairs(parent, value)
             self.widgets[key] = (kind, self.rotate_pair_rows)
+            return
+        if kind == "create_joint":
+            data = _module("CreateJoint").JointData(value if isinstance(value, dict) else {})
+            fields = {}
+            for key, placeholder in (("object", "Object (World Matrix)"), ("parent", "Parent")):
+                line = QtWidgets.QHBoxLayout()
+                line.setSpacing(4)
+                role = QtWidgets.QComboBox()
+                role.addItems(["Rig", "Anim", "REF"])
+                role.setCurrentText(data[key + "_role"])
+                role.currentIndexChanged.connect(_queue_save)
+                field = QtWidgets.QLineEdit(data[key])
+                field.setMinimumWidth(0)
+                field.setPlaceholderText(placeholder)
+                field.setToolTip(placeholder)
+                field.textChanged.connect(_queue_save)
+                pick = QtWidgets.QPushButton("Pick")
+                pick.setFixedWidth(44)
+                pick.clicked.connect(
+                    lambda checked=False, f=field, r=role: _safe(
+                        lambda: _pick_pair_object(f, r)))
+                line.addWidget(role)
+                line.addWidget(field, 1)
+                line.addWidget(pick)
+                parent.addLayout(line)
+                fields[key + "_role"] = role
+                fields[key] = field
+
+            name = QtWidgets.QLineEdit(data["name"])
+            name.setMinimumWidth(0)
+            name.setToolTip("Leave empty to use ParentName_extraJoint")
+            def update_placeholder(*args):
+                parent_name = rt.leaf(fields["parent"].text().strip())
+                name.setPlaceholderText(parent_name + "_extraJoint" if parent_name
+                                        else "Name (ParentName_extraJoint)")
+            fields["parent"].textChanged.connect(update_placeholder)
+            name.textChanged.connect(_queue_save)
+            update_placeholder()
+            parent.addWidget(name)
+            fields["name"] = name
+            self.widgets[key] = (kind, fields)
             return
         if kind == "set_values":
             self._make_set_values(parent, value)
@@ -1663,6 +1705,10 @@ class RetargetCard(QtWidgets.QFrame):
                 continue
             if kind == "pairs":
                 value = self._pairs()
+            elif kind == "create_joint":
+                value = {key: (control.currentText() if key.endswith("_role")
+                               else control.text().strip())
+                         for key, control in widget.items()}
             elif kind == "match_rotate_pairs":
                 value = [
                     {key: (row[key].currentText() if key.endswith("_role")
