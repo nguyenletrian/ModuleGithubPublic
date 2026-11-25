@@ -1,7 +1,6 @@
 """Build live retarget constraints using a bind-pose-aligned extra joint."""
 import re
 import maya.cmds as cmds
-import maya.api.OpenMaya as om
 import NLTA_RetargetV2 as rt
 
 LABEL = "Constraint"
@@ -82,30 +81,17 @@ def _resolve(namespace, name):
     return matches[0]
 
 
-def _world(node):
-    return om.MMatrix(cmds.xform(node, query=True, worldSpace=True, matrix=True))
-
-
-def _offset(source, target, maintain_offset=True):
-    if not maintain_offset:
-        # No bind offset: the helper inherits the From world matrix exactly.
-        return [1.0, 0.0, 0.0, 0.0,
-                0.0, 1.0, 0.0, 0.0,
-                0.0, 0.0, 1.0, 0.0,
-                0.0, 0.0, 0.0, 1.0]
-    return list(_world(target) * _world(source).inverse())
-
-
-def _build_extra(source, target, matrix):
+def _build_extra(source, target, pair, maintain_offset=True):
     namespace = source.split("|")[-1].rpartition(":")[0]
     name = ":" + (namespace + ":" if namespace else "") + rt.leaf(target) + "_extraJoint"
-    joint = cmds.createNode("joint", name=name, parent=source, skipSelect=True)
-    joint = source + "|" + joint.split("|")[-1] if not joint.startswith("|") else joint
-    # A fresh joint has identity local TRS and jointOrient. Store the entire
-    # bind offset without Euler decomposition or joint scale compensation.
+    joint = cmds.createNode("joint", name=name, skipSelect=True)
     cmds.setAttr(joint + ".segmentScaleCompensate", False)
-    cmds.setAttr(joint + ".offsetParentMatrix", *matrix, type="matrix")
-    return joint
+    match = target if maintain_offset else source
+    cmds.delete(cmds.parentConstraint(match, joint, maintainOffset=False))
+    if pair["scale"]:
+        cmds.delete(cmds.scaleConstraint(match, joint, maintainOffset=False))
+    joint = cmds.parent(joint, source, absolute=True)[0]
+    return cmds.ls(joint, long=True)[0]
 
 
 def _connect(extra, target, pair, maintain_offset=True):
@@ -179,14 +165,15 @@ def Run(settings, context):
         if target in targets or target in existing:
             raise ValueError("Constraint already configured for: " + target)
         targets.add(target)
-        pending.append((pair, source, target,
-                        _offset(source, target, settings["maintain_offset"])))
+        pending.append((pair, source, target))
 
-    # Capture all source/target offsets before creating any constraints.
+    # Prepare every helper in the initial pose before driving any target.
+    prepared = [(pair, source, target,
+                 _build_extra(source, target, pair, settings["maintain_offset"]))
+                for pair, source, target in pending]
     entries = []
     print("[Constraint] From {}={} -> {}={}".format(from_role, source_ns, to_role, target_ns))
-    for pair, source, target, offset in pending:
-        extra = _build_extra(source, target, offset)
+    for pair, source, target, extra in prepared:
         print("[Constraint] Source parent: {} | Driver: {} | Driven: {}".format(
             source, extra, target))
         constraints = _connect(extra, target, pair, settings["maintain_offset"])

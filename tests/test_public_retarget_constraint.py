@@ -114,20 +114,17 @@ class ConstraintTests(unittest.TestCase):
                 self.assertEqual(result, expected)
                 self.assertEqual(calls, [(kind, maintain) for kind in expected])
 
-    def test_offsets_captured_before_constraints_using_selected_driver(self):
+    def test_helpers_prepared_before_constraints_using_selected_driver(self):
         events = []
-        def offset(ref, target, maintain_offset):
-            events.append(("offset", ref, target, maintain_offset))
-            return [1.0] * 16
-        def extra(anim, target, matrix):
-            events.append(("extra", anim, target))
-            return anim + "|extra"
+        def extra(source, target, pair, maintain_offset):
+            events.append(("extra", source, target, maintain_offset))
+            return source + "|extra"
         def connect(joint, target, pair, maintain_offset):
             events.append(("constraint", joint, target, maintain_offset))
             return ["constraint_" + target]
         env = scope("PairData", "NormalizeSettings", "_mirror_name", "_expand_pairs", "_namespaces", "Run",
                     re=re,
-                    _offset=offset, _build_extra=extra, _connect=connect,
+                    _build_extra=extra, _connect=connect,
                     _resolve=lambda ns, name: ns + ":" + name,
                     rt=SimpleNamespace(leaf=lambda node: node.split(":")[-1]),
                     cmds=SimpleNamespace(objExists=lambda node: True))
@@ -137,10 +134,9 @@ class ConstraintTests(unittest.TestCase):
             {"from": "Finger", "to": "FingerFK"},
             {"from": "", "to": "", "rotate": False}]}, context)
         self.assertEqual(events[:2], [
-            ("offset", "REF:Hand", "Rig:HandFK", True),
-            ("offset", "REF:Finger", "Rig:FingerFK", True)])
-        self.assertEqual(events[2], ("extra", "REF:Hand", "Rig:HandFK"))
-        self.assertEqual(events[3], ("constraint", "REF:Hand|extra", "Rig:HandFK", True))
+            ("extra", "REF:Hand", "Rig:HandFK", True),
+            ("extra", "REF:Finger", "Rig:FingerFK", True)])
+        self.assertEqual(events[2], ("constraint", "REF:Hand|extra", "Rig:HandFK", True))
         self.assertEqual(context["constraint_pairs"][0]["source"], "REF:Hand")
         self.assertEqual(context["constraint_pairs"][0]["source_role"], "REF")
         self.assertEqual(result["pairs"], 2)
@@ -151,21 +147,20 @@ class ConstraintTests(unittest.TestCase):
                    "reference_pose_loaded": False}
         env["Run"]({"from_role": "Anim", "to_role": "Rig", "maintain_offset": False, "pairs": [
             {"from": "Hand", "to": "HandFK"}]}, context)
-        self.assertEqual(events[0], ("offset", "Anim:Hand", "Rig:HandFK", False))
-        self.assertEqual(events[1], ("extra", "Anim:Hand", "Rig:HandFK"))
-        self.assertEqual(events[2], ("constraint", "Anim:Hand|extra", "Rig:HandFK", False))
+        self.assertEqual(events[0], ("extra", "Anim:Hand", "Rig:HandFK", False))
+        self.assertEqual(events[1], ("constraint", "Anim:Hand|extra", "Rig:HandFK", False))
         events.clear()
         context = {"reference_pose_namespace": "REF", "source_namespace_animation": "Anim"}
         env["Run"]({"from_role": "Anim", "to_role": "REF", "pairs": [
             {"from": "Hand", "to": "Hand"}]}, context)
-        self.assertEqual(events[0], ("offset", "Anim:Hand", "REF:Hand", True))
-        self.assertEqual(events[2], ("constraint", "Anim:Hand|extra", "REF:Hand", True))
+        self.assertEqual(events[0], ("extra", "Anim:Hand", "REF:Hand", True))
+        self.assertEqual(events[1], ("constraint", "Anim:Hand|extra", "REF:Hand", True))
         self.assertEqual(context["constraint_pairs"][0]["target_role"], "REF")
         events.clear()
         context = {"target_namespace": "Rig"}
         env["Run"]({"from_role": "Rig", "to_role": "Rig", "pairs": [
             {"from": "Driver", "to": "Driven"}]}, context)
-        self.assertEqual(events[0], ("offset", "Rig:Driver", "Rig:Driven", True))
+        self.assertEqual(events[0], ("extra", "Rig:Driver", "Rig:Driven", True))
         with self.assertRaisesRegex(ValueError, "cycle"):
             env["Run"]({"from_role": "Rig", "to_role": "Rig", "pairs": [
                 {"from": "Self", "to": "Self"}]}, context)
@@ -189,41 +184,46 @@ class ConstraintTests(unittest.TestCase):
         self.assertEqual(len(expand([{"from": "Pelvis", "to": "Root", "mirror": True}])), 1)
         self.assertEqual(len(expand([{"from": "R_Hand", "to": "R_Hand_FK"}])), 1)
 
-    def test_maintain_off_uses_identity_instead_of_target_offset(self):
-        calls = []
-        class Matrix:
-            def inverse(self):
-                calls.append("inverse")
-                return self
-            def __mul__(self, other):
-                return [2.0] * 16
-        def world(node):
-            calls.append(node)
-            return Matrix()
-        env = scope("_offset", _world=world)
-        identity = [float(i % 5 == 0) for i in range(16)]
-        self.assertEqual(env["_offset"]("From", "To", False), identity)
-        self.assertEqual(calls, [])
-        self.assertEqual(env["_offset"]("From", "To", True), [2.0] * 16)
-        self.assertEqual(calls, ["To", "From", "inverse"])
-
-    def test_extra_joint_uses_bind_offset_matrix(self):
-        calls = []
+    def test_extra_joint_matches_with_temporary_constraint_then_parents(self):
         parent = "|Anim:Root|Anim:Hand"
-        def create(kind, **kw):
-            calls.append((kind, kw))
-            return "Anim:HandFK_extraJoint"
-        env = scope("_build_extra",
-                    rt=SimpleNamespace(leaf=lambda node: node.split(":")[-1]),
-                    cmds=SimpleNamespace(createNode=create,
-                        setAttr=lambda *args, **kw: calls.append((args, kw))))
-        matrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 3, 4, 1]
-        joint = env["_build_extra"](parent, "Rig:HandFK", matrix)
-        self.assertEqual(joint, parent + "|Anim:HandFK_extraJoint")
-        self.assertEqual(calls[0], ("joint", {"name": ":Anim:HandFK_extraJoint",
-                                              "parent": parent, "skipSelect": True}))
-        self.assertEqual(calls[2], ((joint + ".offsetParentMatrix", *matrix),
-                                    {"type": "matrix"}))
+        target = "|Rig:Root|Rig:HandFK"
+        name = "Anim:HandFK_extraJoint"
+        for maintain in (True, False):
+            for scale in (True, False):
+                calls = []
+                def create(kind, **kw):
+                    calls.append(("create", kind, kw))
+                    return name
+                def constraint(kind):
+                    def run(source, destination, **kw):
+                        calls.append((kind, source, destination, kw))
+                        return [kind + "_temp"]
+                    return run
+                def reparent(joint, source, **kw):
+                    calls.append(("parent", joint, source, kw))
+                    return [parent + "|" + name]
+                env = scope("_build_extra",
+                            rt=SimpleNamespace(leaf=lambda node: node.split(":")[-1]),
+                            cmds=SimpleNamespace(createNode=create,
+                                setAttr=lambda *args: calls.append(("setAttr", *args)),
+                                parentConstraint=constraint("parentConstraint"),
+                                scaleConstraint=constraint("scaleConstraint"),
+                                delete=lambda nodes: calls.append(("delete", nodes)),
+                                parent=reparent, ls=lambda joint, **kw: [joint]))
+                joint = env["_build_extra"](parent, target, {"scale": scale}, maintain)
+                match = target if maintain else parent
+                expected = [
+                    ("create", "joint", {"name": ":" + name, "skipSelect": True}),
+                    ("setAttr", name + ".segmentScaleCompensate", False),
+                    ("parentConstraint", match, name, {"maintainOffset": False}),
+                    ("delete", ["parentConstraint_temp"])]
+                if scale:
+                    expected.extend([
+                        ("scaleConstraint", match, name, {"maintainOffset": False}),
+                        ("delete", ["scaleConstraint_temp"])])
+                expected.append(("parent", name, parent, {"absolute": True}))
+                self.assertEqual(calls, expected)
+                self.assertEqual(joint, parent + "|" + name)
 
 
 if __name__ == "__main__":
