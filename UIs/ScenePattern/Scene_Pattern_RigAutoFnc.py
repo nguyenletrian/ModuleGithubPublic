@@ -16,6 +16,14 @@ _form = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_form)
 STATE = _form.STATE
 
+# This form edits data only; do not modify the full module graph.
+_form.applyLiveSubItem = lambda *args, **kwargs: False
+_form.buildLiveAddedSubItem = lambda *args, **kwargs: False
+_form.setSubItemMute = lambda *args, **kwargs: False
+_form.readSubItemMute = lambda *args, **kwargs: False
+_form.liveFollicleSize = lambda *args, **kwargs: None
+_form.restoreJsonLive = lambda data, list_ui, *args: _form.Load(data, list_ui)
+
 
 def DefaultSetting(path, *args):
     module_name = "Scene_Pattern_RigAutoFnc"
@@ -40,6 +48,9 @@ def saveSettings(data, *args):
     return config
 
 
+_form.saveSettings = saveSettings
+
+
 def importJson(data, list_ui, *args):
     paths = cmds.fileDialog2(fileMode=1, fileFilter="JSON (*.json)", caption="Import AutoSkirtFunc JSON")
     if not paths:
@@ -60,7 +71,12 @@ def _short(node):
 
 
 def _point(shape, v):
-    return cmds.pointOnSurface(shape, u=0.5, v=v, position=True)
+    import maya.api.OpenMaya as om
+    selection = om.MSelectionList()
+    selection.add(shape)
+    surface = om.MFnNurbsSurface(selection.getDagPath(0))
+    point = surface.getPointAtParam(0.5, v, om.MSpace.kWorld)
+    return (point.x, point.y, point.z)
 
 
 def _distance(a, b):
@@ -240,6 +256,7 @@ def Form(data, *args):
     cmds.menuItem(parent=style, label="Diana")
     cmds.menuItem(parent=style, label="Akali")
     cmds.button(parent=buttons, label="Rebuild Sphere UV 0-1", command=_form.rebuildSphereUVButton)
+    cmds.text(parent=buttons, label="Edit data only. Run / Export on a clean rig.", align="left")
     _form.Load(data, list_ui)
     STATE["style"] = style
     cmds.optionMenu(style, e=True, value=getData(data).get("originalStyle", "Diana"))
