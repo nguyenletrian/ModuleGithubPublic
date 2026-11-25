@@ -944,7 +944,7 @@ def _mapping_item(pair):
 
 def _module_field_columns(kind, descriptors):
     """Partition UI fields without changing their keys or JSON values."""
-    if kind in ("SetValue", "Transform", "MatchRotatePair", "MatchRotate", "MatchTransform", "Constraint"):
+    if kind in ("SetValue", "Transform", "MatchRotatePair", "MatchRotate", "MatchTransform", "Constraint", "Bake"):
         return "", [], "", [], descriptors
     paired = {
         "Scale": (("source_role", "old_low", "old_high"),
@@ -1047,7 +1047,7 @@ class RetargetCard(QtWidgets.QFrame):
         detail.setContentsMargins(7, 5, 5, 3)
         detail.setSpacing(6)
         self.name = None
-        if self.kind not in ("MatchTransform", "MatchRotate", "CreateJoint", "Constraint"):
+        if self.kind not in ("MatchTransform", "MatchRotate", "CreateJoint", "Constraint", "Bake"):
             name_label = QtWidgets.QLabel("Module Name")
             detail.addWidget(name_label)
             self.name = QtWidgets.QLineEdit(record["name"])
@@ -1108,6 +1108,37 @@ class RetargetCard(QtWidgets.QFrame):
         _STATE.setdefault("expanded", {})[self.identifier] = bool(expanded)
 
     def _add_field(self, parent, label, key, kind, value, options):
+        if kind == "bake_settings":
+            data = _module("Bake").NormalizeSettings(_get_step(self.identifier)["data"])
+            line = QtWidgets.QHBoxLayout()
+            line.setSpacing(4)
+            target = QtWidgets.QComboBox()
+            target.addItems(["Rig", "Anim", "REF"])
+            target.setCurrentText(data["namespace_role"])
+            target.currentIndexChanged.connect(_queue_save)
+            line.addWidget(QtWidgets.QLabel("Bake"))
+            line.addWidget(target)
+            source = QtWidgets.QComboBox()
+            source.addItems(["Rig", "Anim", "REF"])
+            source.setCurrentText(data["range_role"])
+            source.currentIndexChanged.connect(_queue_save)
+            line.addWidget(QtWidgets.QLabel("Range"))
+            line.addWidget(source)
+            field = QtWidgets.QLineEdit(data["range_object"])
+            field.setMinimumWidth(0)
+            field.setPlaceholderText("Animation range object")
+            field.setToolTip("Start / End are calculated from this object's animation keys only")
+            field.textChanged.connect(_queue_save)
+            pick = QtWidgets.QPushButton("Pick")
+            pick.clicked.connect(lambda checked=False: _safe(
+                lambda: _pick_pair_object(field, source)))
+            line.addWidget(field, 1)
+            line.addWidget(pick)
+            parent.addLayout(line)
+            self.widgets["namespace_role"] = ("choice", target)
+            self.widgets["range_role"] = ("choice", source)
+            self.widgets["range_object"] = ("text", field)
+            return
         if kind == "transform_items":
             self.transform_rows = []
             self.transform_list = QtWidgets.QVBoxLayout()
@@ -1991,7 +2022,9 @@ class RetargetCard(QtWidgets.QFrame):
             else:
                 value = widget.text()
             values[key] = value
-        if self.kind in ("SetValue", "Transform"):
+        if self.kind == "Bake":
+            values = _module("Bake").NormalizeSettings(values)
+        elif self.kind in ("SetValue", "Transform"):
             values = {"items": values.get("items", [])}
         elif self.kind == "MatchRotatePair":
             values = {"pairs": values.get("pairs", [])}
@@ -2362,14 +2395,8 @@ def _validate_sequence(batch, records=None):
     """Validate the execution sequence sorted by each module's saved order."""
     ordered = (_sorted_steps() if records is None else
                sorted(records, key=lambda item: int(item["order"])))
-    steps = [step for step in ordered
-             if step.get("enabled")
-             and (not batch or step["kind"] != "Bake")]
+    steps = [step for step in ordered if step.get("enabled")]
     seen = set()
-    prerequisites = {
-        # Bake is a standalone test module for now, not a Run Retarget step.
-        "Bake": ("Mapping", "Animation"),
-    }
     for item in steps:
         kind = item["kind"]
         if kind in ("Scale", "Rotate") and (
@@ -2380,9 +2407,6 @@ def _validate_sequence(batch, records=None):
                 and "Mapping" not in seen):
             raise ValueError("Animation must appear after Mapping when "
                              "Mapping is enabled.")
-        for needed in prerequisites.get(kind, ()):
-            if needed not in seen:
-                raise ValueError("{} must appear after {}.".format(kind, needed))
         if "Save" in seen:
             raise ValueError("Save Retarget must be the last enabled step.")
         seen.add(kind)
@@ -2498,8 +2522,6 @@ def _process_clip(general, clip, steps):
         context["target_root"] = rt.auto_root(context["target_namespace"])
 
     for item in steps:
-        if item["kind"] == "Bake":
-            continue  # Bake will be designed and run separately later.
         _run_step(item, context)
     if any(item["kind"] == "Save" for item in steps):
         if not context.get("output_path"):
@@ -2647,7 +2669,7 @@ def _run_retarget(*args):
                     temporary.cleanup()
                 _STATE["context"] = {}
         if save_enabled:
-            _status("Retarget setup complete (no Bake): {} scenes saved.".format(
+            _status("Retarget complete: {} scenes saved.".format(
                 len(completed)))
         else:
             _status("Retarget complete: {} clip(s) processed.".format(
