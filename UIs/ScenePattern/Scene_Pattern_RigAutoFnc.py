@@ -849,6 +849,19 @@ def resolve(reader):
     return values, ranges
 
 
+def sourceData(value):
+    """Format original-style Python data without changing numeric precision."""
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, float):
+        return str(int(value)) if value.is_integer() else repr(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(sourceData(item) for item in value) + "]"
+    if isinstance(value, tuple):
+        return "(" + ", ".join(sourceData(item) for item in value) + ("," if len(value) == 1 else "") + ")"
+    return repr(value)
+
+
 def buildScript(config):
     config = convertConfig(config)
     if not config["items"]:
@@ -900,13 +913,17 @@ def buildScript(config):
         if len(set(shoulder_joints)) != len(shoulder_joints):
             raise ValueError("Rig Auto Fnc: duplicate shoulder joint name")
         emit()
-        emit("ref_parameterV = " + repr(ref_parameterV) + "  # v values on the sphere, horizontal values")
+        emit("# Auto Skirt Rig Setup - " + repr(pose_reader))
+        emit("#########################################################################################")
         emit()
-        emit("min_max_distance = " + repr(min_max_distance))
+        emit("ref_parameterV = " + sourceData(ref_parameterV) + "  # v values on the sphere, horizontal values")
         emit()
-        emit("raise_start_angle = " + repr([float(d["startAngle"]) for d in reader["drivens"]]))
+        emit("min_max_distance = " + sourceData(min_max_distance))
         emit()
-        emit("shoulder_joints = " + repr(shoulder_joints))
+        emit("raise_start_angle = " + sourceData([float(d["startAngle"]) for d in reader["drivens"]]))
+        emit()
+        emit("shoulder_joints = " + sourceData(shoulder_joints))
+        emit()
         conventional_controls = controls == [name + "_FK" for name in shoulder_joints]
         conventional_targets = targets == [name + "_Target" for name in controls] and all(output == "rotateZ" for output in outputs)
         create_indices = []
@@ -915,48 +932,37 @@ def buildScript(config):
             if key not in created_attrs:
                 create_indices.append(i)
                 created_attrs.add(key)
-        simple_attributes = len(set(attributes)) == 1 and len(create_indices) == len(controls)
-        if not conventional_controls:
-            emit("shoulderguard_controls = " + repr(controls))
-        if not conventional_targets:
-            emit("shoulderguard_targets = " + repr([target + "." + output for target, output in zip(targets, outputs)]))
-        if direct_indices and len(direct_indices) != len(controls):
-            emit("direct_output_indices = " + repr(direct_indices))
-        if not simple_attributes:
-            emit("attribute_names = " + repr(attributes))
-            emit("create_attribute_indices = " + repr(tuple(create_indices)))
-        emit("cp_follicle_shape, cpos = createPoseReaderSystem({!r}, {!r}, {!r})".format(pose_reader, shortName(reader["parent"]), shortName(reader["end"])))
+        simple = (conventional_controls and conventional_targets and len(set(attributes)) == 1
+                  and len(create_indices) == len(controls) and len(direct_indices) == len(controls))
+        emit("cp_follicle_shape, cpos = createPoseReaderSystem({}, {}, {})".format(
+            sourceData(pose_reader), sourceData(shortName(reader["parent"])), sourceData(shortName(reader["end"]))))
         emit()
         emit("raise_influence_nodes = createSkirtRigSystem(")
-        emit("    {!r},".format(pose_reader))
+        emit("    " + sourceData(pose_reader) + ",")
         for argument in ("cp_follicle_shape", "cpos", "shoulder_joints", "ref_parameterV", "min_max_distance"):
             emit("    " + argument + ",")
         emit("    raise_start_angle)")
         emit()
         emit("# Connect master control")
-        emit("for i, shoulder_joint in enumerate(shoulder_joints):")
-        emit('    shoulderguard_control = f"{shoulder_joint}_FK"' if conventional_controls else "    shoulderguard_control = shoulderguard_controls[i]")
-        if simple_attributes:
+        if simple:
+            emit("for i, shoulder_joint in enumerate(shoulder_joints):")
+            emit('    shoulderguard_control = f"{shoulder_joint}_FK"')
             emit('    cmds.addAttr(shoulderguard_control, ln="autoShoulderGuard", at="double", min=0, max=2, dv=1, k=True)'.replace("autoShoulderGuard", attributes[0]))
             emit('    cmds.connectAttr(f"{shoulderguard_control}.autoShoulderGuard", f"{raise_influence_nodes[i]}.input2X")'.replace("autoShoulderGuard", attributes[0]))
-        else:
-            emit("    if i in create_attribute_indices:")
-            emit('        cmds.addAttr(shoulderguard_control, ln=attribute_names[i], at="double", min=0, max=2, dv=1, k=True)')
-            emit('    cmds.connectAttr(f"{shoulderguard_control}.{attribute_names[i]}", f"{raise_influence_nodes[i]}.input2X")')
-        if direct_indices:
             emit()
             emit("    # Connect lift influence")
-            connection = 'cmds.connectAttr(f"{raise_influence_nodes[i]}.outputX", f"{shoulderguard_control}_Target.rotateZ")' if conventional_targets else 'cmds.connectAttr(f"{raise_influence_nodes[i]}.outputX", shoulderguard_targets[i])'
-            if len(direct_indices) == len(controls):
-                emit("    " + connection)
-            else:
-                emit("    if i in direct_output_indices:")
-                emit("        " + connection)
-        for i, plug in enumerate(plugs):
-            if plug in paired:
-                variable = "pair_{:02d}_{}".format(pair_numbers[plug], "left" if not paired[plug] else "right")
-                emit("{} = raise_influence_nodes[{}] + '.outputX'".format(variable, i))
-                paired[plug].append(variable)
+            emit('    cmds.connectAttr(f"{raise_influence_nodes[i]}.outputX", f"{shoulderguard_control}_Target.rotateZ")')
+        else:
+            for i, (control, attribute, plug) in enumerate(zip(controls, attributes, plugs)):
+                if i in create_indices:
+                    emit("cmds.addAttr({}, ln={}, at=\"double\", min=0, max=2, dv=1, k=True)".format(sourceData(control), sourceData(attribute)))
+                emit('cmds.connectAttr({}, f"{{raise_influence_nodes[{}]}}.input2X")'.format(sourceData(control + "." + attribute), i))
+                if i in direct_indices:
+                    emit('cmds.connectAttr(f"{{raise_influence_nodes[{}]}}.outputX", {})'.format(i, sourceData(plug)))
+                else:
+                    variable = "pair_{:02d}_{}".format(pair_numbers[plug], "left" if not paired[plug] else "right")
+                    emit('{} = f"{{raise_influence_nodes[{}]}}.outputX"'.format(variable, i))
+                    paired[plug].append(variable)
     for plug, (left, right) in paired.items():
         target_base = plug.replace(".", "_")
         emit()
