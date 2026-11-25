@@ -1334,12 +1334,13 @@ class RetargetCard(QtWidgets.QFrame):
         content.setContentsMargins(4, 3, 4, 3)
         content.setSpacing(3)
 
-        header = QtWidgets.QHBoxLayout()
-        title = QtWidgets.QLabel()
-        header.addWidget(title)
-        header.addStretch(1)
-        row = {"frame": frame, "title": title}
+        row = {"frame": frame}
         if vector:
+            header = QtWidgets.QHBoxLayout()
+            title = QtWidgets.QLabel()
+            row["title"] = title
+            header.addWidget(title)
+            header.addStretch(1)
             mirror = QtWidgets.QCheckBox("Mirror")
             mirror.setChecked(data["mirror"])
             mirror.setToolTip("Also match the opposite-side From and To objects")
@@ -1349,8 +1350,9 @@ class RetargetCard(QtWidgets.QFrame):
         delete = QtWidgets.QPushButton("X")
         delete.setFixedWidth(24)
         delete.setToolTip("Delete this pair")
-        header.addWidget(delete)
-        content.addLayout(header)
+        if vector:
+            header.addWidget(delete)
+            content.addLayout(header)
 
         columns = QtWidgets.QHBoxLayout()
         columns.setSpacing(6)
@@ -1384,6 +1386,8 @@ class RetargetCard(QtWidgets.QFrame):
                 row[key + "_role"] = role
                 row[key] = field
             columns.addLayout(column, 1)
+        if not vector:
+            columns.addWidget(delete)
         content.addLayout(columns)
         delete.clicked.connect(
             lambda checked=False, selected=row:
@@ -1402,7 +1406,8 @@ class RetargetCard(QtWidgets.QFrame):
 
     def _number_rotate_pairs(self):
         for index, row in enumerate(self.rotate_pair_rows, start=1):
-            row["title"].setText("Pair {:02d}".format(index))
+            if "title" in row:
+                row["title"].setText("Pair {:02d}".format(index))
 
     def _make_set_values(self, parent, value):
         """Build editable, ordered values inside one Set Value module."""
