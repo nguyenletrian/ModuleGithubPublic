@@ -32,6 +32,25 @@ class ConstraintTests(unittest.TestCase):
                          (False, True, False))
         self.assertFalse(pair["mirror"])
 
+    def test_recover_pairs_saved_in_wrong_namespace_key(self):
+        env = scope("PairData", "NormalizeSettings")
+        normalize = env["NormalizeSettings"]
+        stale = [{"from": "Old", "to": "OldFK"}]
+        edited = [{"from": "R_Hand", "to": "R_Hand_FK", "mirror": True}]
+        fixed = normalize({"from_role": "Anim", "to_role": edited, "pairs": stale})
+        self.assertEqual(fixed["from_role"], "Anim")
+        self.assertEqual(fixed["to_role"], "Rig")
+        self.assertEqual(fixed["pairs"], [env["PairData"](edited[0])])
+        self.assertEqual(normalize({"to_role": [], "pairs": stale})["pairs"], [])
+        self.assertEqual(normalize({"to_role": "Rig", "pairs": stale})["pairs"],
+                         [env["PairData"](stale[0])])
+
+    def test_ui_keeps_pair_and_namespace_widget_keys_separate(self):
+        source = (ROOT / "UIs/Retarget.py").read_text(encoding="utf-8")
+        self.assertIn("self.widgets[role_key] = (\"choice\", role)", source)
+        self.assertIn("self._make_rotate_pairs(parent, data[\"pairs\"])", source)
+        self.assertIn("self.widgets[key] = (kind, self.rotate_pair_rows)", source)
+
     def test_constraint_types(self):
         calls = []
         def make(kind):
@@ -66,7 +85,7 @@ class ConstraintTests(unittest.TestCase):
         def connect(joint, target, pair):
             events.append(("constraint", joint, target))
             return ["constraint_" + target]
-        env = scope("PairData", "_mirror_name", "_expand_pairs", "_namespaces", "Run",
+        env = scope("PairData", "NormalizeSettings", "_mirror_name", "_expand_pairs", "_namespaces", "Run",
                     re=re,
                     _offset=offset, _build_extra=extra, _connect=connect,
                     rt=SimpleNamespace(resolve=lambda ns, name: ns + ":" + name,

@@ -220,6 +220,8 @@ def _validate_entries(records):
         if not isinstance(settings, dict):
             raise ValueError("Invalid settings for step " + kind)
         defaults.update(settings)
+        if kind == "Constraint":
+            defaults = _module(kind).NormalizeSettings(defaults)
         if kind == "SetValue" and "items" not in settings:
             defaults["items"] = ([{
                 "source": settings.get("source", "Rig"),
@@ -1107,22 +1109,22 @@ class RetargetCard(QtWidgets.QFrame):
 
     def _add_field(self, parent, label, key, kind, value, options):
         if kind == "constraint_pairs":
-            data = _get_step(self.identifier)["data"]
+            data = _module("Constraint").NormalizeSettings(_get_step(self.identifier)["data"])
             namespace_row = QtWidgets.QHBoxLayout()
             namespace_row.setSpacing(4)
             self.constraint_roles = {}
-            for key, label, roles in (("from_role", "From", ["REF", "Anim"]),
-                                      ("to_role", "To", ["Rig"])):
+            for role_key, role_label, roles in (("from_role", "From", ["REF", "Anim"]),
+                                                ("to_role", "To", ["Rig"])):
                 role = QtWidgets.QComboBox()
                 role.addItems(roles)
-                role.setCurrentText(data.get(key, roles[0]))
+                role.setCurrentText(data[role_key])
                 role.currentIndexChanged.connect(_queue_save)
-                namespace_row.addWidget(QtWidgets.QLabel(label))
+                namespace_row.addWidget(QtWidgets.QLabel(role_label))
                 namespace_row.addWidget(role, 1)
-                self.constraint_roles[key] = role
-                self.widgets[key] = ("choice", role)
+                self.constraint_roles[role_key] = role
+                self.widgets[role_key] = ("choice", role)
             parent.addLayout(namespace_row)
-            self._make_rotate_pairs(parent, value)
+            self._make_rotate_pairs(parent, data["pairs"])
             self.widgets[key] = (kind, self.rotate_pair_rows)
             return
         if kind in ("rotate_pairs", "match_rotate_pairs"):

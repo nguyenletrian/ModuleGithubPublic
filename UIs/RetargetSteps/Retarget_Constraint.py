@@ -20,6 +20,21 @@ def DefaultSetting():
     return {"from_role": "REF", "to_role": "Rig", "pairs": [PairData({})]}
 
 
+def NormalizeSettings(settings):
+    # Older UI accidentally stored the edited Pair list in to_role,
+    # leaving pairs stale. Recover the latest edited list, including [].
+    rows = settings.get("to_role")
+    if not isinstance(rows, list):
+        rows = settings.get("pairs", [PairData({})])
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("Invalid Constraint Pair data.")
+    role = settings.get("from_role", "REF")
+    if role not in ("REF", "Anim"):
+        raise ValueError("Invalid Constraint From namespace.")
+    return {"from_role": role, "to_role": "Rig",
+            "pairs": [PairData(row) for row in rows]}
+
+
 def Fields():
     return [("Constraint Pairs", "pairs", "constraint_pairs")]
 
@@ -115,6 +130,7 @@ def _expand_pairs(rows):
 
 
 def Run(settings, context):
+    settings = NormalizeSettings(settings)
     ref_ns, anim_ns, rig_ns = _namespaces(context)
     from_role = settings.get("from_role", "REF")
     to_role = settings.get("to_role", "Rig")
