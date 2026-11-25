@@ -1467,15 +1467,17 @@ class RetargetCard(QtWidgets.QFrame):
         header.addWidget(pick)
         header.addWidget(delete)
         content.addLayout(header)
-        line = QtWidgets.QHBoxLayout()
-        line.setSpacing(3)
+        grid = QtWidgets.QGridLayout()
+        grid.setHorizontalSpacing(3)
+        grid.setVerticalSpacing(2)
         offsets = {}
-        for group, short in (("translate", "T"), ("rotate", "R"), ("scale", "S")):
-            label = QtWidgets.QLabel(short)
+        for index, group in enumerate(("translate", "rotate", "scale")):
+            label = QtWidgets.QLabel(group.title())
+            label.setAlignment(QtCore.Qt.AlignCenter)
             label.setToolTip(group.title() + " offsets: X, Y, Z")
-            line.addWidget(label)
+            grid.addWidget(label, 0, index * 3, 1, 3)
             offsets[group] = []
-            for axis, number in zip("XYZ", data["offsets"][group]):
+            for column, (axis, number) in enumerate(zip("XYZ", data["offsets"][group])):
                 control = QtWidgets.QLineEdit(str(number))
                 validator = QtGui.QDoubleValidator(control)
                 validator.setLocale(QtCore.QLocale.c())
@@ -1486,9 +1488,10 @@ class RetargetCard(QtWidgets.QFrame):
                                       QtWidgets.QSizePolicy.Fixed)
                 control.textChanged.connect(_queue_save)
                 control.setToolTip("Additive local {} {}".format(group, axis))
-                line.addWidget(control, 1)
+                grid.addWidget(control, 1, index * 3 + column)
+                grid.setColumnStretch(index * 3 + column, 1)
                 offsets[group].append(control)
-        content.addLayout(line)
+        content.addLayout(grid)
         row = {"frame": frame, "source": role, "object": field, "offsets": offsets}
         self.transform_rows.append(row)
         self.transform_list.addWidget(frame)
