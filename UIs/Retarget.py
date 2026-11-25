@@ -224,6 +224,7 @@ def _validate_entries(records):
                 "object": settings.get("object", ""),
                 "attribute": settings.get("attribute", ""),
                 "value": settings.get("value", "0"),
+                "mirror": bool(settings.get("mirror", False)),
             }] if any(key in settings for key in (
                 "source", "object", "attribute", "value")) else [])
         if kind == "Scale":
@@ -1432,6 +1433,11 @@ class RetargetCard(QtWidgets.QFrame):
         title = QtWidgets.QLabel()
         header.addWidget(title)
         header.addStretch(1)
+        mirror = QtWidgets.QCheckBox("Mirror")
+        mirror.setChecked(bool(data.get("mirror", False)))
+        mirror.setToolTip("Set the same attribute and value on the opposite-side object")
+        mirror.toggled.connect(_queue_save)
+        header.addWidget(mirror)
         delete = QtWidgets.QPushButton("X")
         delete.setToolTip("Remove this Set Value sub-item")
         delete.setFixedWidth(28)
@@ -1485,7 +1491,8 @@ class RetargetCard(QtWidgets.QFrame):
         content.addLayout(second)
 
         row = {"frame": frame, "title": title, "source": namespace,
-               "object": obj, "attribute": attribute, "value": value}
+               "object": obj, "attribute": attribute, "value": value,
+               "mirror": mirror}
         delete.clicked.connect(
             lambda checked=False, selected=row:
             self._remove_set_value_row(selected))
@@ -1671,7 +1678,8 @@ class RetargetCard(QtWidgets.QFrame):
                     {"source": row["source"].currentText(),
                      "object": row["object"].text().strip(),
                      "attribute": row["attribute"].text().strip(),
-                     "value": row["value"].text()}
+                     "value": row["value"].text(),
+                     "mirror": row["mirror"].isChecked()}
                     for row in widget]
             elif kind == "bool":
                 value = widget.isChecked()

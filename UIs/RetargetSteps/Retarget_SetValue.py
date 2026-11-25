@@ -10,7 +10,7 @@ LABEL = "Set Value"
 
 def DefaultSetting():
     return {"items": [{"source": "Rig", "object": "",
-                       "attribute": "", "value": "0"}]}
+                       "attribute": "", "value": "0", "mirror": False}]}
 
 
 def Fields():
@@ -87,6 +87,25 @@ def _items(settings):
     return items
 
 
+def _mirror_name(name):
+    """Swap explicit side tokens without changing unrelated letters."""
+    swaps = {"L": "R", "R": "L", "l": "r", "r": "l",
+             "Left": "Right", "Right": "Left",
+             "left": "right", "right": "left",
+             "LEFT": "RIGHT", "RIGHT": "LEFT"}
+    patterns = (
+        r"(?<=FBXASC032)[LR](?=FBXASC032)",
+        r"(?<![A-Za-z0-9])(?:Left|Right|left|right|LEFT|RIGHT|L|R|l|r)(?![A-Za-z0-9])",
+        r"^(?:Left|Right)(?=[A-Z0-9])",
+        r"(?:Left|Right)$",
+    )
+    for pattern in patterns:
+        mirrored, count = re.subn(pattern, lambda match: swaps[match.group()], name)
+        if count:
+            return mirrored
+    return name
+
+
 def Run(settings, context):
     changes = []
     for index, item in enumerate(_items(settings), start=1):
@@ -100,14 +119,23 @@ def Run(settings, context):
                 "Set Value Sub Item {} needs an object and attribute.".format(
                     index))
         node = rt.resolve(namespace, name)
-        plug = "{}.{}".format(node, attribute)
-        if not cmds.objExists(plug):
-            raise ValueError("Set Value attribute not found: " + plug)
-        if not cmds.getAttr(plug, settable=True):
-            raise ValueError("Set Value attribute locked or connected: " + plug)
-        kind = cmds.getAttr(plug, type=True)
-        value = _attribute_value(kind, item.get("value", ""), plug)
-        changes.append((plug, kind, value))
+        nodes = [node]
+        if item.get("mirror", False):
+            leaf = rt.leaf(node)
+            opposite = _mirror_name(leaf)
+            if opposite != leaf:
+                mirrored = rt.resolve(namespace, opposite)
+                if mirrored != node:
+                    nodes.append(mirrored)
+        for destination in nodes:
+            plug = "{}.{}".format(destination, attribute)
+            if not cmds.objExists(plug):
+                raise ValueError("Set Value attribute not found: " + plug)
+            if not cmds.getAttr(plug, settable=True):
+                raise ValueError("Set Value attribute locked or connected: " + plug)
+            kind = cmds.getAttr(plug, type=True)
+            value = _attribute_value(kind, item.get("value", ""), plug)
+            changes.append((plug, kind, value))
 
     # Resolve every sub-item before making scene changes.
     for plug, kind, value in changes:
