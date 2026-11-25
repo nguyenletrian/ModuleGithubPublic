@@ -32,7 +32,7 @@ _STATE = {"steps": [], "path": "", "context": {}, "general": {},
           "expanded": {}, "selected_id": None}
 STEP_FILES = (
     ("Scale", "Retarget_Scale.py"),
-    ("Rotate", "Retarget_Rotate.py"),
+    ("MatchTransform", "Retarget_MatchTransform.py"),
     ("Transform", "Retarget_Transform.py"),  # Legacy kind: Extra Transform.
     ("SetValue", "Retarget_SetValue.py"),
     ("OffsetPosition", "Retarget_OffsetPosition.py"),
@@ -46,7 +46,7 @@ STEP_FILES = (
     ("PythonFile", "Retarget_PythonFile.py"),
     ("Save", "Retarget_Save.py"),
 )
-STEP_MAP = dict(STEP_FILES)
+STEP_MAP = dict(STEP_FILES, Rotate="Retarget_Rotate.py")
 # This identifier is accepted only while migrating older saved JSONs.
 LEGACY_STEP_MAP = dict(STEP_MAP, Reference="Retarget_Reference.py")
 
@@ -96,7 +96,7 @@ def _default_steps():
     # Optional modules require an object/file or a later Bake stage.
     for step in steps:
         if step["kind"] in ("Bake", "PythonFile", "Transform",
-                            "OffsetPosition", "SetValue", "MatchRotatePair", "MatchRotate", "CreateJoint"):
+                            "OffsetPosition", "SetValue", "MatchTransform", "MatchRotatePair", "MatchRotate", "CreateJoint"):
             step["enabled"] = False
     return steps
 
@@ -267,7 +267,9 @@ def _legacy_v2_profile(profile):
         "old_animations_mode": "File",
         "output_folder": values.get("output", ""),
     })
-    steps = _default_steps()
+    steps = [_new_step("Rotate", step["order"])
+             if step["kind"] == "MatchTransform" else step
+             for step in _default_steps()]
     by_kind = {step["kind"]: step for step in steps}
     by_kind["Rotate"]["data"]["bind_frame"] = int(values.get("bind_frame", 0))
     by_kind["Scale"]["data"].update({
@@ -920,7 +922,7 @@ def _mapping_item(pair):
 
 def _module_field_columns(kind, descriptors):
     """Partition UI fields without changing their keys or JSON values."""
-    if kind in ("SetValue", "MatchRotatePair", "MatchRotate"):
+    if kind in ("SetValue", "MatchRotatePair", "MatchRotate", "MatchTransform"):
         return "", [], "", [], descriptors
     paired = {
         "Scale": (("source_role", "old_low", "old_high"),
@@ -1025,7 +1027,7 @@ class RetargetCard(QtWidgets.QFrame):
         detail.setContentsMargins(7, 5, 5, 3)
         detail.setSpacing(6)
         self.name = None
-        if self.kind not in ("MatchRotate", "CreateJoint"):
+        if self.kind not in ("MatchTransform", "MatchRotate", "CreateJoint"):
             name_label = QtWidgets.QLabel("Module Name")
             detail.addWidget(name_label)
             self.name = QtWidgets.QLineEdit(record["name"])
@@ -1786,6 +1788,8 @@ class RetargetCard(QtWidgets.QFrame):
         if self.kind == "SetValue":
             values = {"items": values.get("items", [])}
         elif self.kind == "MatchRotatePair":
+            values = {"pairs": values.get("pairs", [])}
+        elif self.kind == "MatchTransform":
             values = {"pairs": values.get("pairs", [])}
         elif self.kind == "MatchRotate":
             values = {"pairs": values.get("pairs", []),
