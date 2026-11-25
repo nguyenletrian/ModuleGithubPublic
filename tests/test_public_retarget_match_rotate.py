@@ -94,7 +94,7 @@ class MatchRotateTests(unittest.TestCase):
         self.assertIn(("REF:LeftHand", "Rig:L_Wrist_FK"), pairs)
         self.assertNotIn(("REF:L_Hand", "Rig:L_Wrist_FK"), pairs)
 
-    def test_corrects_hand_driven_fingers_in_separate_dag_branch(self):
+    def test_preserves_hand_before_fingers_in_user_pair_order(self):
         # Hand is deeper in the DAG, but drives the shallow Finger Root.
         hand = "|Rig|World|Spine|Chest|Arm|Hand"
         thumb = "|Rig|Fingers|Thumb1"
@@ -121,10 +121,19 @@ class MatchRotateTests(unittest.TestCase):
                                        _euler_angles=lambda desired, order: desired),
                     cmds=SimpleNamespace(getAttr=lambda plug: 0, xform=xform))
         pending = [("old", node, goals[node], {}) for node in (hand, thumb, tip)]
-        self.assertEqual(env["_apply_orientations"](pending), 2)
+        self.assertEqual(env["_apply_orientations"](pending), 1)
         self.assertEqual(rotations, goals)
+        self.assertEqual(writes, [hand, thumb, tip])
+
+        # Explicitly reversing the user order is still honored on pass one;
+        # subsequent correction passes resolve the resulting dependency.
+        rotations.update({node: 0.0 for node in rotations})
+        writes.clear()
+        self.assertEqual(env["_apply_orientations"](list(reversed(pending))), 3)
+        self.assertEqual(writes[:3], [tip, thumb, hand])
         self.assertEqual(writes.count(hand), 1)
         self.assertEqual(writes.count(thumb), 2)
+        self.assertEqual(rotations, goals)
 
     def test_correction_is_bounded_if_control_does_not_follow(self):
         calls = []

@@ -155,7 +155,9 @@ def _apply_orientations(pending):
     after its descendants were posed. Recheck every goal after the full pass;
     never recalculate the signed axis mapping from an intermediate pose.
     """
-    ordered = sorted(pending, key=lambda item: item[1].count("|"))
+    # The saved Pair list is the user's execution order, including for
+    # controls whose dependencies do not follow DAG ancestry.
+    ordered = list(pending)
     for pass_index in range(_MAX_PASSES):
         for source, target, desired, mapping in ordered:
             if _orientation_error(rt._rotation(target), desired) <= _ANGLE_TOLERANCE:
