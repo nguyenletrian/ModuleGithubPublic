@@ -697,10 +697,6 @@ def editSubItems(row, *args):
     for control in controls:
         row["subItems"].setdefault(control, normalizeSubItems(None))
 
-    def structure(sub, control):
-        return (sub["axis"], sub["outputType"], sub["invertRotate"],
-                shortName(sub.get("target") or shortName(control) + "_Target"))
-
     def readStructure(fields):
         return dict(axis=cmds.optionMenu(fields["axis"], q=True, value=True),
                     outputType=cmds.optionMenu(fields["outputType"], q=True, value=True).lower(),
@@ -711,15 +707,8 @@ def editSubItems(row, *args):
         value = cmds.floatSliderGrp(fields[key], q=True, value=True)
         return None if key == "refV" and value < 0 else value
 
-    def markDirty(control, *unused):
-        row.setdefault("liveDirtyControls", set()).add(control)
-
-    def structureChanged(control, index, *unused):
-        if editor["drawing"]: return
-        fields = editor["widgets"][control][index]
-        sub = row["subItems"][control][index]
-        if structure(dict(sub, **readStructure(fields)), control) != structure(sub, control):
-            markDirty(control)
+    def markTopologyDirty(control, *unused):
+        row.setdefault("liveTopologyDirty", set()).add(control)
 
     def sync():
         # Read all fields only when saving or rebuilding the editor.
@@ -728,8 +717,6 @@ def editSubItems(row, *args):
             entries = []
             for sub, fields in zip(row["subItems"][control], widgets):
                 candidate = dict(sub, **readStructure(fields))
-                if structure(candidate, control) != structure(sub, control):
-                    markDirty(control)
                 for key in ("refV", "minDistance", "maxDistance", "startAngle", "weight"):
                     candidate[key] = readNumber(fields, key)
                 entries.append(candidate)
@@ -746,10 +733,9 @@ def editSubItems(row, *args):
         try:
             candidate = normalizeSubItems([candidate])[0]
             row["subItems"][control][index] = candidate
-            if (row.get("liveDirty") or control in row.get("liveDirtyControls", set())
-                    or structure(dict(candidate, **readStructure(fields)), control) != structure(candidate, control)
-                    or unsupportedSettings(candidate)):
-                cmds.warning("RigAutoSkirtFnc: this Driven has structural changes; Run on a clean scene first.")
+            # Numeric edits target the existing named nodes, independent of pending output settings.
+            if control in row.get("liveTopologyDirty", set()):
+                cmds.warning("RigAutoSkirtFnc: Sub Item indices changed; numeric value saved for next Run/Export.")
                 return
             applied = applyLiveWeight(row, control, index) if key == "weight" else applyLiveValue(row, control, index, key)
             if not applied:
@@ -762,21 +748,19 @@ def editSubItems(row, *args):
 
     def add(control, *unused):
         sync()
-        markDirty(control)
         row["subItems"][control].append(normalizeSubItems(None)[0])
         draw()
 
     def remove(control, index, *unused):
         sync()
         if len(row["subItems"][control]) > 1:
-            markDirty(control)
+            markTopologyDirty(control)
             row["subItems"][control].pop(index)
             draw()
 
     def reset(control, index, *unused):
         sync()
         sub = row["subItems"][control][index]
-        markDirty(control)
         sub.update(reverseU=False)
         sub.pop("extraOffsetMatrix", None)
         sub.pop("extraOffsetObject", None)
@@ -835,11 +819,6 @@ def editSubItems(row, *args):
         # Bind only after all widgets and their initial values exist.
         for control, widgets in editor["widgets"].items():
             for index, fields in enumerate(widgets):
-                changed = partial(structureChanged, control, index)
-                for key in ("axis", "outputType"):
-                    cmds.optionMenu(fields[key], e=True, changeCommand=changed)
-                cmds.checkBox(fields["invert"], e=True, changeCommand=changed)
-                cmds.textField(fields["target"], e=True, changeCommand=changed)
                 for key in ("weight", "refV", "startAngle", "minDistance", "maxDistance"):
                     callback = partial(live, control, index, key)
                     cmds.floatSliderGrp(fields[key], e=True, changeCommand=callback, dragCommand=callback)
@@ -850,7 +829,7 @@ def editSubItems(row, *args):
     editor["sync"] = sync
     draw()
     cmds.text(parent=body, label="Live: Weight, Ref V, Min/Max Distance, Start Angle.", align="left")
-    cmds.text(parent=body, label="Add/Remove/Type/Axis/Target/Invert: Save, then Run on a clean scene.", align="left")
+    cmds.text(parent=body, label="Numeric edits affect built nodes; Add/Remove/Type/Axis/Target/Invert apply on next Run.", align="left")
     cmds.button(parent=body, label="Save Sub Items", height=28, command=finish)
     cmds.showWindow(window)
 
@@ -1241,6 +1220,7 @@ def runFromForm(data, *args):
     for row in STATE["rows"]:
         row.pop("liveDirty", None)
         row.pop("liveDirtyControls", None)
+        row.pop("liveTopologyDirty", None)
     return result
 
 
