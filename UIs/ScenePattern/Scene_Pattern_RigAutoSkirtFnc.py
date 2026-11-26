@@ -885,7 +885,7 @@ def planAutoOffsets(config):
             if control not in entry["controls"]: entry["controls"].append(control)
             entry["channels"].setdefault(spec["output"], []).append(node)
 
-    offsets = {}
+    offsets, destinations = {}, {}
     for target, entry in targets.items():
         names = cmds.ls(target, long=True, type="transform") or []
         if len(names) != 1:
@@ -896,16 +896,30 @@ def planAutoOffsets(config):
         parent_path = target_path.rsplit("|", 1)[0]
         if existing and existing != [parent_path]:
             raise ValueError("RigAutoSkirtFnc: Target Offset name already in use: " + offset)
-        occupied = False
-        for channel, nodes in entry["channels"].items():
-            plug = target_path + "." + channel
-            sources = cmds.listConnections(plug, source=True, destination=False, plugs=True, skipConversionNodes=True) or []
-            own_nodes = list(nodes)
-            prefix = target + "_" + channel
-            own_nodes.extend((prefix + "_RaiseValue_Mult", prefix + "_ZeroOut_PMA"))
-            if any(shortName(source.split(".", 1)[0]) not in own_nodes for source in sources):
-                occupied = True
-        if not occupied and not existing: continue
+        def foreignConnections(node, channel, nodes):
+            sources = cmds.listConnections(node + "." + channel, source=True, destination=False, plugs=True, skipConversionNodes=True) or []
+            prefix = shortName(node) + "_" + channel
+            own_nodes = nodes + [prefix + "_RaiseValue_Mult", prefix + "_ZeroOut_PMA"]
+            return [source for source in sources if shortName(source.split(".", 1)[0]) not in own_nodes]
+
+        generated = bool(existing and cmds.attributeQuery("nltaAutoSkirtFncCreated", node=offset, exists=True)
+                         and cmds.getAttr(offset + ".nltaAutoSkirtFncCreated"))
+        occupied = any(foreignConnections(target_path, channel, nodes) for channel, nodes in entry["channels"].items())
+        if existing:
+            for channel, nodes in entry["channels"].items():
+                if not foreignConnections(existing[0], channel, nodes):
+                    destinations[(target, channel)] = offset
+                elif not foreignConnections(target_path, channel, nodes):
+                    destinations[(target, channel)] = target
+                else:
+                    raise ValueError("RigAutoSkirtFnc: both Target Offset and Target have existing connections: " + target + "." + channel)
+            if not generated:
+                continue
+        elif not occupied:
+            continue
+        else:
+            for channel in entry["channels"]:
+                destinations[(target, channel)] = offset
         for control in entry["controls"]:
             matches = cmds.ls(control, long=True, type="transform") or []
             if len(matches) != 1 or not matches[0].startswith(target_path + "|"):
@@ -938,7 +952,7 @@ def planAutoOffsets(config):
                 pair = (target + ".parentInverseMatrix[0]", shortName(destination))
                 if pair not in compensation: compensation.append(pair)
         offsets[target] = (offset, parent, compensation)
-    return offsets
+    return offsets, destinations
 
 
 def buildScript(config):
@@ -948,7 +962,7 @@ def buildScript(config):
     lines = ["import maya.cmds as cmds", "", "", "def main():"]
     def emit(line=""):
         lines.append("    " + line if line else "")
-    offsets = planAutoOffsets(config)
+    offsets, destinations = planAutoOffsets(config)
     if offsets:
         emit()
         emit("# Target offsets for occupied channels")
@@ -958,6 +972,7 @@ def buildScript(config):
             else:
                 emit("cmds.createNode(\"transform\", name={})".format(sourceData(offset)))
             emit("cmds.parent({}, {}, relative=True)".format(sourceData(target), sourceData(offset)))
+            emit("cmds.addAttr({}, ln=\"nltaAutoSkirtFncCreated\", at=\"bool\", dv=True)".format(sourceData(offset)))
             for source, destination in compensation:
                 emit("cmds.disconnectAttr({}, {})".format(sourceData(source), sourceData(destination)))
                 emit("cmds.connectAttr({}, {})".format(sourceData(offset + ".parentInverseMatrix[0]"), sourceData(destination)))
@@ -972,7 +987,7 @@ def buildScript(config):
             output = spec.get("output", "rotateZ")
             if output not in ("rotateX", "rotateY", "rotateZ", "translateX", "translateY", "translateZ"):
                 raise ValueError("Rig Auto Skirt Fnc: invalid output: " + output)
-            target = offsets[target][0] if target in offsets else target
+            target = destinations.get((target, output), target)
             plug = target + "." + output
             target_counts[plug] = target_counts.get(plug, 0) + 1
     paired = {plug: [] for plug, count in target_counts.items() if count > 1}
@@ -999,11 +1014,11 @@ def buildScript(config):
             suffix = "" if counts[control] == 1 else "_Sub{:02d}".format(counts[control])
             shoulder_joints.append(jointName(control) + suffix)
         targets = [shortName(d.get("target") or shortName(d["control"]) + "_Target") for d in reader["drivens"]]
-        targets = [offsets[target][0] if target in offsets else target for target in targets]
         if pose_reader in seen_spheres:
             raise ValueError("Rig Auto Skirt Fnc: one item per original pose reader: " + pose_reader)
         seen_spheres.add(pose_reader)
         outputs = [d.get("output", "rotateZ") for d in reader["drivens"]]
+        targets = [destinations.get((target, output), target) for target, output in zip(targets, outputs)]
         attributes = ["AutoFollow" if control_counts[control] > 1 else attribute_name for control in controls]
         plugs = [target + "." + output for target, output in zip(targets, outputs)]
         direct_indices = tuple(i for i, plug in enumerate(plugs) if plug not in paired)
@@ -1119,15 +1134,16 @@ def ExportPython(data, *args):
 def Run(data, *args):
     config = getData(data)
     converted = convertConfig(config)
-    offsets = planAutoOffsets(converted)
+    offsets, destinations = planAutoOffsets(converted)
     for target, (offset, parent, compensation) in offsets.items():
         if cmds.objExists(offset):
             raise ValueError("RigAutoSkirtFnc: Run on a clean scene; Target Offset already exists: " + offset)
     for reader in converted["items"]:
         for spec in reader["drivens"]:
             target = shortName(spec["target"])
-            if target in offsets: continue
-            plug = target + "." + spec["output"]
+            destination = destinations.get((target, spec["output"]), target)
+            if target in offsets and destination == offsets[target][0]: continue
+            plug = destination + "." + spec["output"]
             if cmds.listConnections(plug, source=True, destination=False, plugs=True):
                 raise ValueError("RigAutoSkirtFnc: Run on a clean scene; Output already connected: " + plug)
     script = buildScript(config)
