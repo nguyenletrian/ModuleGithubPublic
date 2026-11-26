@@ -1139,13 +1139,15 @@ def buildScript(config):
                 variable = "pair_{:02d}_{:02d}".format(pair_numbers[plug], index)
                 emit('{} = ({}, {})'.format(variable, raw_source, weighted))
                 paired[plug].append(variable)
-    if paired:
-        emit()
-        emit("# Shared channels")
-    for plug, sources in paired.items():
-        emit("raw_src_attr = sharedChannel({}, [{}])".format(sourceData(plug), ", ".join(sources)))
-        dest = destination(plug)
-        emit("cmds.connectAttr(raw_src_attr, {})".format(dest))
+        ready = [plug for plug in dict.fromkeys(plugs) if plug in paired and len(paired[plug]) == target_counts[plug]]
+        if ready:
+            emit()
+            emit("# Shared channels")
+        for plug in ready:
+            sources = paired[plug]
+            emit("raw_src_attr = sharedChannel({}, [{}])".format(sourceData(plug), ", ".join(sources)))
+            dest = destination(plug)
+            emit("cmds.connectAttr(raw_src_attr, {})".format(dest))
     skirt_source = inspect.getsource(createSkirtRigSystem).rstrip()
     if distance_max_limit > 2:
         skirt_source = skirt_source.replace('ln="minDistance", at="double", min=0, max=2,',
