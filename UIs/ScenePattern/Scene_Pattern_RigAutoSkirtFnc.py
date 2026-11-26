@@ -723,9 +723,8 @@ def editSubItems(row, *args):
 
 
 def unsupportedSettings(sub):
-    # Ignore legacy Invert Output and Strength in the original-core engine.
+    # Ignore legacy Translate, Invert Output and Strength; export rotation only.
     result = []
-    if sub.get("outputType", "rotate").lower() != "rotate": result.append("Translate")
     if sub.get("reverseU"): result.append("Reverse U")
     if sub.get("extraOffsetMatrix") or sub.get("extraOffsetObject"): result.append("Extra Offset")
     return result
