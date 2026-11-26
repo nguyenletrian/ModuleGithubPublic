@@ -1031,7 +1031,18 @@ def ExportPython(data, *args):
 
 
 def Run(data, *args):
-    script = buildScript(getData(data))
+    config = getData(data)
+    conflicts = {}
+    for reader in convertConfig(config)["items"]:
+        for spec in reader["drivens"]:
+            plug = shortName(spec["target"]) + "." + spec["output"]
+            incoming = cmds.listConnections(plug, source=True, destination=False, plugs=True) or []
+            if incoming:
+                conflicts[plug] = ", ".join(incoming)
+    if conflicts:
+        details = "\n".join("{} <- {}".format(plug, source) for plug, source in conflicts.items())
+        raise ValueError("RigAutoSkirtFnc: select an unconnected Target channel in Edit Sub Items; existing connections are preserved:\n" + details)
+    script = buildScript(config)
     exec(compile(script, "RigAutoSkirtFnc", "exec"), {"__name__": "__main__"})
 
 
