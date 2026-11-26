@@ -41,7 +41,7 @@ class CleanAnimationTests(unittest.TestCase):
         self.assertEqual(list(scope()["_ranges"]([1, 2, 4, 7, 8])), [(7, 8), (4, 4), (1, 2)])
 
     def test_only_controls_and_time_curves(self):
-        cuts, writes = [], []
+        cuts, writes, deleted = [], [], []
         nodes = ["|Rig:FK", "|Rig:Joint", "|Rig:Group", "|Other:FK"]
         attrs = {"rotateX": "moving", "rotateY": "zero", "scaleX": "one",
                  "rotateZ": "sdk", "translateX": "layered", "translateY": "shared"}
@@ -51,6 +51,13 @@ class CleanAnimationTests(unittest.TestCase):
                 attr = name.rsplit(".", 1)[-1]
                 return ["layer1", "layer2"] if attr == "translateX" else [attrs[attr]]
             return values[name]
+        def cut(curve, **kw):
+            first, last = kw["index"]
+            cuts.append((curve, (first, last)))
+            del values[curve][first:last + 1]
+        def delete(curve):
+            deleted.append(curve)
+            del values[curve]
         def node_type(node):
             if node.endswith(":Joint"):
                 return "joint"
@@ -64,7 +71,9 @@ class CleanAnimationTests(unittest.TestCase):
                         listAttr=lambda node, **kw: list(attrs),
                         keyframe=keyframe,
                         listConnections=lambda plug, **kw: ["a", "b"] if plug.startswith("shared") else ["a"],
-                        cutKey=lambda curve, **kw: cuts.append((curve, kw["index"])),
+                        cutKey=cut, delete=delete,
+                        objExists=lambda curve: curve in values,
+                        isConnected=lambda source, plug: True,
                         getAttr=lambda plug, **kw: 0 if plug.endswith(".postInfinity") else True,
                         setAttr=lambda *args: writes.append(args)))
         result = env["Run"]({}, {"target_namespace": "Rig"})
@@ -72,9 +81,36 @@ class CleanAnimationTests(unittest.TestCase):
         self.assertEqual(result["removed_keys"], 5)
         self.assertEqual(result["zero_channels"], 1)
         self.assertEqual(result["skipped_channels"], 3)
-        self.assertEqual(cuts, [("moving", (3, 3)),
-                                ("zero", (0, 2)), ("one", (1, 1))])
+        self.assertEqual(cuts, [("moving", (3, 3)), ("one", (1, 1))])
+        self.assertEqual(deleted, ["zero"])
         self.assertEqual(writes, [("|Rig:FK.rotateY", 0)])
+
+
+    def test_single_zero_key_is_removed_but_nonzero_key_is_preserved(self):
+        values = {"zero": [0], "one": [1]}
+        deleted, writes = [], []
+        def keyframe(name, **kw):
+            if kw.get("name"):
+                return ["zero" if name.endswith(".rotateX") else "one"]
+            return values[name]
+        def delete(curve):
+            deleted.append(curve)
+            del values[curve]
+        env = scope(rt=SimpleNamespace(mapping_candidates=lambda ns: ["|Rig:FK"],
+                                        leaf=lambda node: "FK"),
+                    cmds=SimpleNamespace(nodeType=lambda node: "transform" if node.startswith("|") else "animCurveTA",
+                        listRelatives=lambda *a, **kw: ["shape"],
+                        listAttr=lambda *a, **kw: ["rotateX", "scaleX"],
+                        keyframe=keyframe, listConnections=lambda *a, **kw: ["onePlug"],
+                        getAttr=lambda plug, **kw: 0 if plug.endswith(".postInfinity") else True,
+                        isConnected=lambda *a: True, delete=delete,
+                        setAttr=lambda *a: writes.append(a)))
+        result = env["Run"]({}, {"target_namespace": "Rig"})
+        self.assertEqual(deleted, ["zero"])
+        self.assertEqual(values, {"one": [1]})
+        self.assertEqual(writes, [("|Rig:FK.rotateX", 0)])
+        self.assertEqual(result["removed_keys"], 1)
+        self.assertEqual(result["zero_channels"], 1)
 
 
 if __name__ == "__main__":
