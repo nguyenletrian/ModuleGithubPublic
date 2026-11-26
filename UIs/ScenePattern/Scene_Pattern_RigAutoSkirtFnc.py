@@ -975,17 +975,13 @@ def sourceData(value):
     return repr(value)
 
 
-def targetOutput(target, controls, channels):
-    # Preserve occupied target channels.
-    if all(cmds.getAttr(target + "." + channel, settable=True) and not cmds.connectionInfo(target + "." + channel, isDestination=True) and abs(cmds.getAttr(target + "." + channel)) <= 1e-8 for channel in channels):
+def checkTargetFree(target, controls, channels):
+    plugs = [f"{target}.{channel}" for channel in channels]
+    if all(cmds.getAttr(p, settable=True) and not cmds.connectionInfo(p, isDestination=True) and abs(cmds.getAttr(p)) <= 1e-8 for p in plugs):
         return target
-    target_path = cmds.ls(target, long=True)[0]
-    branches = []
-    for control in controls:
-        control_path = cmds.ls(control, long=True)[0]
-        branch = target_path + "|" + control_path[len(target_path)+1:].split("|")[0]
-        if branch not in branches: branches.append(branch)
-    offset = cmds.createNode("transform", name=target + "_Offset", parent=target)
+    path = cmds.ls(target, long=True)[0] + "|"
+    branches = list(dict.fromkeys(path + cmds.ls(control, long=True)[0][len(path):].split("|")[0] for control in controls))
+    offset = cmds.createNode("transform", n=target + "_Offset", parent=target)
     for branch in branches:
         cmds.parent(branch, offset, relative=True)
     return offset
@@ -1014,7 +1010,7 @@ def buildScript(config):
         if target not in target_variables:
             variable = "target_{:02d}".format(len(target_variables) + 1)
             target_variables[target] = variable
-            emit("{} = targetOutput({}, {}, {})".format(variable, sourceData(target), sourceData(target_controls[target]), sourceData(target_channels[target])))
+            emit("{} = checkTargetFree({}, {}, {})".format(variable, sourceData(target), sourceData(target_controls[target]), sourceData(target_channels[target])))
         return 'f"{{{}}}.{}"'.format(target_variables[target], channel)
 
     seen_spheres = set()
@@ -1157,7 +1153,7 @@ def buildScript(config):
             'ln="minDistance", at="double", min=0, max={},'.format(sourceData(distance_min_limit)))
         skirt_source = skirt_source.replace('ln="maxDistance", at="double", min=0, max=2,',
             'ln="maxDistance", at="double", min=0, max={},'.format(sourceData(distance_max_limit)))
-    lines.extend(["", inspect.getsource(targetOutput).rstrip(), "", inspect.getsource(createPoseReaderSystem).rstrip(), "",
+    lines.extend(["", inspect.getsource(checkTargetFree).rstrip(), "", inspect.getsource(createPoseReaderSystem).rstrip(), "",
                   skirt_source, "",
                   'if __name__ == "__main__":', "    main()", ""])
     script = "\n".join(lines)
