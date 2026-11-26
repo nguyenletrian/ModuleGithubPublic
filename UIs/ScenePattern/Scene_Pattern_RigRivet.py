@@ -83,7 +83,10 @@ def _create_rivet_plane(vertex_names, plane_name):
 def _follow_mode(info):
     """Resolve one checked follow type; old Rivet JSON defaults to Parent."""
     keys = (("parent", "followParent"), ("position", "followPosition"),
-            ("rotation", "followRotation"), ("matrixdelta", "followMatrixDelta"))
+            ("rotation", "followRotation"))
+    # Migrate old Matrix Delta items to Parent constraint when no other mode is selected.
+    if (info.get("followMatrixDelta") or str(info.get("followMode", "")).strip().lower() == "matrixdelta") and not any(info.get(key, False) for _, key in keys):
+        return "parent"
     present = [key for _, key in keys if key in info]
     if present:
         for key in present:
@@ -92,10 +95,10 @@ def _follow_mode(info):
         chosen = [mode for mode, key in keys if info.get(key, False)]
         if len(chosen) != 1:
             raise ValueError("RigRivet: select exactly one follow type "
-                             "(Parent, Position, Rotation, Matrix Delta)")
+                             "(Parent, Position, Rotation)")
         return chosen[0]
     mode = str(info.get("followMode", "parent")).strip().lower()
-    if mode not in ("parent", "position", "rotation", "matrixdelta"):
+    if mode not in ("parent", "position", "rotation"):
         raise ValueError("RigRivet: invalid follow type: " + mode)
     return mode
 
@@ -145,87 +148,6 @@ def _connect_rivet_follow(locator, offset, child, name, follow_mode="parent"):
     cmds.connectAttr(child + ".AutoFollow", reverse + ".inputX", force=True)
     cmds.connectAttr(reverse + ".outputX", constraint + "." + weights[1], force=True)
     return constraint, rest
-
-
-def _connect_rivet_matrix_delta(locator, child, name, delta_space="", offset_name=""):
-    """Bind-relative Rivet motion in the FK parent's current local space.
-
-    Full row-vector matrix:
-        D = ParentNow * RestNow.inverse * RivetNow * ParentNow.inverse
-    RestNow is the Rivet bind frame, optionally following Delta Space.
-    The new Delta group starts identity, so existing Child FK channels stay
-    completely unchanged. Use a space sharing the rivet's normal rigid motion
-    (e.g. the rig World control), never the FK child being driven.
-    """
-    original = list(dict.fromkeys(cmds.ls(child, long=True, type="transform") or []))
-    if len(original) != 1:
-        raise ValueError("RigRivet Matrix Delta: Child is missing/ambiguous: " + child)
-    original = original[0]
-    ancestor = (cmds.listRelatives(original, parent=True, fullPath=True) or [None])[0]
-    space = None
-    if delta_space:
-        matches = list(dict.fromkeys(cmds.ls(delta_space, long=True, type="transform") or []))
-        if len(matches) != 1:
-            raise ValueError("RigRivet Matrix Delta: Delta Space is missing/ambiguous: " + delta_space)
-        space = matches[0]
-        if space == original or space.startswith(original + "|"):
-            raise ValueError("RigRivet Matrix Delta: Delta Space cannot be the driven Child or descendant")
-    if not cmds.getAttr(original + ".inheritsTransform"):
-        raise ValueError("RigRivet Matrix Delta: Child inheritsTransform must be enabled")
-    rest_name = name + "_DeltaRest"
-    matrix_name = name + "_Delta_MM"
-    blend_name = name + "_Delta_BM"
-    offset_name = offset_name or original.rsplit("|", 1)[-1].replace(":", "_") + "_RivetDelta_GRP"
-    for saved in (rest_name, offset_name, matrix_name, blend_name):
-        if cmds.objExists(saved):
-            raise RuntimeError("RigRivet Matrix Delta already exists: " + saved)
-    def world(node):
-        return om.MMatrix(cmds.xform(node, query=True, worldSpace=True, matrix=True))
-    def close(a, b):
-        return max(abs(float(x) - float(y)) for x, y in zip(a, b)) < 1e-4
-    child_bind = world(original)
-    loc_bind = world(locator)
-    parent_bind = world(ancestor) if ancestor else om.MMatrix()
-    for label, matrix in (("Child", child_bind), ("Rivet", loc_bind), ("Parent", parent_bind)):
-        if abs(matrix.det4x4()) < 1e-10:
-            raise ValueError("RigRivet Matrix Delta: singular " + label + " matrix")
-
-    # Rest follows only Delta Space, independent of the Child FK and Delta rig.
-    rest = (cmds.createNode("transform", name=rest_name, parent=space)
-            if space else cmds.createNode("transform", name=rest_name))
-    cmds.xform(rest, worldSpace=True, matrix=list(loc_bind))
-    cmds.setAttr(rest + ".visibility", 0)
-
-    # The neutral offset is identity in its DAG parent, not matched to Child.
-    # Relative parenting keeps Child's keyed translate/rotate/scale unchanged.
-    delta = (cmds.createNode("transform", name=offset_name, parent=ancestor)
-             if ancestor else cmds.createNode("transform", name=offset_name))
-    child_new = cmds.parent(original, delta, relative=True)[0]
-    child_new = (cmds.ls(child_new, long=True, type="transform") or [child_new])[0]
-    if not close(world(child_new), child_bind):
-        raise RuntimeError("RigRivet Matrix Delta: Child moved when inserting offset: " + child_new)
-
-    if not cmds.attributeQuery("AutoFollow", node=child_new, exists=True):
-        cmds.addAttr(child_new, longName="AutoFollow", attributeType="double",
-                     min=0, max=1, defaultValue=1, keyable=True)
-
-    # Maya row-vector order. The true parent is evaluated live, so moving Head
-    # never needs an inverse of a moving MatrixFollow group as a reference.
-    matrix = cmds.createNode("multMatrix", name=matrix_name)
-    if ancestor:
-        cmds.connectAttr(ancestor + ".worldMatrix[0]", matrix + ".matrixIn[0]")
-    cmds.connectAttr(rest + ".worldInverseMatrix[0]", matrix + ".matrixIn[1]")
-    cmds.connectAttr(locator + ".worldMatrix[0]", matrix + ".matrixIn[2]")
-    if ancestor:
-        cmds.connectAttr(ancestor + ".worldInverseMatrix[0]", matrix + ".matrixIn[3]")
-
-    blend = cmds.createNode("blendMatrix", name=blend_name)
-    cmds.connectAttr(matrix + ".matrixSum", blend + ".target[0].targetMatrix")
-    cmds.connectAttr(child_new + ".AutoFollow", blend + ".target[0].weight")
-    cmds.connectAttr(blend + ".outputMatrix", delta + ".offsetParentMatrix")
-    if not close(world(child_new), child_bind):
-        raise RuntimeError("RigRivet Matrix Delta: bind pose changed when wiring: " + child_new)
-    return delta, rest, matrix, blend
 
 
 def DefaultSetting(path, *arr):
@@ -349,10 +271,7 @@ def _create_rivet(info):
     parent = str(info.get('parent') or '').strip()
     copy_transform = str(info.get('copyTransform') or '').strip()
     follow_mode = _follow_mode(info)
-    delta_space = str(info.get("deltaSpace") or "").strip() if follow_mode == "matrixdelta" else ""
-    if follow_mode == "matrixdelta" and not child:
-        raise ValueError("RigRivet Matrix Delta requires a Child control")
-    for obj in (child, parent, copy_transform, delta_space):
+    for obj in (child, parent, copy_transform):
         if obj and not cmds.objExists(obj):
             raise ValueError('Missing Maya object: {}'.format(obj))
 
@@ -361,7 +280,7 @@ def _create_rivet(info):
     name = short_child + '_Rivet'  # Blank child matches original '_Rivet'.
     plane_name = name + '_Plane'
     loc_name = name + '_Loc'
-    offset_name = short_child + ('_RivetDelta_GRP' if follow_mode == "matrixdelta" else '_RivetOffset')
+    offset_name = short_child + '_RivetOffset'
     names_to_check = [plane_name, loc_name]
     if child:
         names_to_check.append(offset_name)
@@ -411,18 +330,9 @@ def _create_rivet(info):
     offset = None
     constraint = None
     rest = None
-    delta_matrix = None
-    delta_blend = None
-    # Old constraint types are unchanged. Matrix Delta creates a neutral
-    # FK-local offset and only applies the Rivet movement relative to Rest.
     if child:
-        if follow_mode == "matrixdelta":
-            offset, rest, delta_matrix, delta_blend = _connect_rivet_matrix_delta(
-                loc, child, name, delta_space, offset_name)
-        else:
-            offset = _offset_group(child, offset_name)
-            constraint, rest = _connect_rivet_follow(
-                loc, offset, child, name, follow_mode)
+        offset = _offset_group(child, offset_name)
+        constraint, rest = _connect_rivet_follow(loc, offset, child, name, follow_mode)
 
     # Transfer source skin weights to the rivet plane.
     skin = _source_skin(mesh)
@@ -440,7 +350,7 @@ def _create_rivet(info):
         cmds.parent([plane, loc], parent, absolute=True)
     cmds.setAttr(plane + '.visibility', 0)
     cmds.setAttr(loc + '.visibility', 0)
-    return {'plane': plane, 'locator': loc, 'offset': offset, 'constraint': constraint, 'rest': rest, 'copyTransform': matched_group, 'deltaMatrix': delta_matrix, 'deltaBlend': delta_blend, 'deltaSpace': delta_space, 'followMode': follow_mode}
+    return {'plane': plane, 'locator': loc, 'offset': offset, 'constraint': constraint, 'rest': rest, 'copyTransform': matched_group, 'followMode': follow_mode}
 
 
 
@@ -462,7 +372,7 @@ def ExportPython(data, *args):
 
     import ast
     functions = (_create_rivet_plane, _source_skin, _mesh_shape, _offset_group,
-                 _follow_mode, _connect_rivet_follow, _connect_rivet_matrix_delta,
+                 _follow_mode, _connect_rivet_follow,
                  _create_rivet, BuildRigRivet)
     tree = ast.parse("\n\n".join(inspect.getsource(fn).rstrip() for fn in functions))
 
@@ -582,12 +492,10 @@ def Add(listUI, data, *args):
     mode = _follow_mode(data)
     modes = (("parent", "Parent", "followParent"),
              ("position", "Position", "followPosition"),
-             ("rotation", "Rotation", "followRotation"),
-             ("matrixdelta", "Matrix Delta", "followMatrixDelta"))
+             ("rotation", "Rotation", "followRotation"))
     follow_controls = {}
-    follow_row = cmds.rowColumnLayout(numberOfColumns=5,
-                                     columnWidth=[(1, 80), (2, 68), (3, 75),
-                                                  (4, 76), (5, 100)])
+    follow_row = cmds.rowColumnLayout(numberOfColumns=4,
+                                     columnWidth=[(1, 80), (2, 68), (3, 75), (4, 76)])
     cmds.text(label="Follow Type", align="left")
     for key, caption, json_key in modes:
         control = cmds.checkBox(label=caption, value=(mode == key))
@@ -604,12 +512,6 @@ def Add(listUI, data, *args):
     cmds.textField(text="Contain", editable=False)
     itemData["parent"] = cmds.textField(text=data.get("parent", ""))
     cmds.button(label="+", w=30, c=partial(NLTA_UI.PickObject, itemData["parent"]))
-    cmds.setParent("..")
-
-    cmds.rowColumnLayout(numberOfColumns=3, columnWidth=[(1, 80), (2, 265), (3, 32)])
-    cmds.textField(text="Delta Space", editable=False)
-    itemData["deltaSpace"] = cmds.textField(text=data.get("deltaSpace", ""))
-    cmds.button(label="+", w=30, c=partial(NLTA_UI.PickObject, itemData["deltaSpace"]))
     cmds.setParent("..")
 
     cmds.rowColumnLayout(numberOfColumns=3, columnWidth=[(1, 80), (2, 265), (3, 32)])
