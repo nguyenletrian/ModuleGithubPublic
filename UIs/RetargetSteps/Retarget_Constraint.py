@@ -196,17 +196,40 @@ def Run(settings, context):
     from_role, to_role = settings["from_role"], settings["to_role"]
     source_ns, target_ns = _namespaces(context, from_role, to_role)
     pending = []
-    targets = set()
-    existing = {entry["target"] for entry in context.get("constraint_pairs", [])
-                if any(cmds.objExists(node) for node in entry["constraints"])}
+    skipped = 0
+    channels = ("translate", "rotate", "scale")
+    configured = {}
+    for entry in context.get("constraint_pairs", []):
+        if any(cmds.objExists(node) for node in entry["constraints"]):
+            configured.setdefault(entry["target"], []).append(entry)
     for pair in _expand_pairs(settings.get("pairs", [])):
         source = _resolve(source_ns, pair["from"])
         target = _resolve(target_ns, pair["to"])
         if source == target or source.startswith(target + "|"):
             raise ValueError("Constraint would create a cycle: {} -> {}".format(source, target))
-        if target in targets or target in existing:
-            raise ValueError("Constraint already configured for: " + target)
-        targets.add(target)
+        requested = {key for key in channels if pair[key]}
+        duplicate = False
+        for entry in configured.get(target, []):
+            occupied = {key for key in channels if entry.get(key)}
+            overlap = requested & occupied
+            if not overlap:
+                continue
+            if (source == entry.get("source") and requested == occupied
+                    and settings["maintain_offset"] == entry.get("maintain_offset")
+                    and settings["use_extra_joint"] == entry.get("use_extra_joint")):
+                duplicate = True
+                continue
+            raise ValueError("Constraint conflict: {} [{}] is already driven by {}; requested driver: {}".format(
+                rt.leaf(target), ", ".join(key for key in channels if key in overlap),
+                entry.get("source"), source))
+        if duplicate:
+            skipped += 1
+            print("[Constraint] Skip duplicate: {} -> {} [{}]".format(
+                rt.leaf(source), rt.leaf(target), ", ".join(key for key in channels if key in requested)))
+            continue
+        configured.setdefault(target, []).append(dict(
+            pair, source=source, maintain_offset=settings["maintain_offset"],
+            use_extra_joint=settings["use_extra_joint"]))
         pending.append((pair, source, target))
 
     # Prepare every helper in the initial pose before driving any target.
@@ -224,11 +247,13 @@ def Run(settings, context):
                         "source_role": from_role, "source": source,
                         "target_role": to_role, "target": target, "extra_joint": extra,
                         "constraints": constraints,
+                        "maintain_offset": settings["maintain_offset"],
+                        "use_extra_joint": settings["use_extra_joint"],
                         "translate": pair["translate"], "rotate": pair["rotate"],
                         "scale": pair["scale"]})
     context.setdefault("constraint_pairs", []).extend(entries)
     if entries:
         context["baked"] = False
-    return {"pairs": len(entries),
+    return {"pairs": len(entries), "skipped_duplicates": skipped,
             "joints": [entry["extra_joint"] for entry in entries if entry["extra_joint"]],
             "constraints": sum(len(entry["constraints"]) for entry in entries)}
