@@ -198,9 +198,12 @@ def normalizeSubItems(entries, axis="Z", start_angle=10.0):
         reverse = entry.get("reverseU", False)
         invert = entry.get("invertRotate", False)
         strength = float(entry.get("strength", 1.0))
-        weight = float(entry.get("weight", -1.0 if invert else 1.0))
+        weight = float(entry.get("weight", 1.0))
         if not math.isfinite(weight):
             raise ValueError("AutoSkirt: Weight must be finite")
+        # Migrate signed weights from the previous Fnc version.
+        if weight < 0:
+            weight, invert = -weight, True
         start = float(entry.get("startAngle", start_angle))
         max_distance = float(entry.get("maxDistance", 0.0))
         min_distance = float(entry.get("minDistance", 0.0))
@@ -225,7 +228,7 @@ def normalizeSubItems(entries, axis="Z", start_angle=10.0):
         if ref_v is not None and (not math.isfinite(ref_v) or not 0 <= ref_v <= 1):
             raise ValueError("AutoSkirt: Ref V must be between 0 and 1")
         normalized = {"axis": output_axis, "outputType": output_type, "reverseU": reverse,
-                      "invertRotate": weight < 0, "strength": strength, "weight": weight,
+                      "invertRotate": invert, "strength": strength, "weight": weight,
                       "startAngle": start, "maxDistance": max_distance,
                       "minDistance": min_distance, "refV": ref_v}
         if entry.get("target"): normalized["target"] = entry["target"]
@@ -573,7 +576,7 @@ def legacyConfig(config):
             groups.setdefault(control, []).append(dict(
                 axis=spec.get("output", "rotateZ")[-1], outputType=spec.get("output", "rotateZ")[:-1],
                 invertRotate=spec.get("invertRotate", False),
-                weight=spec.get("weight", -1.0 if spec.get("invertRotate") else 1.0),
+                weight=spec.get("weight", 1.0),
                 target=spec.get("target", ""), refV=spec.get("refV"),
                 minDistance=spec.get("minDistance", 0), maxDistance=spec.get("maxDistance", 0),
                 startAngle=spec.get("startAngle", 10)))
@@ -690,12 +693,12 @@ def editSubItems(row, *args):
         for control, widgets in editor["widgets"].items():
             for sub, fields in zip(row["subItems"][control], widgets):
                 sub["axis"] = cmds.optionMenu(fields["axis"], q=True, value=True)
+                sub["invertRotate"] = cmds.checkBox(fields["invert"], q=True, value=True)
                 sub["outputType"] = cmds.optionMenu(fields["outputType"], q=True, value=True).lower()
                 sub["target"] = cmds.textField(fields["target"], q=True, text=True).strip()
                 for key in ("refV", "minDistance", "maxDistance", "startAngle", "weight"):
                     sub[key] = cmds.floatField(fields[key], q=True, value=True)
                 if sub["refV"] < 0: sub["refV"] = None
-                sub["invertRotate"] = sub["weight"] < 0
             row["subItems"][control] = normalizeSubItems(row["subItems"][control])
 
     def live(control, index, key, *unused):
@@ -757,6 +760,7 @@ def editSubItems(row, *args):
                 fields["axis"] = cmds.optionMenu(parent=line)
                 for axis in "XYZ": cmds.menuItem(parent=fields["axis"], label=axis)
                 cmds.optionMenu(fields["axis"], e=True, value=sub["axis"], changeCommand=markDirty)
+                fields["invert"] = cmds.checkBox(parent=col, label="Invert Output", value=sub["invertRotate"], changeCommand=markDirty)
                 cmds.textField(fields["target"], e=True, changeCommand=markDirty)
                 ref = liveRef(row, control, index)
                 line = cmds.rowLayout(parent=col, numberOfColumns=2, adjustableColumn=1, columnWidth2=(365, 90))
@@ -767,6 +771,7 @@ def editSubItems(row, *args):
                     line = cmds.rowLayout(parent=col, numberOfColumns=2, columnWidth2=(125, 160))
                     cmds.text(parent=line, label=label, align="left")
                     fields[key] = cmds.floatField(parent=line, precision=6, value=-1 if sub[key] is None else sub[key], changeCommand=partial(live, control, index, key))
+                    if key == "weight": cmds.floatField(fields[key], e=True, minValue=0)
                 unsupported = unsupportedSettings(sub)
                 if unsupported:
                     cmds.text(parent=col, label="Legacy: " + ", ".join(unsupported), align="left")
@@ -780,8 +785,8 @@ def editSubItems(row, *args):
         saveSettings(STATE["data"])
     editor["sync"] = sync
     draw()
-    cmds.text(parent=body, label="Live: Weight (negative = invert), Ref V, Min/Max Distance, Start Angle.", align="left")
-    cmds.text(parent=body, label="Add/Remove/Type/Axis/Target: Save, then Run on a clean scene.", align="left")
+    cmds.text(parent=body, label="Live: Weight, Ref V, Min/Max Distance, Start Angle.", align="left")
+    cmds.text(parent=body, label="Add/Remove/Type/Axis/Target/Invert: Save, then Run on a clean scene.", align="left")
     cmds.button(parent=body, label="Save Sub Items", height=28, command=finish)
     cmds.showWindow(window)
 
@@ -815,7 +820,7 @@ def convertConfig(config):
                 reader["drivens"].append(dict(control=control, target=sub.get("target") or shortName(control)+"_Target",
                     output=sub["outputType"]+sub["axis"], refV=v, minDistance=sub["minDistance"],
                     maxDistance=sub["maxDistance"], startAngle=sub["startAngle"],
-                    weight=sub["weight"]))
+                    weight=sub["weight"], invertRotate=sub["invertRotate"]))
         result["items"].append(reader)
     return result
 
@@ -975,6 +980,9 @@ def buildScript(config):
         lines.append("    " + line if line else "")
 
     def weightOutput(source, name, value):
+        if source == 'f"{md}.outputX"':
+            emit("source = " + source)
+            source = "source"
         emit("md = cmds.createNode(\"multiplyDivide\", n={})".format(sourceData(name)))
         emit('cmds.setAttr(f"{{md}}.input2X", {})'.format(sourceData(value)))
         emit('cmds.connectAttr({}, f"{{md}}.input1X")'.format(source))
@@ -1056,7 +1064,7 @@ def buildScript(config):
                 created_attrs.add(key)
         simple = (conventional_controls and conventional_targets and len(set(attributes)) == 1
                   and len(create_indices) == len(controls) and len(direct_indices) == len(controls)
-                  )
+                  and not any(d["invertRotate"] for d in reader["drivens"]))
         emit("cp_follicle_shape, cpos = createPoseReaderSystem({}, {}, {})".format(
             sourceData(pose_reader), sourceData(shortName(reader["parent"])), sourceData(shortName(reader["end"]))))
         emit()
@@ -1086,6 +1094,8 @@ def buildScript(config):
                 emit('cmds.connectAttr({}, f"{{raise_influence_nodes[{}]}}.input2X")'.format(sourceData(control + "." + attribute), i))
                 raw_source = 'f"{{raise_influence_nodes[{}]}}.outputX"'.format(i)
                 weighted = weightOutput(raw_source, pose_reader + "_" + shoulder_joints[i] + "_Weight_MD", reader["drivens"][i]["weight"])
+                if reader["drivens"][i]["invertRotate"]:
+                    weighted = weightOutput(weighted, pose_reader + "_" + shoulder_joints[i] + "_Invert_MD", -1)
                 if i in direct_indices:
                     emit("cmds.connectAttr({}, {})".format(weighted, sourceData(plug)))
                 else:
