@@ -1023,23 +1023,8 @@ def buildScript(config):
     def emit(line=""):
         lines.append("    " + line if line else "")
 
-    def weightOutput(source, name, value, variable="weight_md"):
-        emit("{} = cmds.createNode(\"multiplyDivide\", n={})".format(variable, sourceData(name)))
-        emit('cmds.connectAttr({}, f"{{{}}}.input1X")'.format(source, variable))
-        emit('cmds.setAttr(f"{{{}}}.input2X", {})'.format(variable, sourceData(value)))
-        return 'f"{{{}}}.outputX"'.format(variable)
-
     target_controls = {}
     target_channels = {}
-    target_variables = {}
-
-    def destination(plug):
-        target, channel = plug.rsplit(".", 1)
-        if target not in target_variables:
-            variable = "target_{:02d}".format(len(target_variables) + 1)
-            target_variables[target] = variable
-            emit("{} = checkTargetFree({}, {}, {})".format(variable, sourceData(target), sourceData(target_controls[target]), sourceData(target_channels[target])))
-        return 'f"{{{}}}.{}"'.format(target_variables[target], channel)
 
     seen_spheres = set()
     control_counts = {}
@@ -1059,7 +1044,10 @@ def buildScript(config):
             plug = target + "." + output
             target_counts[plug] = target_counts.get(plug, 0) + 1
     paired = {plug: [] for plug, count in target_counts.items() if count > 1}
-    pair_numbers = {plug: i for i, plug in enumerate(paired, 1)}
+    target_data = {target: (controls, target_channels[target]) for target, controls in target_controls.items()}
+    emit("target_data = " + sourceData(target_data))
+    emit("target_nodes = {}")
+    emit("shared_sources = " + sourceData(paired))
     created_attrs = set()
     distance_min_limit, distance_max_limit = 2, 2
     for reader in config["items"]:
@@ -1087,8 +1075,6 @@ def buildScript(config):
         seen_spheres.add(pose_reader)
         outputs = [d.get("output", "rotateZ") for d in reader["drivens"]]
         attributes = ["AutoFollow" if control_counts[control] > 1 else attribute_name for control in controls]
-        plugs = [target + "." + output for target, output in zip(targets, outputs)]
-        direct_indices = tuple(i for i, plug in enumerate(plugs) if plug not in paired)
         if len(set(shoulder_joints)) != len(shoulder_joints):
             raise ValueError("Rig Auto Skirt Fnc: duplicate shoulder joint name")
         emit()
@@ -1097,55 +1083,51 @@ def buildScript(config):
         emit("min_max_distance = " + sourceData(min_max_distance))
         emit("raise_start_angle = " + sourceData([float(d["startAngle"]) for d in reader["drivens"]]))
         emit("shoulder_joints = " + sourceData(shoulder_joints))
-        conventional_controls = controls == [name + "_FK" for name in shoulder_joints]
-        conventional_targets = targets == [control + "_Target" for control in controls] and all(output == "rotateZ" for output in outputs)
-        create_indices = []
-        for i, (control, attribute) in enumerate(zip(controls, attributes)):
+        master_controls = []
+        for control, attribute in zip(controls, attributes):
             key = (control, attribute)
-            if key not in created_attrs:
-                create_indices.append(i)
-                created_attrs.add(key)
-        simple = (conventional_controls and conventional_targets and len(set(attributes)) == 1
-                  and len(create_indices) == len(controls))
-        emit("cp_follicle_shape, cpos = createPoseReaderSystem({}, {}, {})".format(
-            sourceData(pose_reader), sourceData(shortName(reader["parent"])), sourceData(shortName(reader["end"]))))
-        emit("raise_influence_nodes = createSkirtRigSystem({}, cp_follicle_shape, cpos, shoulder_joints, ref_parameterV, min_max_distance, raise_start_angle)".format(sourceData(pose_reader)))
-        emit()
+            master_controls.append((control, attribute, key not in created_attrs))
+            created_attrs.add(key)
+        lift_data = [(target, output, spec["weight"], spec["invertRotate"]) for target, output, spec in zip(targets, outputs, reader["drivens"])]
+        emit("pose_reader = " + sourceData(pose_reader))
+        emit("cp_follicle_shape, cpos = createPoseReaderSystem(pose_reader, {}, {})".format(sourceData(shortName(reader["parent"])), sourceData(shortName(reader["end"]))))
+        emit("raise_influence_nodes = createSkirtRigSystem(pose_reader, cp_follicle_shape, cpos, shoulder_joints, ref_parameterV, min_max_distance, raise_start_angle)")
         emit("# Master control")
-        if simple:
-            emit("for i, shoulder_joint in enumerate(shoulder_joints):")
-            emit('    shoulderguard_control = f"{shoulder_joint}_FK"')
-            emit('    cmds.addAttr(shoulderguard_control, ln="autoShoulderGuard", at="double", min=0, max=2, dv=1, k=True)'.replace("autoShoulderGuard", attributes[0]))
-            emit('    cmds.connectAttr(f"{shoulderguard_control}.autoShoulderGuard", f"{raise_influence_nodes[i]}.input2X")'.replace("autoShoulderGuard", attributes[0]))
-        else:
-            for i, (control, attribute) in enumerate(zip(controls, attributes)):
-                if i in create_indices:
-                    emit("cmds.addAttr({}, ln={}, at=\"double\", min=0, max=2, dv=1, k=True)".format(sourceData(control), sourceData(attribute)))
-                emit('cmds.connectAttr({}, f"{{raise_influence_nodes[{}]}}.input2X")'.format(sourceData(control + "." + attribute), i))
-
-        emit()
+        emit("master_controls = " + sourceData(master_controls))
+        emit("for i, (control, attribute, create_attr) in enumerate(master_controls):")
+        emit('    if create_attr:')
+        emit('        cmds.addAttr(control, ln=attribute, at="double", min=0, max=2, dv=1, k=True)')
+        emit('    cmds.connectAttr(f"{control}.{attribute}", f"{raise_influence_nodes[i]}.input2X")')
         emit("# Lift influence")
-        for i, plug in enumerate(plugs):
-            spec = reader["drivens"][i]
-            raw_source = 'f"{{raise_influence_nodes[{}]}}.outputX"'.format(i)
-            weighted = weightOutput(raw_source, pose_reader + "_" + shoulder_joints[i] + "_Weight_MD", spec["weight"])
-            if spec["invertRotate"]:
-                weighted = weightOutput(weighted, pose_reader + "_" + shoulder_joints[i] + "_Invert_MD", -1, "invert_md")
-            if i in direct_indices:
-                dest = destination(plug)
-                emit("cmds.connectAttr({}, {})".format(weighted, dest))
-            else:
-                index = len(paired[plug]) + 1
-                variable = "pair_{:02d}_{:02d}".format(pair_numbers[plug], index)
-                emit('{} = ({}, {})'.format(variable, raw_source, weighted))
-                paired[plug].append(variable)
+        emit("lift_data = " + sourceData(lift_data))
+        emit("for i, (target, channel, weight, invert) in enumerate(lift_data):")
+        emit('    name = f"{pose_reader}_{shoulder_joints[i]}"')
+        emit('    raw = f"{raise_influence_nodes[i]}.outputX"')
+        emit('    weight_md = cmds.createNode("multiplyDivide", n=name + "_Weight_MD")')
+        emit('    cmds.connectAttr(raw, f"{weight_md}.input1X")')
+        emit('    cmds.setAttr(f"{weight_md}.input2X", weight)')
+        emit('    weighted = f"{weight_md}.outputX"')
+        emit('    if invert:')
+        emit('        invert_md = cmds.createNode("multiplyDivide", n=name + "_Invert_MD")')
+        emit('        cmds.connectAttr(weighted, f"{invert_md}.input1X")')
+        emit('        cmds.setAttr(f"{invert_md}.input2X", -1)')
+        emit('        weighted = f"{invert_md}.outputX"')
+        emit('    plug = f"{target}.{channel}"')
+        emit('    if plug in shared_sources:')
+        emit('        shared_sources[plug].append((raw, weighted))')
+        emit('    else:')
+        emit('        if target not in target_nodes:')
+        emit('            target_nodes[target] = checkTargetFree(target, *target_data[target])')
+        emit('        cmds.connectAttr(weighted, f"{target_nodes[target]}.{channel}")')
     if paired:
         emit()
         emit("# Shared channels")
-    for plug, sources in paired.items():
-        emit("raw_src_attr = sharedChannel({}, [{}])".format(sourceData(plug), ", ".join(sources)))
-        dest = destination(plug)
-        emit("cmds.connectAttr(raw_src_attr, {})".format(dest))
+        emit("for plug, sources in shared_sources.items():")
+        emit("    raw_src_attr = sharedChannel(plug, sources)")
+        emit('    target, channel = plug.rsplit(".", 1)')
+        emit('    if target not in target_nodes:')
+        emit('        target_nodes[target] = checkTargetFree(target, *target_data[target])')
+        emit('    cmds.connectAttr(raw_src_attr, f"{target_nodes[target]}.{channel}")')
     skirt_source = inspect.getsource(createSkirtRigSystem).rstrip()
     if distance_max_limit > 2:
         skirt_source = skirt_source.replace('ln="minDistance", at="double", min=0, max=2,',
