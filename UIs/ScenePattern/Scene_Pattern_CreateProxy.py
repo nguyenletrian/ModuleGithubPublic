@@ -98,13 +98,13 @@ def Form(data, *arr):
     Load(data, listUI)
 
 
-def _proxy_source_skin(mesh):
+def proxySourceSkin(mesh):
     escaped = str(mesh).replace("\\", "\\\\").replace('"', '\\"')
     skin = mel.eval('findRelatedSkinCluster "{}"'.format(escaped))
     return skin if skin and cmds.objExists(skin) else None
 
 
-def _proxy_parse_faces(info):
+def proxyParseFaces(info):
     # Resolve the source mesh and the faces to keep.
     raw_faces = info.get("faces") or ""
     if isinstance(raw_faces, (list, tuple)):
@@ -161,7 +161,7 @@ def _proxy_parse_faces(info):
     return source, keep_ids, total
 
 
-def _proxy_delete_ranges(proxy, total, keep_ids):
+def proxyDeleteRanges(proxy, total, keep_ids):
     # Remove every face outside the saved selection.
     remove_ids = [i for i in range(total) if i not in keep_ids]
     if not remove_ids:
@@ -182,7 +182,7 @@ def _proxy_delete_ranges(proxy, total, keep_ids):
     cmds.delete(targets)
 
 
-def _proxy_verify_face_count(proxy, expected, stage):
+def proxyVerifyFaceCount(proxy, expected, stage):
     actual = int(cmds.polyEvaluate(proxy, face=True) or 0)
     if actual != expected:
         raise RuntimeError(
@@ -191,15 +191,15 @@ def _proxy_verify_face_count(proxy, expected, stage):
         )
 
 
-def _make_proxy(info):
+def makeProxy(info):
     name = str(info.get("name") or "").strip()
     contain = str(info.get("contain") or "").strip()
     if not name:
         raise ValueError("CreateProxy: output Name is empty")
     if cmds.objExists(name):
         raise RuntimeError("CreateProxy: output object already exists: " + name)
-    source, face_ids, total = _proxy_parse_faces(info)
-    source_skin = _proxy_source_skin(source)
+    source, face_ids, total = proxyParseFaces(info)
+    source_skin = proxySourceSkin(source)
     joints = (cmds.skinCluster(source_skin, query=True, influence=True) or []) if source_skin else []
 
     # Duplicate the source and keep only the selected faces.
@@ -208,18 +208,18 @@ def _make_proxy(info):
         shapes = cmds.listRelatives(proxy, shapes=True, noIntermediate=True, fullPath=True, type="mesh") or []
         if len(shapes) != 1:
             raise RuntimeError("CreateProxy: duplicate has unexpected mesh shapes: " + proxy)
-        _proxy_verify_face_count(proxy, total, "after duplicate")
-        _proxy_delete_ranges(proxy, total, face_ids)
-        _proxy_verify_face_count(proxy, len(face_ids), "after face deletion")
+        proxyVerifyFaceCount(proxy, total, "after duplicate")
+        proxyDeleteRanges(proxy, total, face_ids)
+        proxyVerifyFaceCount(proxy, len(face_ids), "after face deletion")
         cmds.delete(proxy, constructionHistory=True)
-        _proxy_verify_face_count(proxy, len(face_ids), "after deleting history")
+        proxyVerifyFaceCount(proxy, len(face_ids), "after deleting history")
 
         # Transfer skin weights from the source mesh.
         if source_skin and joints:
             new_skin = cmds.skinCluster(joints, proxy, toSelectedBones=True, normalizeWeights=1, name=name + "_SkinCluster")[0]
             cmds.copySkinWeights(sourceSkin=source_skin, destinationSkin=new_skin, noMirror=True, surfaceAssociation="closestPoint", influenceAssociation="closestJoint")
             cmds.skinCluster(new_skin, edit=True, removeUnusedInfluence=True)
-            _proxy_verify_face_count(proxy, len(face_ids), "after skinning")
+            proxyVerifyFaceCount(proxy, len(face_ids), "after skinning")
 
         if contain:
             if not cmds.objExists(contain):
@@ -237,7 +237,7 @@ def BuildProxy(datas):
     """Build proxy meshes from the saved face selections."""
     created = []
     for info in datas:
-        created.append(_make_proxy(info))
+        created.append(makeProxy(info))
     return created
 
 
@@ -256,8 +256,8 @@ def ExportPython(data, *arr):
         return None
 
     import ast
-    functions = (_proxy_source_skin, _proxy_parse_faces, _proxy_delete_ranges,
-                 _make_proxy, BuildProxy)
+    functions = (proxySourceSkin, proxyParseFaces, proxyDeleteRanges,
+                 makeProxy, BuildProxy)
     tree = ast.parse("\n\n".join(inspect.getsource(fn).rstrip() for fn in functions))
 
     class ExportCode(ast.NodeTransformer):
@@ -298,7 +298,7 @@ def ExportPython(data, *arr):
                 return None
             if isinstance(value, ast.Call):
                 fn = value.func
-                if isinstance(fn, ast.Name) and fn.id == "_proxy_verify_face_count":
+                if isinstance(fn, ast.Name) and fn.id == "proxyVerifyFaceCount":
                     return None
                 if (isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name)
                         and fn.value.id == "cmds" and fn.attr == "warning"):
