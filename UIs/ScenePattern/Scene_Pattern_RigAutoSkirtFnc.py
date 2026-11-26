@@ -692,7 +692,7 @@ def editSubItems(row, *args):
     body = cmds.columnLayout(adjustableColumn=True, rowSpacing=4)
     scroll = cmds.scrollLayout(parent=body, childResizable=True, height=455)
     holder = cmds.columnLayout(parent=scroll, adjustableColumn=True, rowSpacing=4)
-    editor = {"window": window, "widgets": {}}
+    editor = {"window": window, "widgets": {}, "drawing": False}
     row["subEditor"] = editor
     for control in controls:
         row["subItems"].setdefault(control, normalizeSubItems(None))
@@ -714,6 +714,13 @@ def editSubItems(row, *args):
     def markDirty(control, *unused):
         row.setdefault("liveDirtyControls", set()).add(control)
 
+    def structureChanged(control, index, *unused):
+        if editor["drawing"]: return
+        fields = editor["widgets"][control][index]
+        sub = row["subItems"][control][index]
+        if structure(dict(sub, **readStructure(fields)), control) != structure(sub, control):
+            markDirty(control)
+
     def sync():
         # Read all fields only when saving or rebuilding the editor.
         updates = {}
@@ -729,10 +736,13 @@ def editSubItems(row, *args):
             updates[control] = normalizeSubItems(entries)
         row["subItems"].update(updates)
 
-    def live(control, index, key, *unused):
+    def live(control, index, key, *args):
+        if editor["drawing"]: return
         fields = editor["widgets"][control][index]
         previous = row["subItems"][control][index]
-        candidate = dict(previous, **{key: readNumber(fields, key)})
+        value = args[0] if args and isinstance(args[0], (int, float)) and not isinstance(args[0], bool) else readNumber(fields, key)
+        if key == "refV" and value is not None and value < 0: value = None
+        candidate = dict(previous, **{key: value})
         try:
             candidate = normalizeSubItems([candidate])[0]
             row["subItems"][control][index] = candidate
@@ -773,6 +783,7 @@ def editSubItems(row, *args):
         draw()
 
     def draw():
+        editor["drawing"] = True
         for child in cmds.layout(holder, q=True, childArray=True) or []:
             cmds.deleteUI(child)
         editor["widgets"] = {}
@@ -788,14 +799,13 @@ def editSubItems(row, *args):
                 cmds.text(parent=line, label="Output Type")
                 fields["outputType"] = cmds.optionMenu(parent=line)
                 for output_type in ("Rotate", "Translate"): cmds.menuItem(parent=fields["outputType"], label=output_type)
-                cmds.optionMenu(fields["outputType"], e=True, value=sub["outputType"].capitalize(), changeCommand=partial(markDirty, control))
+                cmds.optionMenu(fields["outputType"], e=True, value=sub["outputType"].capitalize())
                 line = cmds.rowLayout(parent=col, numberOfColumns=2, columnWidth2=(105, 160))
                 cmds.text(parent=line, label="Axis")
                 fields["axis"] = cmds.optionMenu(parent=line)
                 for axis in "XYZ": cmds.menuItem(parent=fields["axis"], label=axis)
-                cmds.optionMenu(fields["axis"], e=True, value=sub["axis"], changeCommand=partial(markDirty, control))
-                fields["invert"] = cmds.checkBox(parent=col, label="Invert Output", value=sub["invertRotate"], changeCommand=partial(markDirty, control))
-                cmds.textField(fields["target"], e=True, changeCommand=partial(markDirty, control))
+                cmds.optionMenu(fields["axis"], e=True, value=sub["axis"])
+                fields["invert"] = cmds.checkBox(parent=col, label="Invert Output", value=sub["invertRotate"])
                 ref = liveRef(row, control, index)
                 line = cmds.rowLayout(parent=col, numberOfColumns=2, adjustableColumn=1, columnWidth2=(365, 90))
                 cmds.textField(parent=line, editable=False, text=shortName(ref[0]) if ref else "Ref not built")
@@ -813,8 +823,7 @@ def editSubItems(row, *args):
                     ("maxDistance", "Max Distance", 0, distance_range * 2, 0, max(1000000.0, distance_range * 2), 6, 0.001))
                 for key, label, minimum, maximum, field_min, field_max, precision, step in ranges:
                     value = -1 if sub[key] is None else sub[key]
-                    callback = partial(live, control, index, key)
-                    fields[key] = cmds.floatSliderGrp(parent=col, label=label, field=True, minValue=minimum, maxValue=max(maximum, value), fieldMinValue=field_min, fieldMaxValue=max(field_max, value), value=value, precision=precision, step=step, columnWidth3=(145, 85, 250), adjustableColumn3=3, changeCommand=callback, dragCommand=callback)
+                    fields[key] = cmds.floatSliderGrp(parent=col, label=label, field=True, minValue=minimum, maxValue=max(maximum, value), fieldMinValue=field_min, fieldMaxValue=max(field_max, value), value=value, precision=precision, step=step, columnWidth3=(145, 85, 250), adjustableColumn3=3)
                 unsupported = unsupportedSettings(sub)
                 if unsupported:
                     cmds.text(parent=col, label="Legacy: " + ", ".join(unsupported), align="left")
@@ -823,6 +832,18 @@ def editSubItems(row, *args):
                 cmds.button(parent=actions, label="Remove Sub Item", command=partial(remove, control, index))
                 cmds.button(parent=actions, label="+ Add Sub Item", command=partial(add, control))
                 editor["widgets"][control].append(fields)
+        # Bind only after all widgets and their initial values exist.
+        for control, widgets in editor["widgets"].items():
+            for index, fields in enumerate(widgets):
+                changed = partial(structureChanged, control, index)
+                for key in ("axis", "outputType"):
+                    cmds.optionMenu(fields[key], e=True, changeCommand=changed)
+                cmds.checkBox(fields["invert"], e=True, changeCommand=changed)
+                cmds.textField(fields["target"], e=True, changeCommand=changed)
+                for key in ("weight", "refV", "startAngle", "minDistance", "maxDistance"):
+                    callback = partial(live, control, index, key)
+                    cmds.floatSliderGrp(fields[key], e=True, changeCommand=callback, dragCommand=callback)
+        editor["drawing"] = False
     def finish(*unused):
         sync()
         saveSettings(STATE["data"])
