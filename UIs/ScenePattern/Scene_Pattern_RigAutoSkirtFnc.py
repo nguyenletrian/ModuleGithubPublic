@@ -1018,7 +1018,7 @@ def buildScript(config):
     config = convertConfig(config)
     if not config["items"]:
         raise ValueError("Rig Auto Skirt Fnc: add at least one Pose Reader")
-    lines = ["import maya.cmds as cmds", "", "", "def main():"]
+    lines = ["import maya.cmds as cmds", "", "def main():"]
     def emit(line=""):
         lines.append("    " + line if line else "")
 
@@ -1029,7 +1029,6 @@ def buildScript(config):
         return 'f"{{{}}}.outputX"'.format(variable)
 
     offsets = planTargetOffsets(config)
-    emit()
     emit("# Target offsets")
     for target, (offset, branches) in offsets.items():
         emit("cmds.createNode(\"transform\", name={}, parent={})".format(sourceData(offset), sourceData(target)))
@@ -1084,17 +1083,11 @@ def buildScript(config):
         if len(set(shoulder_joints)) != len(shoulder_joints):
             raise ValueError("Rig Auto Skirt Fnc: duplicate shoulder joint name")
         emit()
-        emit("# Auto Skirt Rig Setup - " + repr(pose_reader))
-        emit("#########################################################################################")
-        emit()
-        emit("ref_parameterV = " + sourceData(ref_parameterV) + "  # v values on the sphere, horizontal values")
-        emit()
+        emit("# Pose reader: " + pose_reader)
+        emit("ref_parameterV = " + sourceData(ref_parameterV))
         emit("min_max_distance = " + sourceData(min_max_distance))
-        emit()
         emit("raise_start_angle = " + sourceData([float(d["startAngle"]) for d in reader["drivens"]]))
-        emit()
         emit("shoulder_joints = " + sourceData(shoulder_joints))
-        emit()
         conventional_controls = controls == [name + "_FK" for name in shoulder_joints]
         conventional_targets = targets == [name + "_Target_Offset" for name in controls] and all(output == "rotateZ" for output in outputs)
         create_indices = []
@@ -1107,14 +1100,9 @@ def buildScript(config):
                   and len(create_indices) == len(controls))
         emit("cp_follicle_shape, cpos = createPoseReaderSystem({}, {}, {})".format(
             sourceData(pose_reader), sourceData(shortName(reader["parent"])), sourceData(shortName(reader["end"]))))
+        emit("raise_influence_nodes = createSkirtRigSystem({}, cp_follicle_shape, cpos, shoulder_joints, ref_parameterV, min_max_distance, raise_start_angle)".format(sourceData(pose_reader)))
         emit()
-        emit("raise_influence_nodes = createSkirtRigSystem(")
-        emit("    " + sourceData(pose_reader) + ",")
-        for argument in ("cp_follicle_shape", "cpos", "shoulder_joints", "ref_parameterV", "min_max_distance"):
-            emit("    " + argument + ",")
-        emit("    raise_start_angle)")
-        emit()
-        emit("# Connect master control")
+        emit("# Master control")
         if simple:
             emit("for i, shoulder_joint in enumerate(shoulder_joints):")
             emit('    shoulderguard_control = f"{shoulder_joint}_FK"')
@@ -1127,7 +1115,7 @@ def buildScript(config):
                 emit('cmds.connectAttr({}, f"{{raise_influence_nodes[{}]}}.input2X")'.format(sourceData(control + "." + attribute), i))
 
         emit()
-        emit("# Connect lift influence")
+        emit("# Lift influence")
         for i, plug in enumerate(plugs):
             spec = reader["drivens"][i]
             raw_source = 'f"{{raise_influence_nodes[{}]}}.outputX"'.format(i)
@@ -1139,15 +1127,13 @@ def buildScript(config):
             else:
                 index = len(paired[plug]) + 1
                 variable = "pair_{:02d}_{:02d}".format(pair_numbers[plug], index)
-                emit('{} = {}'.format(variable, raw_source))
-                emit('{}_weighted = {}'.format(variable, weighted))
+                emit('{}, {}_weighted = {}, {}'.format(variable, variable, raw_source, weighted))
                 paired[plug].append(variable)
-            emit()
     for plug, sources in paired.items():
         target_base = plug.replace(".", "_")
         left, right = sources[:2]
         emit()
-        emit("# Akali: use the greater influence for the shared channel.")
+        emit("# Shared channel: " + plug)
         emit("front_cond = cmds.createNode('condition', n={!r})".format(target_base + "_Condition"))
         emit("cmds.setAttr(f'{front_cond}.operation', 3)")
         emit("cmds.connectAttr({}, f'{{front_cond}}.firstTerm')".format(left))
@@ -1157,8 +1143,7 @@ def buildScript(config):
         emit("cmds.connectAttr({}_weighted, f'{{front_cond}}.colorIfTrueG')".format(left))
         emit("cmds.connectAttr({}_weighted, f'{{front_cond}}.colorIfFalseG')".format(right))
         for index, source in enumerate(sources[2:], 2):
-            emit("previous_output = f'{front_cond}.outColorR'")
-            emit("previous_signed = f'{front_cond}.outColorG'")
+            emit("previous_output, previous_signed = f'{front_cond}.outColorR', f'{front_cond}.outColorG'")
             emit("front_cond = cmds.createNode('condition', n={!r})".format(target_base + "_Condition{:02d}".format(index)))
             emit("cmds.setAttr(f'{front_cond}.operation', 3)")
             emit("cmds.connectAttr(previous_output, f'{front_cond}.firstTerm')")
@@ -1185,8 +1170,8 @@ def buildScript(config):
             'ln="minDistance", at="double", min=0, max={},'.format(sourceData(distance_min_limit)))
         skirt_source = skirt_source.replace('ln="maxDistance", at="double", min=0, max=2,',
             'ln="maxDistance", at="double", min=0, max={},'.format(sourceData(distance_max_limit)))
-    lines.extend(["", "", inspect.getsource(createPoseReaderSystem).rstrip(), "", "",
-                  skirt_source, "", "",
+    lines.extend(["", inspect.getsource(createPoseReaderSystem).rstrip(), "",
+                  skirt_source, "",
                   'if __name__ == "__main__":', "    main()", ""])
     script = "\n".join(lines)
     compile(script, "Python_Scene_Pattern_RigAutoSkirtFnc.py", "exec")
@@ -1224,154 +1209,93 @@ def runFromForm(data, *args):
     return result
 
 
-def createPoseReaderSystem(
-    poseReader,
-    poseReader_constraint_target,
-    closest_point_ref_object,
-):
-
-    # Create a locator that follows the reference object.
-    # We use the locator's world position to find the closest point on the pose-reader sphere.
+def createPoseReaderSystem(poseReader, poseReader_constraint_target, closest_point_ref_object):
+    # Target locator
     target_loc_group = cmds.createNode("transform", n=f"{poseReader}_Target_Loc_Group")
     target_loc = cmds.spaceLocator(n=f"{poseReader}_Target_Loc")[0]
     target_loc_shape = cmds.listRelatives(target_loc, shapes=True, fullPath=False)[0]
-
     cmds.parent(target_loc, target_loc_group)
     cmds.parent(target_loc_group, "RigUtil")
     cmds.parentConstraint(closest_point_ref_object, target_loc_group, mo=False)
-
-    # Pose reader sphere setup
-    # Constrain the pose reader transform to a target (usually the pelvis)
-    # Use closestPointOnSurface to find parameterU/V from the target locator position
+    # Pose reader
     pose_reader = poseReader
     pose_reader_shape = cmds.listRelatives(pose_reader, shapes=True, fullPath=False)[0]
     cmds.parentConstraint(poseReader_constraint_target, pose_reader, mo=True)
     cpos = cmds.createNode("closestPointOnSurface", n=f"{poseReader}_cpos")
     cmds.connectAttr(f"{target_loc_shape}.worldPosition[0]", f"{cpos}.inPosition")
     cmds.connectAttr(f"{pose_reader_shape}.worldSpace[0]", f"{cpos}.inputSurface")
-
-    # Create a closest point follicle that stays on the sphere following target locator
+    # Closest point follicle
     cp_follicleShape = cmds.createNode("follicle", name=f"{poseReader}_CP_follicleShape")
     cp_follicleTransform = cmds.listRelatives(cp_follicleShape, parent=True, fullPath=False)[0]
     cp_follicleTransform = cmds.rename(cp_follicleTransform, f"{poseReader}_CP_follicle")
-
     cmds.parent(cp_follicleTransform, "RigUtil")
     cmds.setAttr(f"{cp_follicleTransform}.inheritsTransform", 0)
-
     cmds.connectAttr(f"{pose_reader_shape}.local", f"{cp_follicleShape}.inputSurface")
     cmds.connectAttr(f"{pose_reader_shape}.worldMatrix[0]", f"{cp_follicleShape}.inputWorldMatrix")
     cmds.connectAttr(f"{cp_follicleShape}.outTranslate", f"{cp_follicleTransform}.translate")
     cmds.connectAttr(f"{cp_follicleShape}.outRotate", f"{cp_follicleTransform}.rotate")
-
     cmds.connectAttr(f"{cpos}.parameterU", f"{cp_follicleShape}.parameterU")
     cmds.connectAttr(f"{cpos}.parameterV", f"{cp_follicleShape}.parameterV")
-
     return cp_follicleShape, cpos
 
-
-def createSkirtRigSystem(
-    pose_reader,
-    cp_follicleShape,
-    cpos,
-    skirt_joints,
-    ref_parameterV,
-    min_max_distance,
-    raise_start_angle,
-):
-
-    """
-    For each skirt joint, builds a small network that outputs a "raise influence" value.
-    The influence is based on:
-    - Distance between a fixed reference follicle and a moving (equator) follicle
-    - A raise angle derived from the pose-reader parameterU (clamped by raiseStartAngle)
-    """
+def createSkirtRigSystem(pose_reader, cp_follicleShape, cpos, skirt_joints, ref_parameterV, min_max_distance, raise_start_angle):
 
     pose_reader_shape = cmds.listRelatives(pose_reader, shapes=True, fullPath=False)[0]
     raise_influence_nodes = []
-
-    # skirt joint range network
     for i, skirt_joint in enumerate(skirt_joints):
-
         equator_follicles = []
-
-        # Two follicles per joint
-        # ref follicle: fixed U,V position (defines the "rest" location on the sphere)
-        # equator follicle: param V follows the pose reader and U is fixed at 0.5(equator)
+        # Ref and equator follicles
         for follicle_type in ["ref", "equator"]:
             follicleShape = cmds.createNode("follicle", name=f"{pose_reader}_{skirt_joint}_{follicle_type}_follicleShape")
             follicleTransform = cmds.listRelatives(follicleShape, parent=True, fullPath=False)[0]
             follicleTransform = cmds.rename(follicleTransform, f"{pose_reader}_{skirt_joint}_{follicle_type}_follicle")
-
             equator_follicles.append(follicleTransform)
             cmds.parent(follicleTransform, "RigUtil")
             cmds.setAttr(f"{follicleTransform}.inheritsTransform", 0)
-
             cmds.connectAttr(f"{pose_reader_shape}.local", f"{follicleShape}.inputSurface")
             cmds.connectAttr(f"{pose_reader_shape}.worldMatrix[0]", f"{follicleShape}.inputWorldMatrix")
             cmds.connectAttr(f"{follicleShape}.outTranslate", f"{follicleTransform}.translate")
             cmds.connectAttr(f"{follicleShape}.outRotate", f"{follicleTransform}.rotate")
-
             cmds.setAttr(f"{follicleShape}.parameterU", 0.5)
-
             if follicle_type == "ref":
                 cmds.setAttr(f"{follicleShape}.parameterV", ref_parameterV[i])
                 cmds.addAttr(follicleTransform, ln="minDistance", at="double", min=0, max=2, dv=0, k=True)
                 cmds.addAttr(follicleTransform, ln="maxDistance", at="double", min=0, max=2, dv=1.5, k=True)
                 cmds.addAttr(follicleTransform, ln="raiseStartAngle", at="double", min=0, max=180, dv=10, k=True)
-                # cmds.addAttr(follicleTransform, ln="falloff", at="double", min=0, max=10, dv=1, k=True)
             else:
                 cmds.connectAttr(f"{cpos}.parameterV", f"{follicleShape}.parameterV")
-
-        # Distance network
-        # Measure distance between ref and equator follicles, then remap it so
-        # - closer -> 1
-        # - farther -> 0
-        # This remapped output is used as a multiplier for skirt raise.
+        # Distance weight
         distance = cmds.createNode("distanceBetween", n=f"{pose_reader}_{skirt_joint}_Distance")
         remap_distance = cmds.createNode("remapValue", n=f"{pose_reader}_{skirt_joint}_Remap_Distance")
-
         cmds.connectAttr(f"{equator_follicles[0]}.worldMatrix[0]", f"{distance}.inMatrix1")
         cmds.connectAttr(f"{equator_follicles[1]}.worldMatrix[0]", f"{distance}.inMatrix2")
-
         cmds.connectAttr(f"{distance}.distance", f"{remap_distance}.inputValue")
         cmds.connectAttr(f"{equator_follicles[0]}.minDistance", f"{remap_distance}.inputMin")
         cmds.connectAttr(f"{equator_follicles[0]}.maxDistance", f"{remap_distance}.inputMax")
         cmds.setAttr(f"{remap_distance}.outputMin", 1)
         cmds.setAttr(f"{remap_distance}.outputMax", 0)
-
-        # Raise network
-        # Convert the CP follicle's parameterU into a 0~180 range, clamp it,
-        # then subtract raiseStartAngle so we get a "raise amount" past the start angle.
+        # Raise angle
         remap_raise = cmds.createNode("remapValue", n=f"{pose_reader}_{skirt_joint}_Remap_Raise")
         clamp_raise = cmds.createNode("clamp", n=f"{pose_reader}_{skirt_joint}_Clamp_Raise")
         pma_raise = cmds.createNode("plusMinusAverage", n=f"{pose_reader}_{skirt_joint}_pma_Raise")
-
         cmds.connectAttr(f"{cp_follicleShape}.parameterU", f"{remap_raise}.inputValue")
         cmds.setAttr(f"{remap_raise}.outputMin", 0)
         cmds.setAttr(f"{remap_raise}.outputMax", 180)
-
         cmds.connectAttr(f"{remap_raise}.outValue", f"{clamp_raise}.inputR")
         cmds.connectAttr(f"{equator_follicles[0]}.raiseStartAngle", f"{clamp_raise}.minR")
         cmds.setAttr(f"{clamp_raise}.maxR", 180)
-
         cmds.setAttr(f"{pma_raise}.operation", 2)
         cmds.connectAttr(f"{clamp_raise}.outputR", f"{pma_raise}.input1D[0]")
         cmds.connectAttr(f"{clamp_raise}.minR", f"{pma_raise}.input1D[1]")
-
-        # Final output based on distance:
-        # raiseAmount * distanceMultiplier -> influence
+        # Raise influence
         md_raise = cmds.createNode("multiplyDivide", n=f"{pose_reader}_{skirt_joint}_md_Raise")
         md_raise_influence = cmds.createNode("multiplyDivide", n=f"{pose_reader}_{skirt_joint}_md_RaiseInfluence")
         raise_influence_nodes.append(md_raise_influence)
-
         cmds.connectAttr(f"{pma_raise}.output1D", f"{md_raise}.input1X")
         cmds.connectAttr(f"{remap_distance}.outValue", f"{md_raise}.input2X")
-
         cmds.connectAttr(f"{md_raise}.outputX", f"{md_raise_influence}.input1X")
-
-        # Set 'max distance' and 'raise start angle' values for network
+        # Set ranges
         cmds.setAttr(f"{equator_follicles[0]}.minDistance", min_max_distance[i][0])
         cmds.setAttr(f"{equator_follicles[0]}.maxDistance", min_max_distance[i][1])
         cmds.setAttr(f"{equator_follicles[0]}.raiseStartAngle", raise_start_angle[i])
-
     return raise_influence_nodes
