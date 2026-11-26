@@ -96,7 +96,7 @@ patterns = {
     "Scene_Pattern_RigAutoRoll":"Rig Auto Roll",
     "Scene_Pattern_RigAutoSkirt":"Rig Auto Skirt",
     "Scene_Pattern_RigAutoSkirtFunc":"Rig Auto Skirt Func",
-    "Scene_Pattern_RigAutoFnc":"Rig Auto Fnc",
+    "Scene_Pattern_RigAutoSkirtFnc":"Rig Auto Skirt Fnc",
     "Scene_Pattern_RigAutoSkirtVector":"Rig Auto Skirt Vector",
     "Scene_Pattern_RigIK":"Rig IK",
     "Scene_Pattern_RigFold":"Rig Fold",
@@ -155,6 +155,7 @@ ITEMS = {}
 sceneData = {}
 
 _PATTERN_RENAMES = {
+    "Scene_Pattern_RigAutoFnc": ("Scene_Pattern_RigAutoSkirtFnc", "Rig Auto Fnc", "Rig Auto Skirt Fnc"),
     "Scene_Pattern_RigAutoSkirt_": ("Scene_Pattern_RigAutoSkirtFunc", "Auto Skirt_", "Auto Skirt Func"),
     "Scene_Pattern_RigSlideSurface_": ("Scene_Pattern_RigSlideSurfaceFunc", "Rig Slide Surface_", "Rig Slide Surface Func"),
 }
@@ -171,7 +172,14 @@ def _upgrade_pattern_names(entries, dataFolder):
         entry["moduleName"] = new_name
         old_path = entry.get("path", "")
         if old_path and os.path.basename(old_path) == old_name + ".json":
-            entry["path"] = os.path.join(os.path.dirname(old_path), new_name + ".json")
+            new_path = os.path.join(os.path.dirname(old_path), new_name + ".json")
+            if old_name == "Scene_Pattern_RigAutoFnc" and os.path.isfile(old_path):
+                # Keep existing data accessible; do not overwrite another JSON.
+                if not os.path.exists(new_path):
+                    os.rename(old_path, new_path)
+                    entry["path"] = new_path
+            else:
+                entry["path"] = new_path
         for field in ("title", "name"):
             if entry.get(field) == old_label:
                 entry[field] = new_label
@@ -472,7 +480,7 @@ def ExportScenePatternBatch(dataFolder, level, *args):
 
             settings = dict(entry)
             settings["sceneDataPath"] = dataFolder
-            if module_name in ("Scene_Pattern_RigAutoSkirt", "Scene_Pattern_RigAutoSkirtFunc", "Scene_Pattern_RigAutoFnc"):
+            if module_name in ("Scene_Pattern_RigAutoSkirt", "Scene_Pattern_RigAutoSkirtFunc", "Scene_Pattern_RigAutoSkirtFnc"):
                 settings["_batch_export_from_saved"] = True
 
             script = _capture_pattern_python(module, exporter, settings)
