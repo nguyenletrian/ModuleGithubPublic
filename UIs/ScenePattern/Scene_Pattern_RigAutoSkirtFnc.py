@@ -545,7 +545,7 @@ def legacyConfig(config):
         for spec in reader.pop("drivens"):
             control = spec["control"]
             groups.setdefault(control, []).append(dict(
-                axis=spec.get("output", "rotateZ")[-1], outputType="rotate",
+                axis=spec.get("output", "rotateZ")[-1], outputType=spec.get("output", "rotateZ")[:-1],
                 target=spec.get("target", ""), refV=spec.get("refV"),
                 minDistance=spec.get("minDistance", 0), maxDistance=spec.get("maxDistance", 0),
                 startAngle=spec.get("startAngle", 10)))
@@ -561,10 +561,7 @@ def saveSettings(data, *args):
 
 def liveRef(row, control, index):
     sphere = shortName(cmds.textField(row["sphere"], q=True, text=True).strip())
-    subs = row["subItems"][control]
-    if subs[index]["outputType"] == "translate": return None
-    number = sum(sub["outputType"] == "rotate" for sub in subs[:index+1])
-    suffix = "" if number == 1 else "_Sub{:02d}".format(number)
+    suffix = "" if index == 0 else "_Sub{:02d}".format(index+1)
     prefix = sphere + "_" + jointName(control) + suffix
     refs = cmds.ls(prefix + "_ref_follicle", long=True, type="transform") or []
     if len(refs) != 1: return None
@@ -641,6 +638,7 @@ def editSubItems(row, *args):
         for control, widgets in editor["widgets"].items():
             for sub, fields in zip(row["subItems"][control], widgets):
                 sub["axis"] = cmds.optionMenu(fields["axis"], q=True, value=True)
+                sub["outputType"] = cmds.optionMenu(fields["outputType"], q=True, value=True).lower()
                 sub["target"] = cmds.textField(fields["target"], q=True, text=True).strip()
                 for key in ("refV", "minDistance", "maxDistance", "startAngle"):
                     sub[key] = cmds.floatField(fields[key], q=True, value=True)
@@ -650,9 +648,6 @@ def editSubItems(row, *args):
     def live(control, index, key, *unused):
         try:
             sync()
-            if row["subItems"][control][index]["outputType"] == "translate":
-                cmds.warning("RigAutoSkirtFnc: Translate item is not built by the original rotation engine.")
-                return
             if row.get("liveDirty") or unsupportedSettings(row["subItems"][control][index]):
                 cmds.warning("RigAutoSkirtFnc: structural or legacy settings changed; Run on a clean scene first.")
                 return
@@ -681,7 +676,7 @@ def editSubItems(row, *args):
         sync()
         sub = row["subItems"][control][index]
         markDirty()
-        sub.update(outputType="rotate", reverseU=False)
+        sub.update(reverseU=False)
         sub.pop("extraOffsetMatrix", None)
         sub.pop("extraOffsetObject", None)
         draw()
@@ -699,7 +694,12 @@ def editSubItems(row, *args):
                 col = cmds.columnLayout(parent=item, adjustableColumn=True, rowSpacing=4)
                 fields = {"target": lineField(col, "Target", sub.get("target") or shortName(control) + "_Target")}
                 line = cmds.rowLayout(parent=col, numberOfColumns=2, columnWidth2=(105, 160))
-                cmds.text(parent=line, label="Rotate Axis")
+                cmds.text(parent=line, label="Output Type")
+                fields["outputType"] = cmds.optionMenu(parent=line)
+                for output_type in ("Rotate", "Translate"): cmds.menuItem(parent=fields["outputType"], label=output_type)
+                cmds.optionMenu(fields["outputType"], e=True, value=sub["outputType"].capitalize(), changeCommand=markDirty)
+                line = cmds.rowLayout(parent=col, numberOfColumns=2, columnWidth2=(105, 160))
+                cmds.text(parent=line, label="Axis")
                 fields["axis"] = cmds.optionMenu(parent=line)
                 for axis in "XYZ": cmds.menuItem(parent=fields["axis"], label=axis)
                 cmds.optionMenu(fields["axis"], e=True, value=sub["axis"], changeCommand=markDirty)
@@ -709,8 +709,6 @@ def editSubItems(row, *args):
                     line = cmds.rowLayout(parent=col, numberOfColumns=2, columnWidth2=(125, 160))
                     cmds.text(parent=line, label=label, align="left")
                     fields[key] = cmds.floatField(parent=line, precision=6, value=-1 if sub[key] is None else sub[key], changeCommand=partial(live, control, index, key))
-                if sub["outputType"] == "translate":
-                    cmds.text(parent=col, label="Legacy Translate: skipped by Run/Export.", align="left")
                 unsupported = unsupportedSettings(sub)
                 if unsupported:
                     cmds.text(parent=col, label="Legacy: " + ", ".join(unsupported), align="left")
@@ -725,13 +723,13 @@ def editSubItems(row, *args):
     editor["sync"] = sync
     draw()
     cmds.text(parent=body, label="Live: Ref V, Min/Max Distance, Start Angle. Ref V -1 / Max 0 = Auto.", align="left")
-    cmds.text(parent=body, label="Add/Remove/Axis/Target: Save, then Run on a clean scene.", align="left")
+    cmds.text(parent=body, label="Add/Remove/Type/Axis/Target: Save, then Run on a clean scene.", align="left")
     cmds.button(parent=body, label="Save Sub Items", height=28, command=finish)
     cmds.showWindow(window)
 
 
 def unsupportedSettings(sub):
-    # Legacy Invert Output and Strength are ignored; Translate items are skipped.
+    # Legacy Invert Output and Strength are ignored.
     result = []
     if sub.get("reverseU"): result.append("Reverse U")
     if sub.get("extraOffsetMatrix") or sub.get("extraOffsetObject"): result.append("Extra Offset")
@@ -750,21 +748,15 @@ def convertConfig(config):
         for i, control in enumerate(item.get("joints", [])):
             entries = item.get("subItems", [])
             for j, sub in enumerate(normalizeSubItems(entries[i] if i < len(entries) else None)):
-                if sub["outputType"] == "translate":
-                    cmds.warning("RigAutoSkirtFnc: skipped Translate item: {} / {} Sub {:02d}".format(item["id"], control, j+1))
-                    continue
                 unsupported = unsupportedSettings(sub)
                 if unsupported:
                     raise ValueError("RigAutoSkirtFnc: {} Sub {:02d}: unsupported original-core settings: {}".format(control, j+1, ", ".join(unsupported)))
                 v = sub.get("refV")
                 if v is None and i < len(refs): v = refs[i]
                 reader["drivens"].append(dict(control=control, target=sub.get("target") or shortName(control)+"_Target",
-                    output="rotate"+sub["axis"], refV=v, minDistance=sub["minDistance"],
+                    output=sub["outputType"]+sub["axis"], refV=v, minDistance=sub["minDistance"],
                     maxDistance=sub["maxDistance"], startAngle=sub["startAngle"]))
-        if reader["drivens"]:
-            result["items"].append(reader)
-        else:
-            cmds.warning("RigAutoSkirtFnc: skipped reader with no Rotate items: " + item["id"])
+        result["items"].append(reader)
     return result
 
 
@@ -891,7 +883,7 @@ def buildScript(config):
             control_counts[control] = control_counts.get(control, 0) + 1
             target = shortName(spec.get("target") or control + "_Target")
             output = spec.get("output", "rotateZ")
-            if output not in ("rotateX", "rotateY", "rotateZ"):
+            if output not in ("rotateX", "rotateY", "rotateZ", "translateX", "translateY", "translateZ"):
                 raise ValueError("Rig Auto Skirt Fnc: invalid output: " + output)
             plug = target + "." + output
             target_counts[plug] = target_counts.get(plug, 0) + 1
