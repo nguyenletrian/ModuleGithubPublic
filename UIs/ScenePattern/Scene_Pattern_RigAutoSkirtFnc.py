@@ -979,14 +979,12 @@ def buildScript(config):
     def emit(line=""):
         lines.append("    " + line if line else "")
 
-    def weightOutput(source, name, value):
-        if source == 'f"{md}.outputX"':
-            emit("source = " + source)
-            source = "source"
-        emit("md = cmds.createNode(\"multiplyDivide\", n={})".format(sourceData(name)))
-        emit('cmds.setAttr(f"{{md}}.input2X", {})'.format(sourceData(value)))
-        emit('cmds.connectAttr({}, f"{{md}}.input1X")'.format(source))
-        return 'f"{md}.outputX"'
+    def weightOutput(source, name, value, variable="weight_md"):
+        emit("{} = cmds.createNode(\"multiplyDivide\", n={})".format(variable, sourceData(name)))
+        emit('cmds.connectAttr({}, f"{{{}}}.input1X")'.format(source, variable))
+        emit('cmds.setAttr(f"{{{}}}.input2X", {})'.format(variable, sourceData(value)))
+        return 'f"{{{}}}.outputX"'.format(variable)
+
     offsets = planTargetOffsets(config)
     emit()
     emit("# Target offsets")
@@ -1063,8 +1061,7 @@ def buildScript(config):
                 create_indices.append(i)
                 created_attrs.add(key)
         simple = (conventional_controls and conventional_targets and len(set(attributes)) == 1
-                  and len(create_indices) == len(controls) and len(direct_indices) == len(controls)
-                  and not any(d["invertRotate"] for d in reader["drivens"]))
+                  and len(create_indices) == len(controls))
         emit("cp_follicle_shape, cpos = createPoseReaderSystem({}, {}, {})".format(
             sourceData(pose_reader), sourceData(shortName(reader["parent"])), sourceData(shortName(reader["end"]))))
         emit()
@@ -1076,34 +1073,33 @@ def buildScript(config):
         emit()
         emit("# Connect master control")
         if simple:
-            emit("weights = " + sourceData([d["weight"] for d in reader["drivens"]]))
             emit("for i, shoulder_joint in enumerate(shoulder_joints):")
             emit('    shoulderguard_control = f"{shoulder_joint}_FK"')
             emit('    cmds.addAttr(shoulderguard_control, ln="autoShoulderGuard", at="double", min=0, max=2, dv=1, k=True)'.replace("autoShoulderGuard", attributes[0]))
             emit('    cmds.connectAttr(f"{shoulderguard_control}.autoShoulderGuard", f"{raise_influence_nodes[i]}.input2X")'.replace("autoShoulderGuard", attributes[0]))
-            emit()
-            emit("    # Connect lift influence")
-            emit('    md = cmds.createNode("multiplyDivide", n=f"{pose_reader_name}_{shoulder_joint}_Weight_MD")'.replace("{pose_reader_name}", pose_reader))
-            emit('    cmds.setAttr(f"{md}.input2X", weights[i])')
-            emit('    cmds.connectAttr(f"{raise_influence_nodes[i]}.outputX", f"{md}.input1X")')
-            emit('    cmds.connectAttr(f"{md}.outputX", f"{shoulderguard_control}_Target_Offset.rotateZ")')
         else:
-            for i, (control, attribute, plug) in enumerate(zip(controls, attributes, plugs)):
+            for i, (control, attribute) in enumerate(zip(controls, attributes)):
                 if i in create_indices:
                     emit("cmds.addAttr({}, ln={}, at=\"double\", min=0, max=2, dv=1, k=True)".format(sourceData(control), sourceData(attribute)))
                 emit('cmds.connectAttr({}, f"{{raise_influence_nodes[{}]}}.input2X")'.format(sourceData(control + "." + attribute), i))
-                raw_source = 'f"{{raise_influence_nodes[{}]}}.outputX"'.format(i)
-                weighted = weightOutput(raw_source, pose_reader + "_" + shoulder_joints[i] + "_Weight_MD", reader["drivens"][i]["weight"])
-                if reader["drivens"][i]["invertRotate"]:
-                    weighted = weightOutput(weighted, pose_reader + "_" + shoulder_joints[i] + "_Invert_MD", -1)
-                if i in direct_indices:
-                    emit("cmds.connectAttr({}, {})".format(weighted, sourceData(plug)))
-                else:
-                    index = len(paired[plug]) + 1
-                    variable = "pair_{:02d}_{:02d}".format(pair_numbers[plug], index)
-                    emit('{} = {}'.format(variable, raw_source))
-                    emit('{}_weighted = {}'.format(variable, weighted))
-                    paired[plug].append(variable)
+
+        emit()
+        emit("# Connect lift influence")
+        for i, plug in enumerate(plugs):
+            spec = reader["drivens"][i]
+            raw_source = 'f"{{raise_influence_nodes[{}]}}.outputX"'.format(i)
+            weighted = weightOutput(raw_source, pose_reader + "_" + shoulder_joints[i] + "_Weight_MD", spec["weight"])
+            if spec["invertRotate"]:
+                weighted = weightOutput(weighted, pose_reader + "_" + shoulder_joints[i] + "_Invert_MD", -1, "invert_md")
+            if i in direct_indices:
+                emit("cmds.connectAttr({}, {})".format(weighted, sourceData(plug)))
+            else:
+                index = len(paired[plug]) + 1
+                variable = "pair_{:02d}_{:02d}".format(pair_numbers[plug], index)
+                emit('{} = {}'.format(variable, raw_source))
+                emit('{}_weighted = {}'.format(variable, weighted))
+                paired[plug].append(variable)
+            emit()
     for plug, sources in paired.items():
         target_base = plug.replace(".", "_")
         left, right = sources[:2]
