@@ -1128,8 +1128,9 @@ def createPoseReaderSystem(
     cp_follicleTransform = cmds.rename(cp_follicleTransform, f"{poseReader}_CP_follicle")
 
     cmds.parent(cp_follicleTransform, "RigUtil")
+    cmds.setAttr(f"{cp_follicleTransform}.inheritsTransform", 0)
 
-    cmds.connectAttr(f"{pose_reader_shape}.worldSpace[0]", f"{cp_follicleShape}.inputSurface")
+    cmds.connectAttr(f"{pose_reader_shape}.local", f"{cp_follicleShape}.inputSurface")
     cmds.connectAttr(f"{pose_reader_shape}.worldMatrix[0]", f"{cp_follicleShape}.inputWorldMatrix")
     cmds.connectAttr(f"{cp_follicleShape}.outTranslate", f"{cp_follicleTransform}.translate")
     cmds.connectAttr(f"{cp_follicleShape}.outRotate", f"{cp_follicleTransform}.rotate")
@@ -1175,8 +1176,9 @@ def createSkirtRigSystem(
 
             equator_follicles.append(follicleTransform)
             cmds.parent(follicleTransform, "RigUtil")
+            cmds.setAttr(f"{follicleTransform}.inheritsTransform", 0)
 
-            cmds.connectAttr(f"{pose_reader_shape}.worldSpace[0]", f"{follicleShape}.inputSurface")
+            cmds.connectAttr(f"{pose_reader_shape}.local", f"{follicleShape}.inputSurface")
             cmds.connectAttr(f"{pose_reader_shape}.worldMatrix[0]", f"{follicleShape}.inputWorldMatrix")
             cmds.connectAttr(f"{follicleShape}.outTranslate", f"{follicleTransform}.translate")
             cmds.connectAttr(f"{follicleShape}.outRotate", f"{follicleTransform}.rotate")
