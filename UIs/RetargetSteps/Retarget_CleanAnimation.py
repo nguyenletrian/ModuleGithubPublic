@@ -102,13 +102,33 @@ def Run(settings, context):
                 values, trim_tail=(cmds.getAttr(curve + ".postInfinity") == 0))
             if not indices:
                 continue
+            # A directly connected all-zero curve can be removed outright.
+            # Maya may retain a final key when cutting the last key range.
+            direct = cmds.isConnected(curve + ".output", plug)
+            if zero and direct:
+                cmds.delete(curve)
+                if cmds.getAttr(plug, settable=True):
+                    cmds.setAttr(plug, 0)
+                removed += len(values)
+                zero_channels += 1
+                cleaned.add(node)
+                continue
             for first, last in _ranges(indices):
                 cmds.cutKey(curve, index=(first, last), animation="objects",
                             option="keys", clear=True)
-            if zero and cmds.getAttr(plug, settable=True):
+            # Recheck the actual remaining keys after Maya's cut operation.
+            remaining = (cmds.keyframe(curve, query=True, valueChange=True) or []
+                         if cmds.objExists(curve) else [])
+            if remaining == [0]:
+                times = cmds.keyframe(curve, query=True, timeChange=True) or []
+                if times == [0] and cmds.isConnected(curve + ".output", plug):
+                    cmds.delete(curve)
+                    remaining = []
+                    zero = True
+            if zero and not remaining and cmds.getAttr(plug, settable=True):
                 cmds.setAttr(plug, 0)
-            removed += len(indices)
-            zero_channels += int(zero)
+            removed += len(values) - len(remaining)
+            zero_channels += int(zero and not remaining)
             cleaned.add(node)
     return {"namespace": namespace, "controls": len(controls),
             "cleaned_controls": len(cleaned), "removed_keys": removed,
