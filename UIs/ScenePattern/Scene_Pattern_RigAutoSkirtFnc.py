@@ -561,7 +561,10 @@ def saveSettings(data, *args):
 
 def liveRef(row, control, index):
     sphere = shortName(cmds.textField(row["sphere"], q=True, text=True).strip())
-    suffix = "" if index == 0 else "_Sub{:02d}".format(index+1)
+    subs = row["subItems"][control]
+    if subs[index]["outputType"] == "translate": return None
+    number = sum(sub["outputType"] == "rotate" for sub in subs[:index+1])
+    suffix = "" if number == 1 else "_Sub{:02d}".format(number)
     prefix = sphere + "_" + jointName(control) + suffix
     refs = cmds.ls(prefix + "_ref_follicle", long=True, type="transform") or []
     if len(refs) != 1: return None
@@ -647,6 +650,9 @@ def editSubItems(row, *args):
     def live(control, index, key, *unused):
         try:
             sync()
+            if row["subItems"][control][index]["outputType"] == "translate":
+                cmds.warning("RigAutoSkirtFnc: Translate item is not built by the original rotation engine.")
+                return
             if row.get("liveDirty") or unsupportedSettings(row["subItems"][control][index]):
                 cmds.warning("RigAutoSkirtFnc: structural or legacy settings changed; Run on a clean scene first.")
                 return
@@ -703,6 +709,8 @@ def editSubItems(row, *args):
                     line = cmds.rowLayout(parent=col, numberOfColumns=2, columnWidth2=(125, 160))
                     cmds.text(parent=line, label=label, align="left")
                     fields[key] = cmds.floatField(parent=line, precision=6, value=-1 if sub[key] is None else sub[key], changeCommand=partial(live, control, index, key))
+                if sub["outputType"] == "translate":
+                    cmds.text(parent=col, label="Legacy Translate: skipped by Run/Export.", align="left")
                 unsupported = unsupportedSettings(sub)
                 if unsupported:
                     cmds.text(parent=col, label="Legacy: " + ", ".join(unsupported), align="left")
@@ -723,7 +731,7 @@ def editSubItems(row, *args):
 
 
 def unsupportedSettings(sub):
-    # Ignore legacy Translate, Invert Output and Strength; export rotation only.
+    # Legacy Invert Output and Strength are ignored; Translate items are skipped.
     result = []
     if sub.get("reverseU"): result.append("Reverse U")
     if sub.get("extraOffsetMatrix") or sub.get("extraOffsetObject"): result.append("Extra Offset")
@@ -742,6 +750,9 @@ def convertConfig(config):
         for i, control in enumerate(item.get("joints", [])):
             entries = item.get("subItems", [])
             for j, sub in enumerate(normalizeSubItems(entries[i] if i < len(entries) else None)):
+                if sub["outputType"] == "translate":
+                    cmds.warning("RigAutoSkirtFnc: skipped Translate item: {} / {} Sub {:02d}".format(item["id"], control, j+1))
+                    continue
                 unsupported = unsupportedSettings(sub)
                 if unsupported:
                     raise ValueError("RigAutoSkirtFnc: {} Sub {:02d}: unsupported original-core settings: {}".format(control, j+1, ", ".join(unsupported)))
@@ -750,7 +761,10 @@ def convertConfig(config):
                 reader["drivens"].append(dict(control=control, target=sub.get("target") or shortName(control)+"_Target",
                     output="rotate"+sub["axis"], refV=v, minDistance=sub["minDistance"],
                     maxDistance=sub["maxDistance"], startAngle=sub["startAngle"]))
-        result["items"].append(reader)
+        if reader["drivens"]:
+            result["items"].append(reader)
+        else:
+            cmds.warning("RigAutoSkirtFnc: skipped reader with no Rotate items: " + item["id"])
     return result
 
 
