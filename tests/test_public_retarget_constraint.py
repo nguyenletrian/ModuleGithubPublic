@@ -61,6 +61,44 @@ class ConstraintTests(unittest.TestCase):
         self.assertIn("self._make_rotate_pairs(parent, data[\"pairs\"])", source)
         self.assertIn("self.widgets[key] = (kind, self.rotate_pair_rows)", source)
 
+    def test_ui_duplicate_groups_use_namespace_and_side(self):
+        tree = ast.parse((ROOT / "UIs/Retarget.py").read_text(encoding="utf-8"))
+        names = {"_constraint_role_namespace", "_constraint_duplicate_groups"}
+        env = {"rt": SimpleNamespace(leaf=lambda node: node.split("|")[-1].split(":")[-1])}
+        exec(compile(ast.Module(body=[node for node in tree.body
+                     if isinstance(node, ast.FunctionDef) and node.name in names],
+                     type_ignores=[]), "Retarget.py", "exec"), env)
+        pair = scope("PairData")["PairData"]
+        mirror = scope("_mirror_name", re=re)["_mirror_name"]
+        general = {"new_namespace": "RT_NEW", "old_animations_namespace": "RT_ANIM",
+                   "reference_pose_namespace": "RT_REF"}
+        cards = [
+            ("a", {"from_role": "Anim", "to_role": "Rig", "pairs": [
+                pair({"from": "R_Hair", "to": "R_HairFK", "mirror": True}),
+                pair({"from": "Other", "to": "R_HairFK"})]}),
+            ("b", {"from_role": "REF", "to_role": "Rig", "pairs": [
+                pair({"from": "R_Hair", "to": "L_HairFK"})]})]
+        groups = env["_constraint_duplicate_groups"](cards, general, mirror)
+        self.assertEqual(groups[("to", "RT_NEW", "R_HairFK")], {("a", 0), ("a", 1)})
+        self.assertEqual(groups[("to", "RT_NEW", "L_HairFK")], {("a", 0), ("b", 0)})
+        self.assertNotIn(("from", "RT_ANIM", "R_Hair"), groups)
+
+    def test_ui_pick_without_selection_selects_saved_qualified_name(self):
+        tree = ast.parse((ROOT / "UIs/Retarget.py").read_text(encoding="utf-8"))
+        names = {"_constraint_role_namespace", "_pick_constraint_object"}
+        calls = []
+        env = {"cmds": SimpleNamespace(ls=lambda **kw: [],
+                                       select=lambda node, **kw: calls.append((node, kw))),
+               "_general_from_form": lambda: {"new_namespace": "RT_NEW"},
+               "_module": lambda kind: SimpleNamespace(_resolve=lambda ns, name: ns + ":" + name)}
+        exec(compile(ast.Module(body=[node for node in tree.body
+                     if isinstance(node, ast.FunctionDef) and node.name in names],
+                     type_ignores=[]), "Retarget.py", "exec"), env)
+        field = SimpleNamespace(text=lambda: "HairFK")
+        role = SimpleNamespace(currentText=lambda: "Rig")
+        self.assertFalse(env["_pick_constraint_object"](field, role))
+        self.assertEqual(calls, [("RT_NEW:HairFK", {"replace": True})])
+
     def test_general_namespace_roles_override_stale_context(self):
         env = scope("_namespaces")
         self.assertEqual(env["_namespaces"]({
