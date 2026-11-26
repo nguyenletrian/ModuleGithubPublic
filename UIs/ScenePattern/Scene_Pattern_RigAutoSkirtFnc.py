@@ -891,11 +891,11 @@ def planAutoOffsets(config):
         if len(names) != 1:
             raise ValueError("RigAutoSkirtFnc: missing or ambiguous Target: " + target)
         target_path = names[0]
-        offset = (target[:-7] if target.endswith("_Target") else target) + "_AutoOffset"
+        offset = target + "_Offset"
         existing = cmds.ls(offset, long=True, type="transform") or []
-        expected_path = target_path + "|" + offset
-        if existing and existing != [expected_path]:
-            raise ValueError("RigAutoSkirtFnc: AutoOffset name already in use: " + offset)
+        parent_path = target_path.rsplit("|", 1)[0]
+        if existing and existing != [parent_path]:
+            raise ValueError("RigAutoSkirtFnc: Target Offset name already in use: " + offset)
         occupied = False
         for channel, nodes in entry["channels"].items():
             plug = target_path + "." + channel
@@ -906,23 +906,38 @@ def planAutoOffsets(config):
             if any(shortName(source.split(".", 1)[0]) not in own_nodes for source in sources):
                 occupied = True
         if not occupied and not existing: continue
-        branches = []
         for control in entry["controls"]:
             matches = cmds.ls(control, long=True, type="transform") or []
             if len(matches) != 1 or not matches[0].startswith(target_path + "|"):
-                raise ValueError("RigAutoSkirtFnc: Target must be an ancestor of its Driven to insert AutoOffset: {} / {}".format(target, control))
-            relative = matches[0][len(target_path)+1:].split("|")
-            if existing:
-                if relative[0] != offset or len(relative) < 2:
-                    raise ValueError("RigAutoSkirtFnc: existing AutoOffset does not contain Driven: " + control)
-                branch = relative[1]
-            else:
-                branch = relative[0]
-            if branch not in branches: branches.append(branch)
-        for branch in branches:
-            if len(cmds.ls(branch, long=True) or []) != 1:
-                raise ValueError("RigAutoSkirtFnc: ambiguous Driven branch: " + branch)
-        offsets[target] = (offset, branches)
+                raise ValueError("RigAutoSkirtFnc: Target must be an ancestor of its Driven: {} / {}".format(target, control))
+        parent = shortName(parent_path) if parent_path else ""
+        if existing:
+            parent_path = parent_path.rsplit("|", 1)[0]
+            parent = shortName(parent_path) if parent_path else ""
+        if parent and len(cmds.ls(parent, long=True) or []) != 1:
+            raise ValueError("RigAutoSkirtFnc: ambiguous Target parent: " + parent)
+        compensation = []
+        # Keep constraints evaluating in the original parent space.
+        for destination in cmds.listConnections(target_path + ".parentInverseMatrix[0]", source=False, destination=True, plugs=True) or []:
+            if cmds.attributeName(destination, long=True) != "constraintParentInverseMatrix":
+                continue
+            node = destination.split(".", 1)[0]
+            if "constraint" not in (cmds.nodeType(node, inherited=True) or []):
+                continue
+            source = cmds.connectionInfo(destination, sourceFromDestination=True)
+            if source:
+                compensation.append((shortName(source), shortName(destination)))
+        if existing:
+            for destination in cmds.listConnections(existing[0] + ".parentInverseMatrix[0]", source=False, destination=True, plugs=True) or []:
+                if cmds.attributeName(destination, long=True) != "constraintParentInverseMatrix":
+                    continue
+                node = destination.split(".", 1)[0]
+                if "constraint" not in (cmds.nodeType(node, inherited=True) or []):
+                    continue
+                # Export for a clean scene, before the offset exists.
+                pair = (target + ".parentInverseMatrix[0]", shortName(destination))
+                if pair not in compensation: compensation.append(pair)
+        offsets[target] = (offset, parent, compensation)
     return offsets
 
 
@@ -936,11 +951,16 @@ def buildScript(config):
     offsets = planAutoOffsets(config)
     if offsets:
         emit()
-        emit("# Auto offsets for occupied target channels")
-        for target, (offset, branches) in offsets.items():
-            emit("cmds.createNode(\"transform\", name={}, parent={})".format(sourceData(offset), sourceData(target)))
-            for branch in branches:
-                emit("cmds.parent({}, {}, relative=True)".format(sourceData(branch), sourceData(offset)))
+        emit("# Target offsets for occupied channels")
+        for target, (offset, parent, compensation) in offsets.items():
+            if parent:
+                emit("cmds.createNode(\"transform\", name={}, parent={})".format(sourceData(offset), sourceData(parent)))
+            else:
+                emit("cmds.createNode(\"transform\", name={})".format(sourceData(offset)))
+            emit("cmds.parent({}, {}, relative=True)".format(sourceData(target), sourceData(offset)))
+            for source, destination in compensation:
+                emit("cmds.disconnectAttr({}, {})".format(sourceData(source), sourceData(destination)))
+                emit("cmds.connectAttr({}, {})".format(sourceData(offset + ".parentInverseMatrix[0]"), sourceData(destination)))
     seen_spheres = set()
     control_counts = {}
     target_counts = {}
@@ -1100,9 +1120,9 @@ def Run(data, *args):
     config = getData(data)
     converted = convertConfig(config)
     offsets = planAutoOffsets(converted)
-    for target, (offset, branches) in offsets.items():
+    for target, (offset, parent, compensation) in offsets.items():
         if cmds.objExists(offset):
-            raise ValueError("RigAutoSkirtFnc: Run on a clean scene; AutoOffset already exists: " + offset)
+            raise ValueError("RigAutoSkirtFnc: Run on a clean scene; Target Offset already exists: " + offset)
     for reader in converted["items"]:
         for spec in reader["drivens"]:
             target = shortName(spec["target"])
