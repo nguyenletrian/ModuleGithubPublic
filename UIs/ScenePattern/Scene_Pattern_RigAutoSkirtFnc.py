@@ -453,7 +453,7 @@ def setFollicleDisplaySize(sphere, size):
 
 def liveFollicleSize(row, *args):
     sphere = shortName(cmds.textField(row["sphere"], q=True, text=True).strip())
-    size = cmds.floatField(row["follicleSize"], q=True, value=True)
+    size = cmds.floatSliderGrp(row["follicleSize"], q=True, value=True)
     if sphere: setFollicleDisplaySize(sphere, size)
 
 
@@ -483,9 +483,8 @@ def addRow(parent, record=None):
     row["parent"] = lineField(col, "Parent", record.get("parent", ""))
     row["start"] = lineField(col, "Start", record.get("start", ""))
     row["end"] = lineField(col, "End", record.get("end", ""))
-    line = cmds.rowLayout(parent=col, numberOfColumns=2, columnWidth2=(125, 165))
-    cmds.text(parent=line, label="Follicle Display Size", align="left")
-    row["follicleSize"] = cmds.floatField(parent=line, value=float(record.get("follicleSize", 1.0)), precision=3, minValue=0.01, maxValue=100, changeCommand=partial(liveFollicleSize, row))
+    size = float(record.get("follicleSize", 1.0))
+    row["follicleSize"] = cmds.floatSliderGrp(parent=col, label="Follicle Display Size", field=True, minValue=0.01, maxValue=max(2.0, size), fieldMinValue=0.01, fieldMaxValue=100, value=size, precision=3, step=0.01, columnWidth3=(145, 85, 210), adjustableColumn3=3, changeCommand=partial(liveFollicleSize, row), dragCommand=partial(liveFollicleSize, row))
     line = cmds.rowLayout(parent=col, numberOfColumns=3, adjustableColumn=2, columnWidth3=(115, 180, 74))
     cmds.text(parent=line, label="Driven Controls")
     row["controls"] = cmds.scrollField(parent=line, height=75, text="\n".join(raw_controls), wordWrap=False)
@@ -541,7 +540,7 @@ def readUi():
             "parent": cmds.textField(row["parent"], query=True, text=True).strip(),
             "start": cmds.textField(row["start"], query=True, text=True).strip(),
             "end": cmds.textField(row["end"], query=True, text=True).strip(),
-            "follicleSize": float(cmds.floatField(row["follicleSize"], q=True, value=True)),
+            "follicleSize": float(cmds.floatSliderGrp(row["follicleSize"], q=True, value=True)),
             "attributeName": cmds.textField(row["attributeName"], query=True, text=True).strip(),
             "equatorU": 0.5,
             "joints": controls,
@@ -709,7 +708,7 @@ def editSubItems(row, *args):
                     target=cmds.textField(fields["target"], q=True, text=True).strip())
 
     def readNumber(fields, key):
-        value = cmds.floatField(fields[key], q=True, value=True)
+        value = cmds.floatSliderGrp(fields[key], q=True, value=True)
         return None if key == "refV" and value < 0 else value
 
     def markDirty(control, *unused):
@@ -748,7 +747,7 @@ def editSubItems(row, *args):
         except (ValueError, RuntimeError) as exc:
             row["subItems"][control][index] = previous
             value = previous[key]
-            cmds.floatField(fields[key], e=True, value=-1 if value is None else value)
+            cmds.floatSliderGrp(fields[key], e=True, value=-1 if value is None else value)
             cmds.warning("RigAutoSkirtFnc Live: " + str(exc))
 
     def add(control, *unused):
@@ -801,12 +800,21 @@ def editSubItems(row, *args):
                 line = cmds.rowLayout(parent=col, numberOfColumns=2, adjustableColumn=1, columnWidth2=(365, 90))
                 cmds.textField(parent=line, editable=False, text=shortName(ref[0]) if ref else "Ref not built")
                 cmds.button(parent=line, label="Pick Ref", command=partial(pickRef, row, control, index))
-                for key, label in (("weight", "Weight"), ("refV", "Ref V (-1 Auto)"), ("startAngle", "Start Angle"),
-                                   ("minDistance", "Min Distance"), ("maxDistance", "Max Distance")):
-                    line = cmds.rowLayout(parent=col, numberOfColumns=2, columnWidth2=(125, 160))
-                    cmds.text(parent=line, label=label, align="left")
-                    fields[key] = cmds.floatField(parent=line, precision=6, value=-1 if sub[key] is None else sub[key], changeCommand=partial(live, control, index, key), dragCommand=partial(live, control, index, key))
-                    if key == "weight": cmds.floatField(fields[key], e=True, minValue=0)
+                distance_max = sub["maxDistance"]
+                if distance_max == 0 and ref:
+                    distance_max = cmds.getAttr(ref[0] + ".maxDistance")
+                distance_range = max(1.0, distance_max, sub["minDistance"] * 1.5)
+                weight_range = max(2.0, sub["weight"])
+                ranges = (
+                    ("weight", "Weight", 0, weight_range, 0, max(1000000.0, weight_range), 8, 0.001),
+                    ("refV", "Ref V (-1 Auto)", -1 if sub["refV"] is None else 0, 1, -1, 1, 6, 0.001),
+                    ("startAngle", "Start Angle", 0, 179.99, 0, 179.999999, 6, 0.1),
+                    ("minDistance", "Min Distance", 0, distance_range, 0, max(1000000.0, distance_range), 6, 0.001),
+                    ("maxDistance", "Max Distance", 0, distance_range * 2, 0, max(1000000.0, distance_range * 2), 6, 0.001))
+                for key, label, minimum, maximum, field_min, field_max, precision, step in ranges:
+                    value = -1 if sub[key] is None else sub[key]
+                    callback = partial(live, control, index, key)
+                    fields[key] = cmds.floatSliderGrp(parent=col, label=label, field=True, minValue=minimum, maxValue=max(maximum, value), fieldMinValue=field_min, fieldMaxValue=max(field_max, value), value=value, precision=precision, step=step, columnWidth3=(145, 85, 250), adjustableColumn3=3, changeCommand=callback, dragCommand=callback)
                 unsupported = unsupportedSettings(sub)
                 if unsupported:
                     cmds.text(parent=col, label="Legacy: " + ", ".join(unsupported), align="left")
