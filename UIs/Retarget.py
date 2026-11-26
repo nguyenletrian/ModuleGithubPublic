@@ -760,18 +760,62 @@ def _pick_pair_object(field, role):
     field.setText(rt.leaf(node))
 
 
+def _constraint_role_namespace(role, general):
+    key = {"Rig": "new_namespace", "Anim": "old_animations_namespace",
+           "REF": "reference_pose_namespace"}[role]
+    return str(general.get(key) or "").strip(":")
+
+
 def _pick_constraint_object(field, role):
-    """Pick a name without changing the module-wide namespace."""
+    """Pick from Maya, or select the saved name when nothing is selected."""
+    namespace = _constraint_role_namespace(role.currentText(), _general_from_form())
+    if not namespace:
+        raise ValueError("Set the module's {} namespace first.".format(role.currentText()))
     selected = cmds.ls(selection=True, long=True, objectsOnly=True) or []
+    if not selected:
+        name = field.text().strip()
+        if not name:
+            raise ValueError("Pick or enter an object name first.")
+        node = _module("Constraint")._resolve(namespace, name)
+        cmds.select(node, replace=True)
+        return False
     if len(selected) != 1 or cmds.nodeType(selected[0]) not in ("transform", "joint"):
         raise ValueError("Select exactly one Maya transform or joint.")
     node = selected[0].split("|")[-1]
-    namespace = node.rpartition(":")[0]
-    key = {"Rig": "new_namespace", "Anim": "old_animations_namespace",
-           "REF": "reference_pose_namespace"}[role.currentText()]
-    if namespace != _general_from_form().get(key, "").strip(":"):
+    if node.rpartition(":")[0].lstrip(":") != namespace:
         raise ValueError("Select an object in the module's {} namespace.".format(role.currentText()))
     field.setText(rt.leaf(node))
+    return True
+
+
+def _constraint_duplicate_groups(cards, general, mirror_name):
+    """Group repeated From/To names separately, including effective mirror rows."""
+    groups = {}
+    for identifier, settings in cards:
+        rows = settings["pairs"]
+        explicit = {rt.leaf(row["to"]) for row in rows if row["to"] and row["from"]
+                    and any(row[key] for key in ("translate", "rotate", "scale"))}
+        generated = set()
+        for index, row in enumerate(rows):
+            names = {side: rt.leaf(row[side]) if row[side] else ""
+                     for side in ("from", "to")}
+            occurrences = [names]
+            if (row["mirror"] and all(names.values())
+                    and any(row[key] for key in ("translate", "rotate", "scale"))):
+                opposite = mirror_name(names["to"])
+                source = mirror_name(names["from"])
+                if (opposite != names["to"] and source != names["from"]
+                        and opposite not in explicit and opposite not in generated):
+                    occurrences.append({"from": source, "to": opposite})
+                    generated.add(opposite)
+            for occurrence in occurrences:
+                for side, name in occurrence.items():
+                    if not name:
+                        continue
+                    namespace = _constraint_role_namespace(settings[side + "_role"], general)
+                    key = (side, namespace, name)
+                    groups.setdefault(key, set()).add((identifier, index))
+    return {key: members for key, members in groups.items() if len(members) > 1}
 
 
 def _pick_channel_attribute(attribute_field, object_field):
@@ -1595,6 +1639,10 @@ class RetargetCard(QtWidgets.QFrame):
             match.setToolTip("Add unique matching joint/control names from From and To namespaces")
             match.clicked.connect(lambda checked=False: _safe(self._constraint_match_by_name))
             buttons.addWidget(match, 1)
+            check = QtWidgets.QPushButton("Check Duplicate")
+            check.setToolTip("Highlight repeated From / To objects, including mirror pairs and enabled Constraint modules")
+            check.clicked.connect(lambda checked=False: _safe(self._constraint_check_duplicates))
+            buttons.addWidget(check, 1)
             parent.addLayout(buttons)
         else:
             parent.addWidget(add)
@@ -1611,6 +1659,60 @@ class RetargetCard(QtWidgets.QFrame):
                 self._add_rotate_pair_row(pair)
         _status("Constraint: added {} matching name pair(s).".format(len(pairs)))
 
+    def _constraint_rows_data(self):
+        return {"from_role": self.constraint_roles["from_role"].currentText(),
+                "to_role": self.constraint_roles["to_role"].currentText(),
+                "pairs": [dict({key: row[key].text().strip() for key in ("from", "to")},
+                               **{key: row[key].isChecked() for key in
+                                  ("translate", "rotate", "scale", "mirror")})
+                          for row in self.rotate_pair_rows]}
+
+    def _constraint_check_duplicates(self, picked=None):
+        cards = {self.identifier: self}
+        all_cards = UIs.get("cards", {})
+        for identifier, card in all_cards.items():
+            if card.kind == "Constraint" and card is not self and card.enabled.isChecked():
+                cards[identifier] = card
+        settings = [(identifier, card._constraint_rows_data())
+                    for identifier, card in cards.items()]
+        groups = _constraint_duplicate_groups(
+            settings, _general_from_form(), _module("Constraint")._mirror_name)
+        marks = {}
+        for (side, namespace, name), members in groups.items():
+            label = "{}: {}:{}".format(side.title(), namespace, name)
+            for member in members:
+                marks.setdefault(member, {}).setdefault(side, []).append(label)
+        for identifier, card in all_cards.items():
+            if card.kind != "Constraint":
+                continue
+            for index, row in enumerate(card.rotate_pair_rows):
+                flags = marks.get((identifier, index), {})
+                row["frame"].setStyleSheet(
+                    "QFrame#ConstraintPairRow { border: 1px solid #d99b42; border-radius: 3px; }"
+                    if flags else "")
+                for side in ("from", "to"):
+                    field = row[side]
+                    field.setStyleSheet("QLineEdit { border: 1px solid #e0a14a; background: #503821; color: #fff1d6; }"
+                                        if side in flags else "")
+                    field.setToolTip("\n".join(flags.get(side, [])) or side.title())
+        if picked is not None:
+            row, side = picked
+            index = self.rotate_pair_rows.index(row)
+            labels = marks.get((self.identifier, index), {}).get(side, [])
+            if labels:
+                QtWidgets.QMessageBox.warning(
+                    self, "Duplicate Constraint Object",
+                    "Repeated object:\n" + "\n".join(labels)
+                    + "\n\nThe value is kept. Check highlighted pairs.")
+        else:
+            _status("Constraint: {} repeated object(s), {} highlighted pair(s).".format(
+                len(groups), len(marks)))
+        return groups
+
+    def _constraint_pick(self, row, side, field, role):
+        if _pick_constraint_object(field, role):
+            self._constraint_check_duplicates(picked=(row, side))
+
     def _add_rotate_pair_row(self, data=None):
         vector = self.kind == "MatchRotatePair"
         constraint = self.kind == "Constraint"
@@ -1618,6 +1720,8 @@ class RetargetCard(QtWidgets.QFrame):
             data if isinstance(data, dict) else {})
         frame = QtWidgets.QFrame(self.details)
         frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        if constraint:
+            frame.setObjectName("ConstraintPairRow")
         content = QtWidgets.QVBoxLayout(frame)
         content.setContentsMargins(4, 3, 4, 3)
         content.setSpacing(3)
@@ -1666,8 +1770,8 @@ class RetargetCard(QtWidgets.QFrame):
                 pick = QtWidgets.QPushButton("Pick")
                 pick.setFixedWidth(36)
                 if constraint:
-                    pick.clicked.connect(lambda checked=False, f=field, r=role:
-                                         _safe(lambda: _pick_constraint_object(f, r)))
+                    pick.clicked.connect(lambda checked=False, f=field, r=role, k=key, item=row:
+                                         _safe(lambda: self._constraint_pick(item, k, f, r)))
                 else:
                     pick.clicked.connect(lambda checked=False, f=field, r=role:
                                          _safe(lambda: _pick_pair_object(f, r)))
