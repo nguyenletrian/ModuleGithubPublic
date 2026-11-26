@@ -987,6 +987,34 @@ def checkTargetFree(target, controls, channels):
     return offset
 
 
+def sharedChannel(plug, sources):
+    name = plug.replace(".", "_")
+    raw, weighted = sources[0]
+    for i, (next_raw, next_weighted) in enumerate(sources[1:], 1):
+        suffix = "" if i == 1 else "{:02d}".format(i)
+        cond = cmds.createNode("condition", n=name + "_Condition" + suffix)
+        cmds.setAttr(f"{cond}.operation", 3)
+        cmds.connectAttr(raw, f"{cond}.firstTerm")
+        cmds.connectAttr(raw, f"{cond}.colorIfTrueR")
+        cmds.connectAttr(next_raw, f"{cond}.secondTerm")
+        cmds.connectAttr(next_raw, f"{cond}.colorIfFalseR")
+        cmds.connectAttr(weighted, f"{cond}.colorIfTrueG")
+        cmds.connectAttr(next_weighted, f"{cond}.colorIfFalseG")
+        raw, weighted = f"{cond}.outColorR", f"{cond}.outColorG"
+    mult = cmds.createNode("multiplyDivide", n=name + "_RaiseValue_Mult")
+    cmds.connectAttr(weighted, f"{mult}.input1X")
+    cmds.setAttr(f"{mult}.input2X", 2)
+    output = f"{mult}.outputX"
+    val = cmds.getAttr(output) or 0.0
+    if abs(val) >= 0.0001:
+        pma = cmds.createNode("plusMinusAverage", n=name + "_ZeroOut_PMA")
+        cmds.setAttr(f"{pma}.operation", 2)
+        cmds.connectAttr(output, f"{pma}.input1D[0]")
+        cmds.setAttr(f"{pma}.input1D[1]", val)
+        output = f"{pma}.output1D"
+    return output
+
+
 def buildScript(config):
     config = convertConfig(config)
     if not config["items"]:
@@ -1109,42 +1137,13 @@ def buildScript(config):
             else:
                 index = len(paired[plug]) + 1
                 variable = "pair_{:02d}_{:02d}".format(pair_numbers[plug], index)
-                emit('{}, {}_weighted = {}, {}'.format(variable, variable, raw_source, weighted))
+                emit('{} = ({}, {})'.format(variable, raw_source, weighted))
                 paired[plug].append(variable)
-    for plug, sources in paired.items():
-        target_base = plug.replace(".", "_")
-        left, right = sources[:2]
+    if paired:
         emit()
-        emit("# Shared channel: " + plug)
-        emit("front_cond = cmds.createNode('condition', n={!r})".format(target_base + "_Condition"))
-        emit("cmds.setAttr(f'{front_cond}.operation', 3)")
-        emit("cmds.connectAttr({}, f'{{front_cond}}.firstTerm')".format(left))
-        emit("cmds.connectAttr({}, f'{{front_cond}}.colorIfTrueR')".format(left))
-        emit("cmds.connectAttr({}, f'{{front_cond}}.secondTerm')".format(right))
-        emit("cmds.connectAttr({}, f'{{front_cond}}.colorIfFalseR')".format(right))
-        emit("cmds.connectAttr({}_weighted, f'{{front_cond}}.colorIfTrueG')".format(left))
-        emit("cmds.connectAttr({}_weighted, f'{{front_cond}}.colorIfFalseG')".format(right))
-        for index, source in enumerate(sources[2:], 2):
-            emit("previous_output, previous_signed = f'{front_cond}.outColorR', f'{front_cond}.outColorG'")
-            emit("front_cond = cmds.createNode('condition', n={!r})".format(target_base + "_Condition{:02d}".format(index)))
-            emit("cmds.setAttr(f'{front_cond}.operation', 3)")
-            emit("cmds.connectAttr(previous_output, f'{front_cond}.firstTerm')")
-            emit("cmds.connectAttr(previous_output, f'{front_cond}.colorIfTrueR')")
-            emit("cmds.connectAttr({}, f'{{front_cond}}.secondTerm')".format(source))
-            emit("cmds.connectAttr({}, f'{{front_cond}}.colorIfFalseR')".format(source))
-            emit("cmds.connectAttr(previous_signed, f'{front_cond}.colorIfTrueG')")
-            emit("cmds.connectAttr({}_weighted, f'{{front_cond}}.colorIfFalseG')".format(source))
-        emit("front_mult = cmds.createNode('multiplyDivide', n={!r})".format(target_base + "_RaiseValue_Mult"))
-        emit("cmds.connectAttr(f'{front_cond}.outColorG', f'{front_mult}.input1X')")
-        emit("cmds.setAttr(f'{front_mult}.input2X', 2)")
-        emit("raw_src_attr = f'{front_mult}.outputX'")
-        emit("val = cmds.getAttr(raw_src_attr) or 0.0")
-        emit("if abs(val) >= 0.0001:")
-        emit("    pma = cmds.createNode('plusMinusAverage', n={!r})".format(target_base + "_ZeroOut_PMA"))
-        emit("    cmds.setAttr(f'{pma}.operation', 2)")
-        emit("    cmds.connectAttr(raw_src_attr, f'{pma}.input1D[0]')")
-        emit("    cmds.setAttr(f'{pma}.input1D[1]', val)")
-        emit("    raw_src_attr = f'{pma}.output1D'")
+        emit("# Shared channels")
+    for plug, sources in paired.items():
+        emit("raw_src_attr = sharedChannel({}, [{}])".format(sourceData(plug), ", ".join(sources)))
         dest = destination(plug)
         emit("cmds.connectAttr(raw_src_attr, {})".format(dest))
     skirt_source = inspect.getsource(createSkirtRigSystem).rstrip()
@@ -1153,7 +1152,7 @@ def buildScript(config):
             'ln="minDistance", at="double", min=0, max={},'.format(sourceData(distance_min_limit)))
         skirt_source = skirt_source.replace('ln="maxDistance", at="double", min=0, max=2,',
             'ln="maxDistance", at="double", min=0, max={},'.format(sourceData(distance_max_limit)))
-    lines.extend(["", inspect.getsource(checkTargetFree).rstrip(), "", inspect.getsource(createPoseReaderSystem).rstrip(), "",
+    lines.extend(["", inspect.getsource(checkTargetFree).rstrip(), "", inspect.getsource(sharedChannel).rstrip(), "", inspect.getsource(createPoseReaderSystem).rstrip(), "",
                   skirt_source, "",
                   'if __name__ == "__main__":', "    main()", ""])
     script = "\n".join(lines)
