@@ -198,7 +198,7 @@ def normalizeSubItems(entries, axis="Z", start_angle=10.0):
         reverse = entry.get("reverseU", False)
         invert = entry.get("invertRotate", False)
         strength = float(entry.get("strength", 1.0))
-        weight = float(entry.get("weight", 1.0))
+        weight = float(entry.get("weight", strength))
         if not math.isfinite(weight):
             raise ValueError("AutoSkirt: Weight must be finite")
         # Migrate signed weights from the previous Fnc version.
@@ -576,7 +576,7 @@ def legacyConfig(config):
             groups.setdefault(control, []).append(dict(
                 axis=spec.get("output", "rotateZ")[-1], outputType=spec.get("output", "rotateZ")[:-1],
                 invertRotate=spec.get("invertRotate", False),
-                weight=spec.get("weight", 1.0),
+                weight=spec.get("weight", spec.get("strength", 1.0)),
                 target=spec.get("target", ""), refV=spec.get("refV"),
                 minDistance=spec.get("minDistance", 0), maxDistance=spec.get("maxDistance", 0),
                 startAngle=spec.get("startAngle", 10)))
