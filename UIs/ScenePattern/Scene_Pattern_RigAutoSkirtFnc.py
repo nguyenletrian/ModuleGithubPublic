@@ -430,6 +430,27 @@ def createSphereFromRow(row, *args):
     return sphere
 
 
+def setFollicleDisplaySize(sphere, size):
+    if not cmds.objExists(sphere): return
+    bounds = cmds.exactWorldBoundingBox(sphere)
+    radius = max(bounds[i+3] - bounds[i] for i in range(3)) * 0.5
+    marker_size = radius * 0.045 * size
+    follicles = cmds.ls(sphere + "_*_follicle", type="transform", long=True) or []
+    for follicle in follicles:
+        if not cmds.listRelatives(follicle, shapes=True, type="follicle"): continue
+        name = shortName(follicle) + "_DisplayShape"
+        marker = follicle + "|" + name
+        if not cmds.objExists(marker):
+            marker = cmds.createNode("locator", name=name, parent=follicle)
+        cmds.setAttr(marker + ".localScale", marker_size, marker_size, marker_size, type="double3")
+
+
+def liveFollicleSize(row, *args):
+    sphere = shortName(cmds.textField(row["sphere"], q=True, text=True).strip())
+    size = cmds.floatField(row["follicleSize"], q=True, value=True)
+    if sphere: setFollicleDisplaySize(sphere, size)
+
+
 def addRow(parent, record=None):
     record = record or {}
     raw_controls = record.get("joints", [])
@@ -456,7 +477,9 @@ def addRow(parent, record=None):
     row["parent"] = lineField(col, "Parent", record.get("parent", ""))
     row["start"] = lineField(col, "Start", record.get("start", ""))
     row["end"] = lineField(col, "End", record.get("end", ""))
-    row["follicleSize"] = record.get("follicleSize", 1.0)
+    line = cmds.rowLayout(parent=col, numberOfColumns=2, columnWidth2=(125, 165))
+    cmds.text(parent=line, label="Follicle Display Size", align="left")
+    row["follicleSize"] = cmds.floatField(parent=line, value=float(record.get("follicleSize", 1.0)), precision=3, minValue=0.01, maxValue=100, changeCommand=partial(liveFollicleSize, row))
     line = cmds.rowLayout(parent=col, numberOfColumns=3, adjustableColumn=2, columnWidth3=(115, 180, 74))
     cmds.text(parent=line, label="Driven Controls")
     row["controls"] = cmds.scrollField(parent=line, height=75, text="\n".join(raw_controls), wordWrap=False)
@@ -509,7 +532,7 @@ def readUi():
             "parent": cmds.textField(row["parent"], query=True, text=True).strip(),
             "start": cmds.textField(row["start"], query=True, text=True).strip(),
             "end": cmds.textField(row["end"], query=True, text=True).strip(),
-            "follicleSize": row["follicleSize"],
+            "follicleSize": float(cmds.floatField(row["follicleSize"], q=True, value=True)),
             "attributeName": cmds.textField(row["attributeName"], query=True, text=True).strip(),
             "equatorU": 0.5,
             "joints": controls,
@@ -570,6 +593,14 @@ def liveRef(row, control, index):
     if len(shapes) != 1: return None
     if not cmds.isConnected(ref + ".minDistance", prefix + "_Remap_Distance.inputMin"): return None
     return ref, shapes[0]
+
+
+def pickRef(row, control, index, *args):
+    ref = liveRef(row, control, index)
+    if ref:
+        cmds.select(ref[0], replace=True)
+    else:
+        cmds.warning("RigAutoSkirtFnc: Ref not built for {} Sub {:02d}".format(control, index+1))
 
 
 def liveAutoValue(row, control, index, key):
@@ -707,6 +738,10 @@ def editSubItems(row, *args):
                 for axis in "XYZ": cmds.menuItem(parent=fields["axis"], label=axis)
                 cmds.optionMenu(fields["axis"], e=True, value=sub["axis"], changeCommand=markDirty)
                 cmds.textField(fields["target"], e=True, changeCommand=markDirty)
+                ref = liveRef(row, control, index)
+                line = cmds.rowLayout(parent=col, numberOfColumns=2, adjustableColumn=1, columnWidth2=(365, 90))
+                cmds.textField(parent=line, editable=False, text=shortName(ref[0]) if ref else "Ref not built")
+                cmds.button(parent=line, label="Pick Ref", command=partial(pickRef, row, control, index))
                 for key, label in (("refV", "Ref V (-1 Auto)"), ("startAngle", "Start Angle"),
                                    ("minDistance", "Min Distance"), ("maxDistance", "Max Distance")):
                     line = cmds.rowLayout(parent=col, numberOfColumns=2, columnWidth2=(125, 160))
@@ -1086,6 +1121,8 @@ def Run(data, *args):
             raise ValueError("RigAutoSkirtFnc: Run on a clean scene; Target Offset already exists: " + offset)
     script = buildScript(config)
     exec(compile(script, "RigAutoSkirtFnc", "exec"), {"__name__": "__main__"})
+    for reader in legacyConfig(config)["items"]:
+        setFollicleDisplaySize(shortName(reader["sphere"]), float(reader.get("follicleSize", 1.0)))
 
 
 def runFromForm(data, *args):
