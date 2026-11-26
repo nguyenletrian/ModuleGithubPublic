@@ -989,18 +989,18 @@ def checkTargetFree(target, controls, channels):
 
 def sharedChannel(plug, sources):
     name = plug.replace(".", "_")
-    raw, weighted = sources[0]
-    for i, (next_raw, next_weighted) in enumerate(sources[1:], 1):
+    magnitude, weighted = sources[0]
+    for i, (next_magnitude, next_weighted) in enumerate(sources[1:], 1):
         suffix = "" if i == 1 else "{:02d}".format(i)
         cond = cmds.createNode("condition", n=name + "_Condition" + suffix)
         cmds.setAttr(f"{cond}.operation", 3)
-        cmds.connectAttr(raw, f"{cond}.firstTerm")
-        cmds.connectAttr(raw, f"{cond}.colorIfTrueR")
-        cmds.connectAttr(next_raw, f"{cond}.secondTerm")
-        cmds.connectAttr(next_raw, f"{cond}.colorIfFalseR")
+        cmds.connectAttr(magnitude, f"{cond}.firstTerm")
+        cmds.connectAttr(magnitude, f"{cond}.colorIfTrueR")
+        cmds.connectAttr(next_magnitude, f"{cond}.secondTerm")
+        cmds.connectAttr(next_magnitude, f"{cond}.colorIfFalseR")
         cmds.connectAttr(weighted, f"{cond}.colorIfTrueG")
         cmds.connectAttr(next_weighted, f"{cond}.colorIfFalseG")
-        raw, weighted = f"{cond}.outColorR", f"{cond}.outColorG"
+        magnitude, weighted = f"{cond}.outColorR", f"{cond}.outColorG"
     mult = cmds.createNode("multiplyDivide", n=name + "_RaiseValue_Mult")
     cmds.connectAttr(weighted, f"{mult}.input1X")
     cmds.setAttr(f"{mult}.input2X", 2)
@@ -1128,7 +1128,8 @@ def buildScript(config):
         for i, plug in enumerate(plugs):
             spec = reader["drivens"][i]
             raw_source = 'f"{{raise_influence_nodes[{}]}}.outputX"'.format(i)
-            weighted = weightOutput(raw_source, pose_reader + "_" + shoulder_joints[i] + "_Weight_MD", spec["weight"])
+            magnitude = weightOutput(raw_source, pose_reader + "_" + shoulder_joints[i] + "_Weight_MD", spec["weight"])
+            weighted = magnitude
             if spec["invertRotate"]:
                 weighted = weightOutput(weighted, pose_reader + "_" + shoulder_joints[i] + "_Invert_MD", -1, "invert_md")
             if i in direct_indices:
@@ -1137,7 +1138,7 @@ def buildScript(config):
             else:
                 index = len(paired[plug]) + 1
                 variable = "pair_{:02d}_{:02d}".format(pair_numbers[plug], index)
-                emit('{} = ({}, {})'.format(variable, raw_source, weighted))
+                emit('{} = ({}, {})'.format(variable, magnitude, weighted))
                 paired[plug].append(variable)
         ready = [plug for plug in dict.fromkeys(plugs) if plug in paired and len(paired[plug]) == target_counts[plug]]
         if ready:
