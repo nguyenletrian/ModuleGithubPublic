@@ -197,11 +197,7 @@ def _literal(value):
 
 
 def _mapping_source(name, mapping):
-    lines = ["    " + name + " = {"]
-    for index, (key, value) in enumerate(mapping.items()):
-        suffix = "," if index < len(mapping) - 1 else "}"
-        lines.append("        " + _literal(key) + ": " + _literal(value) + suffix)
-    return "\n".join(lines)
+    return "    " + name + " = " + _literal(mapping)
 
 
 def buildScript(config):
@@ -213,16 +209,16 @@ def buildScript(config):
     surfaces = {key: value for key, value in arguments["surface_names"].items() if value != key + "_Surface"}
     curves = {key: value for key, value in arguments["curve_names"].items() if value != key + "_curve"}
     if surfaces:
-        setup += "\n\n" + _mapping_source("surface_names", surfaces)
+        setup += "\n" + _mapping_source("surface_names", surfaces)
         main = main.replace('attachToSurface(f"{comp}_Surface",', 'attachToSurface(surface_names.get(comp, f"{comp}_Surface"),', 1)
     if curves:
-        setup += "\n\n" + _mapping_source("curve_names", curves)
+        setup += "\n" + _mapping_source("curve_names", curves)
         main = main.replace('target_curve = f"{root}_curve"', 'target_curve = curve_names.get(root, f"{root}_curve")', 1)
     start = main.index("    dict_setup = {")
-    end = main.index("\n\n", start)
+    end = main.index("}", start) + 1
     main = main[:start] + setup + main[end:]
-    source = "\n\n\n".join(inspect.getsource(fn).rstrip() for fn in (createCpos, attachToSurface, followParent))
-    script = "import pymel.core as pm\nimport extensions.utils.rigs as rigUtils\n\n\n" + source + "\n\n\n" + main + '\n\n\nif __name__ == "__main__":\n    main()\n'
+    source = "\n\n".join(inspect.getsource(fn).rstrip() for fn in (createCpos, attachToSurface, followParent))
+    script = "import pymel.core as pm\nimport extensions.utils.rigs as rigUtils\n\n" + source + "\n\n" + main + '\n\nif __name__ == "__main__":\n    main()\n'
     compile(script, "Python_Scene_Pattern_RigSlideSurfaceFnc.py", "exec")
     return script
 
@@ -288,80 +284,55 @@ def Form(data, *unused):
 
 
 def createCpos(surf, node, connect=False):
-
-    '''Create closestPointOnSurface node'''
-
+    # Closest point
     cpos = pm.createNode('closestPointOnSurface', n='%s_cpos' %node)
     pm.connectAttr('%s.worldSpace' %surf, '%s.inputSurface' %cpos, f=True)
     pos = pm.xform(node, q=True, ws=True, t=True)
     pm.setAttr('%s.inPosition' %cpos, pos[0], pos[1], pos[2])
-
     if connect:
         dcm = pm.createNode('decomposeMatrix', n='{0}_dcm'.format(node))
         pm.connectAttr('{0}.worldMatrix[0]'.format(node), '{0}.inputMatrix'.format(dcm), f=True)
-        pm.connectAttr('{0}.outputTranslate'.format(dcm), '{0}.inPosition'.format(cpos), f=True)      
-
+        pm.connectAttr('{0}.outputTranslate'.format(dcm), '{0}.inPosition'.format(cpos), f=True)
     return cpos
 
-
 def attachToSurface(meshOrSurface, node, parent, name=""):
-
-    '''
-    Attach node to mesh or nurbs surface with follicle.
-    '''
-
     if pm.nodeType(meshOrSurface) == 'transform':
         meshOrSurface = pm.listRelatives(meshOrSurface, s=True, type='nurbsSurface')[0]
-
     cp = createCpos(meshOrSurface, node)
-
-    # Get UV param
+    # UV
     paramU = pm.getAttr('%s.parameterU' %cp)
     paramV = pm.getAttr('%s.parameterV' %cp)
     pm.delete(cp)
-
     if not name:
         name = node
-
     # Create follicle
     follicleShape = pm.createNode('follicle', n=f"{name}_follicleShape")
     follicleTransform = pm.listRelatives(follicleShape, p=True)[0]
     follicleTransform = pm.rename(follicleTransform, f"{name}_follicle")
     pm.hide(follicleShape)
-
-    # Connect follicle to mesh or surface
+    # Follicle connections
     pm.connectAttr('%s.worldSpace[0]' %meshOrSurface, '%s.inputSurface' %follicleShape, f=True)
     pm.connectAttr('%s.worldMatrix[0]' %meshOrSurface, '%s.inputWorldMatrix' %follicleShape, f=True)
     pm.connectAttr('%s.outTranslate' %follicleShape, '%s.translate' %follicleTransform, f=True)
     pm.connectAttr('%s.outRotate' %follicleShape, '%s.rotate' %follicleTransform, f=True)
     pm.setAttr('%s.parameterU' %follicleShape, paramU)
     pm.setAttr('%s.parameterV' %follicleShape, paramV)
-
     pm.parent(follicleTransform, parent)
-
     return [follicleTransform, follicleShape]
 
-
 def followParent(child_joint, parent_joint):
-
-    # Attach feather controls to the driver mesh
-    # 1. Find child local matrix by multMatrix of child POS worl and parent POS inverseWorld
-    # 2. multMatrix child local from #1 with parent FK world matrix to get child world matirx
-    # 3. child world from #2 multMatirx with chil POS world inverse. This will get you child local from child POS
-
+    # Parent follow matrices
     parentCtrl = f"{parent_joint}_FK"
     parentPos = f"{parentCtrl}_Pos"
     childCtrl = f"{child_joint}_FK"
     childPos = f"{childCtrl}_Pos"
     childTarget = f"{childCtrl}_Target"
-
     # Create utility node
     child_local = pm.createNode('multMatrix', name=f"{child_joint}_local_multMatrix")
     child_world = pm.createNode('multMatrix', name=f"{child_joint}_world_multMatrix")
     child_local_from_Pos = pm.createNode('multMatrix', name=f"{child_joint}_local_from_POS_multMatrix")
     child_decomp = pm.createNode('decomposeMatrix', name=f"{child_joint}_decomposeMatrix")
     child_blend = pm.createNode('blendMatrix', name=f"{child_joint}_blendMatrix")
-
     # Make connections
     pm.connectAttr(f"{childPos}.worldMatrix[0]", f"{child_local}.matrixIn[0]", force=True)
     pm.connectAttr(f"{parentPos}.worldInverseMatrix[0]", f"{child_local}.matrixIn[1]", force=True)
@@ -369,44 +340,34 @@ def followParent(child_joint, parent_joint):
     pm.connectAttr(f"{parentCtrl}.worldMatrix[0]", f"{child_world}.matrixIn[1]", force=True)
     pm.connectAttr(f"{child_world}.matrixSum", f"{child_local_from_Pos}.matrixIn[0]", force=True)
     pm.connectAttr(f"{childPos}.worldInverseMatrix[0]", f"{child_local_from_Pos}.matrixIn[1]", force=True)
-    # pm.connectAttr(f"{child_local_from_Pos}.matrixSum", f"{child_decomp}.inputMatrix", force=True)
-
     pm.connectAttr(f"{child_local_from_Pos}.matrixSum", f"{child_blend}.inputMatrix", force=True)
     pm.connectAttr(f"{child_blend}.outputMatrix", f"{child_decomp}.inputMatrix", force=True)
-
     pm.connectAttr(f"{child_decomp}.outputTranslate", f"{childTarget}.translate", force=True)
     pm.connectAttr(f"{child_decomp}.outputRotate", f"{childTarget}.rotate", force=True)
 
-
 def _gragas_main():
-    #Hair Setup
+    # Driver group
     hair_group = pm.group(name = "Hair_Driver_Group", empty = 1)
     pm.parent(hair_group, "RigUtil")
-
-
     dict_setup = {
                     "Mustache":["C_Mustache1", "L_Mustache1", "R_Mustache1"],
                     "Hair":["L_Hair1", "C_Hair1", "R_Hair1"],
                     "L_Hair":["L_HairA1","L_HairB1"],
                     "R_Hair":["R_HairA1","R_HairB1"]}
-
-
     for comp, root_joints in dict_setup.items():
         for root in root_joints:
-            # Find all children of the root joint
+            # Joint chain
             all_joints = [root]
             children = pm.listRelatives(root, type="joint", allDescendents=True) or []
             if children:
                 children.reverse()
                 for child in children:
                     all_joints.append(child)
-
             grp_zero = pm.createNode("transform", name=f"Grp_{root}_spIK_scaleConnect")
             pm.matchTransform(grp_zero, root)
             grp_zero.setParent(hair_group)
             rigUtils.connectUniformScaleTag(grp_zero.name())
-
-            # Create follicle per joint and duplicate joints for driver and spIK
+            # Driver and spline joints
             driver_joints = []
             spIK_joints = []
             follicle_shapes = []
@@ -419,57 +380,39 @@ def _gragas_main():
                 spIK_joints.append(spIK_joint)
                 pm.parent(driver_joint, follicleTransform)
                 pm.parent(spIK_joint, grp_zero)
-
-            # Reconstruct the joint chain of spIK joints
+            # Spline chain
             number_of_joints = len(spIK_joints)
             for i in range(number_of_joints-1, 0, -1):
                 pm.parent(spIK_joints[i], spIK_joints[i-1])
-
-            # Create spIK
+            # Spline IK
             start_joint = spIK_joints[0]
             end_joint = spIK_joints[-1]
             target_curve = f"{root}_curve"
-
-            ik_result = pm.ikHandle(name=f"{root}_ikh",
-                                      startJoint=start_joint,
-                                      endEffector=end_joint,
-                                      sol="ikSplineSolver",
-                                      curve=target_curve,
-                                      createCurve=False,
-                                      parentCurve=False)
+            ik_result = pm.ikHandle(name=f"{root}_ikh", startJoint=start_joint, endEffector=end_joint, sol="ikSplineSolver", curve=target_curve, createCurve=False, parentCurve=False)
             ik_handle = ik_result[0]
             effector = ik_result[1]
-
             effector = pm.rename(effector, f"{root}_effector")
             pm.parent(ik_handle, target_curve, hair_group)
-
-            # Set advanced lotation set up
+            # Advanced twist
             start_driver = driver_joints[0]
             end_driver = driver_joints[-1]
-
             pm.setAttr(f"{ik_handle}.dTwistControlEnable", 1)
             pm.setAttr(f"{ik_handle}.dWorldUpType", 4)
-        
             pm.setAttr(f"{ik_handle}.dForwardAxis", 0)
             pm.setAttr(f"{ik_handle}.dWorldUpAxis", 3)
-
             pm.setAttr(f"{ik_handle}.dWorldUpVectorY", 0)
             pm.setAttr(f"{ik_handle}.dWorldUpVectorEndY", 0)
             pm.setAttr(f"{ik_handle}.dWorldUpVectorZ", 1)
             pm.setAttr(f"{ik_handle}.dWorldUpVectorEndZ", 1)
-
             pm.connectAttr(f"{start_driver}.worldMatrix[0]", f"{ik_handle}.dWorldUpMatrix", force=True)
             pm.connectAttr(f"{end_driver}.worldMatrix[0]", f"{ik_handle}.dWorldUpMatrixEnd", force=True)
-
-            # Bind curve to the driver joints
+            # Bind curve
             pm.skinCluster(driver_joints, target_curve, toSelectedBones=True)
-
-            # Make the second controller follow the first controller
+            # FK follow
             for i in range(number_of_joints-1, 0, -1):
                 child_joint = all_joints[i]
                 parent_joint = all_joints[i-1]
                 followParent(child_joint, parent_joint)
-
         for root in root_joints:
             all_joints = [root]
             children = pm.listRelatives(root, type="joint", allDescendents=True) or []
@@ -477,14 +420,12 @@ def _gragas_main():
                 children.reverse()
                 for child in children:
                     all_joints.append(child)
-
-            # Add one bias attr for the whole chain.
+            # Shared bias
             root_fk_control = f"{root}_FK"
             if not pm.attributeQuery("bias", node=root_fk_control, exists=True):
                 pm.addAttr(root_fk_control, longName="bias", min=0, max=1, dv=1, k=True)
             reverse_node = pm.createNode("reverse", name=f"{root}_bias_rev")
             pm.connectAttr(f"{root_fk_control}.bias", reverse_node.inputX, f=True)
-
             for joint in all_joints:
                 spIK_joint = f"{joint}_spIK"
                 fk_control_pos = f"{joint}_FK_Pos"
@@ -493,7 +434,6 @@ def _gragas_main():
                 pm.matchTransform(parent_driver, joint)
                 parent_driver.setParent(parent_fk_control_pos)
                 pc = pm.parentConstraint(spIK_joint, parent_driver, fk_control_pos, name=f"{fk_control_pos}_parentConstraint", maintainOffset=True)
-
                 pm.connectAttr(f"{root_fk_control}.bias", f"{pc}.{joint}_spIKW0", f=True)
                 pm.connectAttr(reverse_node.outputX, f"{pc}.{parent_driver}W1", f=True)
                 if joint != root:
