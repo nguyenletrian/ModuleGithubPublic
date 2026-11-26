@@ -57,7 +57,7 @@ def createPoleVector(start, middle, end, name, ratio):
         if isinstance(value, str):
             cmds.connectAttr(value, destination)
         else:
-            cmds.setAttr(destination, *value, type="double3")
+            cmds.setAttr(destination, *value, type="float3")
 
     def scalar(value, destination):
         if isinstance(value, str):
