@@ -639,8 +639,6 @@ def editSubItems(row, *args):
             for sub, fields in zip(row["subItems"][control], widgets):
                 sub["axis"] = cmds.optionMenu(fields["axis"], q=True, value=True)
                 sub["target"] = cmds.textField(fields["target"], q=True, text=True).strip()
-                sub["invertRotate"] = cmds.checkBox(fields["invert"], q=True, value=True)
-                sub["strength"] = cmds.floatField(fields["strength"], q=True, value=True)
                 for key in ("refV", "minDistance", "maxDistance", "startAngle"):
                     sub[key] = cmds.floatField(fields[key], q=True, value=True)
                 if sub["refV"] < 0: sub["refV"] = None
@@ -705,10 +703,6 @@ def editSubItems(row, *args):
                     line = cmds.rowLayout(parent=col, numberOfColumns=2, columnWidth2=(125, 160))
                     cmds.text(parent=line, label=label, align="left")
                     fields[key] = cmds.floatField(parent=line, precision=6, value=-1 if sub[key] is None else sub[key], changeCommand=partial(live, control, index, key))
-                fields["invert"] = cmds.checkBox(parent=col, label="Invert Output", value=sub["invertRotate"], changeCommand=markDirty)
-                line = cmds.rowLayout(parent=col, numberOfColumns=2, columnWidth2=(125, 160))
-                cmds.text(parent=line, label="Strength", align="left")
-                fields["strength"] = cmds.floatField(parent=line, minValue=0, maxValue=2, precision=8, value=sub["strength"], changeCommand=markDirty)
                 unsupported = unsupportedSettings(sub)
                 if unsupported:
                     cmds.text(parent=col, label="Legacy: " + ", ".join(unsupported), align="left")
@@ -723,12 +717,13 @@ def editSubItems(row, *args):
     editor["sync"] = sync
     draw()
     cmds.text(parent=body, label="Live: Ref V, Min/Max Distance, Start Angle. Ref V -1 / Max 0 = Auto.", align="left")
-    cmds.text(parent=body, label="Add/Remove/Axis/Target/Invert/Strength: Save, then Run on a clean scene.", align="left")
+    cmds.text(parent=body, label="Add/Remove/Axis/Target: Save, then Run on a clean scene.", align="left")
     cmds.button(parent=body, label="Save Sub Items", height=28, command=finish)
     cmds.showWindow(window)
 
 
 def unsupportedSettings(sub):
+    # Ignore legacy Invert Output and Strength in the original-core engine.
     result = []
     if sub.get("outputType", "rotate").lower() != "rotate": result.append("Translate")
     if sub.get("reverseU"): result.append("Reverse U")
@@ -755,8 +750,7 @@ def convertConfig(config):
                 if v is None and i < len(refs): v = refs[i]
                 reader["drivens"].append(dict(control=control, target=sub.get("target") or shortName(control)+"_Target",
                     output="rotate"+sub["axis"], refV=v, minDistance=sub["minDistance"],
-                    maxDistance=sub["maxDistance"], startAngle=sub["startAngle"],
-                    invertRotate=sub["invertRotate"], strength=sub["strength"]))
+                    maxDistance=sub["maxDistance"], startAngle=sub["startAngle"]))
         result["items"].append(reader)
     return result
 
@@ -939,8 +933,7 @@ def buildScript(config):
                 create_indices.append(i)
                 created_attrs.add(key)
         simple = (conventional_controls and conventional_targets and len(set(attributes)) == 1
-                  and len(create_indices) == len(controls) and len(direct_indices) == len(controls)
-                  and all(d["strength"] == 1 and not d["invertRotate"] for d in reader["drivens"]))
+                  and len(create_indices) == len(controls) and len(direct_indices) == len(controls))
         emit("cp_follicle_shape, cpos = createPoseReaderSystem({}, {}, {})".format(
             sourceData(pose_reader), sourceData(shortName(reader["parent"])), sourceData(shortName(reader["end"]))))
         emit()
@@ -964,45 +957,22 @@ def buildScript(config):
                 if i in create_indices:
                     emit("cmds.addAttr({}, ln={}, at=\"double\", min=0, max=2, dv=1, k=True)".format(sourceData(control), sourceData(attribute)))
                 emit('cmds.connectAttr({}, f"{{raise_influence_nodes[{}]}}.input2X")'.format(sourceData(control + "." + attribute), i))
-                spec = reader["drivens"][i]
-                strength = spec["strength"]
-                sign = -1 if spec["invertRotate"] else 1
-                prefix = pose_reader + "_" + shoulder_joints[i]
-                raw = 'f"{{raise_influence_nodes[{}]}}.outputX"'.format(i)
                 if i in direct_indices:
-                    factor = strength * sign
-                    if factor != 1:
-                        emit("output_mult = cmds.createNode('multiplyDivide', n={})".format(sourceData(prefix + "_Output_Mult")))
-                        emit("cmds.setAttr(f'{{output_mult}}.input2X', {})".format(sourceData(factor)))
-                        emit("cmds.connectAttr({}, f'{{output_mult}}.input1X')".format(raw))
-                        raw = 'f"{output_mult}.outputX"'
-                    emit("cmds.connectAttr({}, {})".format(raw, sourceData(plug)))
+                    emit('cmds.connectAttr(f"{{raise_influence_nodes[{}]}}.outputX", {})'.format(i, sourceData(plug)))
                 else:
                     variable = "pair_{:02d}_{}".format(pair_numbers[plug], "left" if not paired[plug] else "right")
-                    if strength != 1:
-                        emit("strength_mult = cmds.createNode('multiplyDivide', n={})".format(sourceData(prefix + "_Strength_Mult")))
-                        emit("cmds.setAttr(f'{{strength_mult}}.input2X', {})".format(sourceData(strength)))
-                        emit("cmds.connectAttr({}, f'{{strength_mult}}.input1X')".format(raw))
-                        raw = 'f"{strength_mult}.outputX"'
-                    emit("{} = {}".format(variable, raw))
-                    signed = variable
-                    if sign == -1:
-                        emit("invert_mult = cmds.createNode('multiplyDivide', n={})".format(sourceData(prefix + "_Invert_Mult")))
-                        emit("cmds.setAttr(f'{invert_mult}.input2X', -1)")
-                        emit("cmds.connectAttr({}, f'{{invert_mult}}.input1X')".format(variable))
-                        signed = variable + "_signed"
-                        emit('{} = f"{{invert_mult}}.outputX"'.format(signed))
-                    paired[plug].append((variable, signed))
-    for plug, ((left, left_signed), (right, right_signed)) in paired.items():
+                    emit('{} = f"{{raise_influence_nodes[{}]}}.outputX"'.format(variable, i))
+                    paired[plug].append(variable)
+    for plug, (left, right) in paired.items():
         target_base = plug.replace(".", "_")
         emit()
         emit("# Akali: use the greater influence for the shared channel.")
         emit("front_cond = cmds.createNode('condition', n={!r})".format(target_base + "_Condition"))
         emit("cmds.setAttr(f'{front_cond}.operation', 3)")
         emit("cmds.connectAttr({}, f'{{front_cond}}.firstTerm')".format(left))
-        emit("cmds.connectAttr({}, f'{{front_cond}}.colorIfTrueR')".format(left_signed))
+        emit("cmds.connectAttr({}, f'{{front_cond}}.colorIfTrueR')".format(left))
         emit("cmds.connectAttr({}, f'{{front_cond}}.secondTerm')".format(right))
-        emit("cmds.connectAttr({}, f'{{front_cond}}.colorIfFalseR')".format(right_signed))
+        emit("cmds.connectAttr({}, f'{{front_cond}}.colorIfFalseR')".format(right))
         emit("front_mult = cmds.createNode('multiplyDivide', n={!r})".format(target_base + "_RaiseValue_Mult"))
         emit("cmds.connectAttr(f'{front_cond}.outColorR', f'{front_mult}.input1X')")
         emit("cmds.setAttr(f'{front_mult}.input2X', 2)")
