@@ -168,6 +168,32 @@ class ConstraintTests(unittest.TestCase):
             env["Run"]({"from_role": "Rig", "to_role": "Rig", "pairs": [
                 {"from": "Self", "to": "Self"}]}, context)
 
+    def test_duplicate_pairs_and_independent_channels_across_modules(self):
+        calls = []
+        def connect(driver, target, pair, maintain_offset):
+            calls.append((driver, target, pair["translate"], pair["rotate"], pair["scale"]))
+            return ["constraint" + str(len(calls))]
+        env = scope("PairData", "NormalizeSettings", "_mirror_name", "_expand_pairs",
+                    "_namespaces", "Run", re=re,
+                    _connect=connect, _resolve=lambda ns, name: ns + ":" + name,
+                    rt=SimpleNamespace(leaf=lambda node: node.split(":")[-1]),
+                    cmds=SimpleNamespace(objExists=lambda node: True))
+        context = {"reference_pose_namespace": "REF", "target_namespace": "Rig"}
+        rotate = {"from": "HairA", "to": "HairFK"}
+        translate = {"from": "HairB", "to": "HairFK", "translate": True, "rotate": False}
+        settings = {"use_extra_joint": False, "pairs": [rotate, rotate, translate]}
+        result = env["Run"](settings, context)
+        self.assertEqual(result["pairs"], 2)
+        self.assertEqual(result["skipped_duplicates"], 1)
+        self.assertEqual(len(calls), 2)
+        result = env["Run"]({"use_extra_joint": False, "pairs": [rotate]}, context)
+        self.assertEqual(result["pairs"], 0)
+        self.assertEqual(result["skipped_duplicates"], 1)
+        with self.assertRaisesRegex(ValueError, "HairFK.*rotate.*HairA.*HairC"):
+            env["Run"]({"use_extra_joint": False, "pairs": [
+                {"from": "HairC", "to": "HairFK"}]}, context)
+        self.assertEqual(len(calls), 2)
+
     def test_direct_mode_skips_extra_joint_for_both_maintain_states(self):
         for maintain in (True, False):
             calls = []
