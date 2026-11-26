@@ -7,6 +7,7 @@ The source rigs and animation files are never overwritten.
 import math
 import os
 import re
+import time
 
 import maya.cmds as cmds
 import maya.mel as mel
@@ -95,6 +96,30 @@ def auto_root(namespace, preferred=""):
     return roots[0]
 
 
+def _load_file(path, namespace, **options):
+    """Load on Maya's main thread without intermediate viewport redraws."""
+    start = time.perf_counter()
+    operation = "Reference" if options.get("reference") else "Import"
+    label = "{} {}: {}".format(operation, namespace, path)
+    print("[NLTA Retarget] START " + label, flush=True)
+    suspended = False
+    try:
+        if not cmds.about(batch=True):
+            cmds.refresh(suspend=True)
+            suspended = True
+        nodes = cmds.file(path, namespace=namespace, **options) or []
+    except Exception:
+        print("[NLTA Retarget] FAILED {} ({:.2f}s)".format(
+            label, time.perf_counter() - start), flush=True)
+        raise
+    finally:
+        if suspended:
+            cmds.refresh(suspend=False)
+    print("[NLTA Retarget] DONE {} ({:.2f}s, {} nodes)".format(
+        label, time.perf_counter() - start, len(nodes)), flush=True)
+    return nodes
+
+
 def load_asset(path, namespace, prefer_reference=True):
     path = ensure_file(path)
     namespace = namespace.strip(":")
@@ -110,21 +135,26 @@ def load_asset(path, namespace, prefer_reference=True):
         previous_mode = str(mel.eval("FBXImportMode -q;")).strip().lower()
         mel.eval('FBXImportMode -v "add";')
         try:
-            new_nodes = cmds.file(
-                path, i=True, type="FBX", namespace=namespace,
-                mergeNamespacesOnClash=False, returnNewNodes=True) or []
+            new_nodes = _load_file(
+                path, namespace, i=True, type="FBX",
+                mergeNamespacesOnClash=False, returnNewNodes=True)
         finally:
             if previous_mode in ("add", "merge", "exmerge"):
                 mel.eval('FBXImportMode -v "{}";'.format(previous_mode))
     elif prefer_reference:
-        new_nodes = cmds.file(
-            path, reference=True, namespace=namespace,
-            mergeNamespacesOnClash=False, returnNewNodes=True) or []
+        new_nodes = _load_file(
+            path, namespace, reference=True,
+            mergeNamespacesOnClash=False, returnNewNodes=True)
     else:
-        new_nodes = cmds.file(
-            path, i=True, namespace=namespace,
-            mergeNamespacesOnClash=False, returnNewNodes=True) or []
-    if not namespace_nodes(namespace):
+        new_nodes = _load_file(
+            path, namespace, i=True,
+            mergeNamespacesOnClash=False, returnNewNodes=True)
+    check_start = time.perf_counter()
+    print("[NLTA Retarget] CHECK namespace: " + namespace, flush=True)
+    loaded_nodes = namespace_nodes(namespace)
+    print("[NLTA Retarget] CHECK DONE {} ({:.2f}s, {} transforms)".format(
+        namespace, time.perf_counter() - check_start, len(loaded_nodes)), flush=True)
+    if not loaded_nodes:
         # Explicit diagnostics: do not silently substitute transforms from
         # another imported rig or accept a pose/clip with no skeleton.
         sample = [str(node) for node in new_nodes[:8]]
