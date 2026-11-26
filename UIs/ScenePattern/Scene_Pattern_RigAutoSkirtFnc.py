@@ -509,6 +509,9 @@ def addRow(parent, record=None):
 
 
 def removeRow(row, *args):
+    editor = row.pop("subEditor", None)
+    if editor and cmds.window(editor["window"], exists=True):
+        cmds.deleteUI(editor["window"])
     if row in STATE["rows"]:
         STATE["rows"].remove(row)
     if cmds.layout(row["frame"], exists=True):
@@ -619,7 +622,7 @@ def liveAutoValue(row, control, index, key):
     surface = om.MFnNurbsSurface(selection.getDagPath(0))
     if key == "refV":
         if control in row["referenceV"]: return row["referenceV"][control]
-        pos = cmds.xform(control, q=True, ws=True, rp=True)
+        pos = cmds.xform(shortName(control), q=True, ws=True, rp=True)
         _, _, v = surface.closestPoint(om.MPoint(*pos), space=om.MSpace.kWorld)
         return v
     ref = liveRef(row, control, index)
@@ -671,6 +674,8 @@ def applyLiveWeight(row, control, index):
     sphere = cmds.textField(row["sphere"], q=True, text=True).strip()
     node = weightNodeName(sphere, control, index)
     if not cmds.objExists(node): return False
+    raw = node[:-len("_Weight_MD")] + "_md_RaiseInfluence.outputX"
+    if not cmds.isConnected(raw, node + ".input1X"): return False
     cmds.setAttr(node + ".input2X", row["subItems"][control][index]["weight"])
     return True
 
@@ -678,6 +683,10 @@ def applyLiveWeight(row, control, index):
 def editSubItems(row, *args):
     controls = getControls(row)
     window = "NLTA_RigAutoSkirtFnc_SubItems"
+    for other in STATE["rows"]:
+        previous = other.pop("subEditor", None)
+        if previous and cmds.window(window, exists=True) and callable(previous.get("sync")):
+            previous["sync"]()
     if cmds.window(window, exists=True):
         cmds.deleteUI(window)
     window = cmds.window(window, title="RigAutoSkirtFnc - Driven Sub Items", widthHeight=(550, 555))
@@ -689,50 +698,76 @@ def editSubItems(row, *args):
     for control in controls:
         row["subItems"].setdefault(control, normalizeSubItems(None))
 
+    def structure(sub, control):
+        return (sub["axis"], sub["outputType"], sub["invertRotate"],
+                shortName(sub.get("target") or shortName(control) + "_Target"))
+
+    def readStructure(fields):
+        return dict(axis=cmds.optionMenu(fields["axis"], q=True, value=True),
+                    outputType=cmds.optionMenu(fields["outputType"], q=True, value=True).lower(),
+                    invertRotate=cmds.checkBox(fields["invert"], q=True, value=True),
+                    target=cmds.textField(fields["target"], q=True, text=True).strip())
+
+    def readNumber(fields, key):
+        value = cmds.floatField(fields[key], q=True, value=True)
+        return None if key == "refV" and value < 0 else value
+
+    def markDirty(control, *unused):
+        row.setdefault("liveDirtyControls", set()).add(control)
+
     def sync():
+        # Read all fields only when saving or rebuilding the editor.
+        updates = {}
         for control, widgets in editor["widgets"].items():
+            entries = []
             for sub, fields in zip(row["subItems"][control], widgets):
-                sub["axis"] = cmds.optionMenu(fields["axis"], q=True, value=True)
-                sub["invertRotate"] = cmds.checkBox(fields["invert"], q=True, value=True)
-                sub["outputType"] = cmds.optionMenu(fields["outputType"], q=True, value=True).lower()
-                sub["target"] = cmds.textField(fields["target"], q=True, text=True).strip()
+                candidate = dict(sub, **readStructure(fields))
+                if structure(candidate, control) != structure(sub, control):
+                    markDirty(control)
                 for key in ("refV", "minDistance", "maxDistance", "startAngle", "weight"):
-                    sub[key] = cmds.floatField(fields[key], q=True, value=True)
-                if sub["refV"] < 0: sub["refV"] = None
-            row["subItems"][control] = normalizeSubItems(row["subItems"][control])
+                    candidate[key] = readNumber(fields, key)
+                entries.append(candidate)
+            updates[control] = normalizeSubItems(entries)
+        row["subItems"].update(updates)
 
     def live(control, index, key, *unused):
+        fields = editor["widgets"][control][index]
+        previous = row["subItems"][control][index]
+        candidate = dict(previous, **{key: readNumber(fields, key)})
         try:
-            sync()
-            if row.get("liveDirty") or unsupportedSettings(row["subItems"][control][index]):
-                cmds.warning("RigAutoSkirtFnc: structural or legacy settings changed; Run on a clean scene first.")
+            candidate = normalizeSubItems([candidate])[0]
+            row["subItems"][control][index] = candidate
+            if (row.get("liveDirty") or control in row.get("liveDirtyControls", set())
+                    or structure(dict(candidate, **readStructure(fields)), control) != structure(candidate, control)
+                    or unsupportedSettings(candidate)):
+                cmds.warning("RigAutoSkirtFnc: this Driven has structural changes; Run on a clean scene first.")
                 return
             applied = applyLiveWeight(row, control, index) if key == "weight" else applyLiveValue(row, control, index, key)
             if not applied:
                 cmds.warning("RigAutoSkirtFnc: node not built; saved UI value will be used on Run/Export.")
         except (ValueError, RuntimeError) as exc:
+            row["subItems"][control][index] = previous
+            value = previous[key]
+            cmds.floatField(fields[key], e=True, value=-1 if value is None else value)
             cmds.warning("RigAutoSkirtFnc Live: " + str(exc))
-
-    def markDirty(*unused):
-        row["liveDirty"] = True
 
     def add(control, *unused):
         sync()
-        markDirty()
+        markDirty(control)
         row["subItems"][control].append(normalizeSubItems(None)[0])
         draw()
 
     def remove(control, index, *unused):
         sync()
         if len(row["subItems"][control]) > 1:
-            markDirty()
+            markDirty(control)
             row["subItems"][control].pop(index)
             draw()
 
     def reset(control, index, *unused):
         sync()
         sub = row["subItems"][control][index]
-        markDirty()
+        markDirty(control)
         sub.update(reverseU=False)
         sub.pop("extraOffsetMatrix", None)
         sub.pop("extraOffsetObject", None)
@@ -754,14 +789,14 @@ def editSubItems(row, *args):
                 cmds.text(parent=line, label="Output Type")
                 fields["outputType"] = cmds.optionMenu(parent=line)
                 for output_type in ("Rotate", "Translate"): cmds.menuItem(parent=fields["outputType"], label=output_type)
-                cmds.optionMenu(fields["outputType"], e=True, value=sub["outputType"].capitalize(), changeCommand=markDirty)
+                cmds.optionMenu(fields["outputType"], e=True, value=sub["outputType"].capitalize(), changeCommand=partial(markDirty, control))
                 line = cmds.rowLayout(parent=col, numberOfColumns=2, columnWidth2=(105, 160))
                 cmds.text(parent=line, label="Axis")
                 fields["axis"] = cmds.optionMenu(parent=line)
                 for axis in "XYZ": cmds.menuItem(parent=fields["axis"], label=axis)
-                cmds.optionMenu(fields["axis"], e=True, value=sub["axis"], changeCommand=markDirty)
-                fields["invert"] = cmds.checkBox(parent=col, label="Invert Output", value=sub["invertRotate"], changeCommand=markDirty)
-                cmds.textField(fields["target"], e=True, changeCommand=markDirty)
+                cmds.optionMenu(fields["axis"], e=True, value=sub["axis"], changeCommand=partial(markDirty, control))
+                fields["invert"] = cmds.checkBox(parent=col, label="Invert Output", value=sub["invertRotate"], changeCommand=partial(markDirty, control))
+                cmds.textField(fields["target"], e=True, changeCommand=partial(markDirty, control))
                 ref = liveRef(row, control, index)
                 line = cmds.rowLayout(parent=col, numberOfColumns=2, adjustableColumn=1, columnWidth2=(365, 90))
                 cmds.textField(parent=line, editable=False, text=shortName(ref[0]) if ref else "Ref not built")
@@ -770,7 +805,7 @@ def editSubItems(row, *args):
                                    ("minDistance", "Min Distance"), ("maxDistance", "Max Distance")):
                     line = cmds.rowLayout(parent=col, numberOfColumns=2, columnWidth2=(125, 160))
                     cmds.text(parent=line, label=label, align="left")
-                    fields[key] = cmds.floatField(parent=line, precision=6, value=-1 if sub[key] is None else sub[key], changeCommand=partial(live, control, index, key))
+                    fields[key] = cmds.floatField(parent=line, precision=6, value=-1 if sub[key] is None else sub[key], changeCommand=partial(live, control, index, key), dragCommand=partial(live, control, index, key))
                     if key == "weight": cmds.floatField(fields[key], e=True, minValue=0)
                 unsupported = unsupportedSettings(sub)
                 if unsupported:
@@ -1176,6 +1211,7 @@ def runFromForm(data, *args):
     result = Run(data)
     for row in STATE["rows"]:
         row.pop("liveDirty", None)
+        row.pop("liveDirtyControls", None)
     return result
 
 
