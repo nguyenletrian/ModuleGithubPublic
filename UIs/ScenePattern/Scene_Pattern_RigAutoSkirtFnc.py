@@ -887,9 +887,7 @@ def buildScript(config):
                 raise ValueError("Rig Auto Skirt Fnc: invalid output: " + output)
             plug = target + "." + output
             target_counts[plug] = target_counts.get(plug, 0) + 1
-            if target_counts[plug] > 2:
-                raise ValueError("Rig Auto Skirt Fnc: Akali supports at most two Items per output channel: " + plug)
-    paired = {plug: [] for plug, count in target_counts.items() if count == 2}
+    paired = {plug: [] for plug, count in target_counts.items() if count > 1}
     pair_numbers = {plug: i for i, plug in enumerate(paired, 1)}
     created_attrs = set()
     for reader in config["items"]:
@@ -965,10 +963,13 @@ def buildScript(config):
                 if i in direct_indices:
                     emit('cmds.connectAttr(f"{{raise_influence_nodes[{}]}}.outputX", {})'.format(i, sourceData(plug)))
                 else:
-                    variable = "pair_{:02d}_{}".format(pair_numbers[plug], "left" if not paired[plug] else "right")
+                    index = len(paired[plug])
+                    suffix = ("left", "right")[index] if index < 2 else "item_{:02d}".format(index+1)
+                    variable = "pair_{:02d}_{}".format(pair_numbers[plug], suffix)
                     emit('{} = f"{{raise_influence_nodes[{}]}}.outputX"'.format(variable, i))
                     paired[plug].append(variable)
-    for plug, (left, right) in paired.items():
+    for plug, sources in paired.items():
+        left, right = sources[:2]
         target_base = plug.replace(".", "_")
         emit()
         emit("# Akali: use the greater influence for the shared channel.")
@@ -978,6 +979,14 @@ def buildScript(config):
         emit("cmds.connectAttr({}, f'{{front_cond}}.colorIfTrueR')".format(left))
         emit("cmds.connectAttr({}, f'{{front_cond}}.secondTerm')".format(right))
         emit("cmds.connectAttr({}, f'{{front_cond}}.colorIfFalseR')".format(right))
+        for index, source in enumerate(sources[2:], 2):
+            emit("previous_output = f'{front_cond}.outColorR'")
+            emit("front_cond = cmds.createNode('condition', n={!r})".format(target_base + "_Condition{:02d}".format(index)))
+            emit("cmds.setAttr(f'{front_cond}.operation', 3)")
+            emit("cmds.connectAttr(previous_output, f'{front_cond}.firstTerm')")
+            emit("cmds.connectAttr(previous_output, f'{front_cond}.colorIfTrueR')")
+            emit("cmds.connectAttr({}, f'{{front_cond}}.secondTerm')".format(source))
+            emit("cmds.connectAttr({}, f'{{front_cond}}.colorIfFalseR')".format(source))
         emit("front_mult = cmds.createNode('multiplyDivide', n={!r})".format(target_base + "_RaiseValue_Mult"))
         emit("cmds.connectAttr(f'{front_cond}.outColorR', f'{front_mult}.input1X')")
         emit("cmds.setAttr(f'{front_mult}.input2X', 2)")
