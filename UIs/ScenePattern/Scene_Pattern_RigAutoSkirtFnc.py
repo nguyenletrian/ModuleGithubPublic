@@ -975,71 +975,20 @@ def sourceData(value):
     return repr(value)
 
 
-def planTargetOffsets(config):
-    targets = {}
-    for reader in config["items"]:
-        counts = {}
-        sphere = shortName(reader["sphere"])
-        for spec in reader["drivens"]:
-            target = shortName(spec["target"])
-            control = shortName(spec["control"])
-            counts[control] = counts.get(control, 0) + 1
-            suffix = "" if counts[control] == 1 else "_Sub{:02d}".format(counts[control])
-            prefix = sphere + "_" + jointName(control) + suffix
-            output = spec.get("output", "rotateZ")
-            entry = targets.setdefault(target, {"controls": [], "channels": {}})
-            if control not in entry["controls"]: entry["controls"].append(control)
-            source = prefix + ("_Invert_MD.outputX" if spec["invertRotate"] else "_Weight_MD.outputX")
-            entry["channels"].setdefault(output, []).append(source)
-
-    offsets = {}
-    for target, entry in targets.items():
-        names = cmds.ls(target, long=True, type="transform") or []
-        if len(names) != 1:
-            raise ValueError("RigAutoSkirtFnc: missing or ambiguous Target: " + target)
-        target_path = names[0]
-        offset = target + "_Offset"
-        existing = cmds.ls(offset, long=True, type="transform") or []
-        existing_child = existing == [target_path + "|" + offset]
-        # Preserve an existing dedicated offset when exporting a built rig.
-        needs_offset = existing_child
-        for output, sources in entry["channels"].items():
-            plug = target + "." + output
-            source = cmds.connectionInfo(plug, sourceFromDestination=True) or ""
-            if len(sources) > 1:
-                prefix = target + "_" + output
-                own_sources = (prefix + "_RaiseValue_Mult.outputX", prefix + "_ZeroOut_PMA.output1D")
-            else:
-                own_sources = sources
-            # Ignore the rig's own output when exporting after Run.
-            own_connection = shortName(source) in own_sources
-            if own_connection:
-                continue
-            if (source or not cmds.getAttr(plug, settable=True) or cmds.getAttr(plug, lock=True)
-                    or abs(cmds.getAttr(plug)) > 1e-8):
-                needs_offset = True
-        if needs_offset and existing and not existing_child:
-            raise ValueError("RigAutoSkirtFnc: Target Offset name already in use: " + offset)
-        branches = []
-        for control in entry["controls"]:
-            matches = cmds.ls(control, long=True, type="transform") or []
-            if len(matches) != 1 or not matches[0].startswith(target_path + "|"):
-                raise ValueError("RigAutoSkirtFnc: Target must be an ancestor of its Driven: {} / {}".format(target, control))
-            relative = matches[0][len(target_path)+1:].split("|")
-            if not needs_offset:
-                continue
-            if existing_child:
-                if relative[0] != offset or len(relative) < 2:
-                    raise ValueError("RigAutoSkirtFnc: existing Target Offset does not contain Driven: " + control)
-                branch = relative[1]
-            else:
-                branch = relative[0]
-            if branch not in branches: branches.append(branch)
-        for branch in branches:
-            if len(cmds.ls(branch, long=True) or []) != 1:
-                raise ValueError("RigAutoSkirtFnc: ambiguous Driven branch: " + branch)
-        offsets[target] = (offset, branches) if needs_offset else (target, [])
-    return offsets
+def targetOutput(target, controls, channels):
+    # Preserve occupied target channels.
+    if all(cmds.getAttr(target + "." + channel, settable=True) and not cmds.connectionInfo(target + "." + channel, isDestination=True) and abs(cmds.getAttr(target + "." + channel)) <= 1e-8 for channel in channels):
+        return target
+    target_path = cmds.ls(target, long=True)[0]
+    branches = []
+    for control in controls:
+        control_path = cmds.ls(control, long=True)[0]
+        branch = target_path + "|" + control_path[len(target_path)+1:].split("|")[0]
+        if branch not in branches: branches.append(branch)
+    offset = cmds.createNode("transform", name=target + "_Offset", parent=target)
+    for branch in branches:
+        cmds.parent(branch, offset, relative=True)
+    return offset
 
 
 def buildScript(config):
@@ -1056,14 +1005,18 @@ def buildScript(config):
         emit('cmds.setAttr(f"{{{}}}.input2X", {})'.format(variable, sourceData(value)))
         return 'f"{{{}}}.outputX"'.format(variable)
 
-    offsets = planTargetOffsets(config)
-    if any(target != destination for target, (destination, branches) in offsets.items()):
-        emit("# Target offsets")
-    for target, (offset, branches) in offsets.items():
-        if offset == target: continue
-        emit("cmds.createNode(\"transform\", name={}, parent={})".format(sourceData(offset), sourceData(target)))
-        for branch in branches:
-            emit("cmds.parent({}, {}, relative=True)".format(sourceData(branch), sourceData(offset)))
+    target_controls = {}
+    target_channels = {}
+    target_variables = {}
+
+    def destination(plug):
+        target, channel = plug.rsplit(".", 1)
+        if target not in target_variables:
+            variable = "target_{:02d}".format(len(target_variables) + 1)
+            target_variables[target] = variable
+            emit("{} = targetOutput({}, {}, {})".format(variable, sourceData(target), sourceData(target_controls[target]), sourceData(target_channels[target])))
+        return 'f"{{{}}}.{}"'.format(target_variables[target], channel)
+
     seen_spheres = set()
     control_counts = {}
     target_counts = {}
@@ -1075,7 +1028,10 @@ def buildScript(config):
             output = spec.get("output", "rotateZ")
             if output not in ("rotateX", "rotateY", "rotateZ", "translateX", "translateY", "translateZ"):
                 raise ValueError("Rig Auto Skirt Fnc: invalid output: " + output)
-            target = offsets[target][0]
+            controls = target_controls.setdefault(target, [])
+            channels = target_channels.setdefault(target, [])
+            if control not in controls: controls.append(control)
+            if output not in channels: channels.append(output)
             plug = target + "." + output
             target_counts[plug] = target_counts.get(plug, 0) + 1
     paired = {plug: [] for plug, count in target_counts.items() if count > 1}
@@ -1106,7 +1062,6 @@ def buildScript(config):
             raise ValueError("Rig Auto Skirt Fnc: one item per original pose reader: " + pose_reader)
         seen_spheres.add(pose_reader)
         outputs = [d.get("output", "rotateZ") for d in reader["drivens"]]
-        targets = [offsets[target][0] for target in targets]
         attributes = ["AutoFollow" if control_counts[control] > 1 else attribute_name for control in controls]
         plugs = [target + "." + output for target, output in zip(targets, outputs)]
         direct_indices = tuple(i for i, plug in enumerate(plugs) if plug not in paired)
@@ -1119,7 +1074,7 @@ def buildScript(config):
         emit("raise_start_angle = " + sourceData([float(d["startAngle"]) for d in reader["drivens"]]))
         emit("shoulder_joints = " + sourceData(shoulder_joints))
         conventional_controls = controls == [name + "_FK" for name in shoulder_joints]
-        conventional_targets = all(target in (control + "_Target", control + "_Target_Offset") for control, target in zip(controls, targets)) and all(output == "rotateZ" for output in outputs)
+        conventional_targets = targets == [control + "_Target" for control in controls] and all(output == "rotateZ" for output in outputs)
         create_indices = []
         for i, (control, attribute) in enumerate(zip(controls, attributes)):
             key = (control, attribute)
@@ -1153,7 +1108,8 @@ def buildScript(config):
             if spec["invertRotate"]:
                 weighted = weightOutput(weighted, pose_reader + "_" + shoulder_joints[i] + "_Invert_MD", -1, "invert_md")
             if i in direct_indices:
-                emit("cmds.connectAttr({}, {})".format(weighted, sourceData(plug)))
+                dest = destination(plug)
+                emit("cmds.connectAttr({}, {})".format(weighted, dest))
             else:
                 index = len(paired[plug]) + 1
                 variable = "pair_{:02d}_{:02d}".format(pair_numbers[plug], index)
@@ -1193,14 +1149,15 @@ def buildScript(config):
         emit("    cmds.connectAttr(raw_src_attr, f'{pma}.input1D[0]')")
         emit("    cmds.setAttr(f'{pma}.input1D[1]', val)")
         emit("    raw_src_attr = f'{pma}.output1D'")
-        emit("cmds.connectAttr(raw_src_attr, {!r})".format(plug))
+        dest = destination(plug)
+        emit("cmds.connectAttr(raw_src_attr, {})".format(dest))
     skirt_source = inspect.getsource(createSkirtRigSystem).rstrip()
     if distance_max_limit > 2:
         skirt_source = skirt_source.replace('ln="minDistance", at="double", min=0, max=2,',
             'ln="minDistance", at="double", min=0, max={},'.format(sourceData(distance_min_limit)))
         skirt_source = skirt_source.replace('ln="maxDistance", at="double", min=0, max=2,',
             'ln="maxDistance", at="double", min=0, max={},'.format(sourceData(distance_max_limit)))
-    lines.extend(["", inspect.getsource(createPoseReaderSystem).rstrip(), "",
+    lines.extend(["", inspect.getsource(targetOutput).rstrip(), "", inspect.getsource(createPoseReaderSystem).rstrip(), "",
                   skirt_source, "",
                   'if __name__ == "__main__":', "    main()", ""])
     script = "\n".join(lines)
@@ -1220,10 +1177,6 @@ def ExportPython(data, *args):
 def Run(data, *args):
     config = getData(data)
     converted = convertConfig(config)
-    offsets = planTargetOffsets(converted)
-    for target, (offset, branches) in offsets.items():
-        if offset != target and cmds.objExists(offset):
-            raise ValueError("RigAutoSkirtFnc: Run on a clean scene; Target Offset already exists: " + offset)
     for reader in converted["items"]:
         cpos = shortName(reader["sphere"]) + "_cpos"
         if cmds.objExists(cpos):
