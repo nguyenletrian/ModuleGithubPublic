@@ -572,6 +572,7 @@ def legacyConfig(config):
             control = spec["control"]
             groups.setdefault(control, []).append(dict(
                 axis=spec.get("output", "rotateZ")[-1], outputType=spec.get("output", "rotateZ")[:-1],
+                invertRotate=spec.get("invertRotate", False),
                 target=spec.get("target", ""), refV=spec.get("refV"),
                 minDistance=spec.get("minDistance", 0), maxDistance=spec.get("maxDistance", 0),
                 startAngle=spec.get("startAngle", 10)))
@@ -703,6 +704,7 @@ def editSubItems(row, *args):
         for control, widgets in editor["widgets"].items():
             for sub, fields in zip(row["subItems"][control], widgets):
                 sub["axis"] = cmds.optionMenu(fields["axis"], q=True, value=True)
+                sub["invertRotate"] = cmds.checkBox(fields["invert"], q=True, value=True)
                 sub["outputType"] = cmds.optionMenu(fields["outputType"], q=True, value=True).lower()
                 sub["target"] = cmds.textField(fields["target"], q=True, text=True).strip()
                 for key in ("refV", "minDistance", "maxDistance", "startAngle"):
@@ -774,6 +776,7 @@ def editSubItems(row, *args):
                 fields["axis"] = cmds.optionMenu(parent=line)
                 for axis in "XYZ": cmds.menuItem(parent=fields["axis"], label=axis)
                 cmds.optionMenu(fields["axis"], e=True, value=sub["axis"], changeCommand=markDirty)
+                fields["invert"] = cmds.checkBox(parent=col, label="Invert Output", value=sub["invertRotate"], changeCommand=markDirty)
                 cmds.textField(fields["target"], e=True, changeCommand=markDirty)
                 ref = liveRef(row, control, index)
                 line = cmds.rowLayout(parent=col, numberOfColumns=2, adjustableColumn=1, columnWidth2=(365, 90))
@@ -798,13 +801,13 @@ def editSubItems(row, *args):
     editor["sync"] = sync
     draw()
     cmds.text(parent=body, label="Live: AutoFollow, Ref V, Min/Max Distance, Start Angle.", align="left")
-    cmds.text(parent=body, label="Add/Remove/Type/Axis/Target: Save, then Run on a clean scene.", align="left")
+    cmds.text(parent=body, label="Add/Remove/Type/Axis/Target/Invert: Save, then Run on a clean scene.", align="left")
     cmds.button(parent=body, label="Save Sub Items", height=28, command=finish)
     cmds.showWindow(window)
 
 
 def unsupportedSettings(sub):
-    # Legacy Invert Output and Strength are ignored.
+    # Legacy Strength is ignored.
     result = []
     if sub.get("reverseU"): result.append("Reverse U")
     if sub.get("extraOffsetMatrix") or sub.get("extraOffsetObject"): result.append("Extra Offset")
@@ -839,7 +842,7 @@ def convertConfig(config):
                 reader["drivens"].append(dict(control=control, target=sub.get("target") or shortName(control)+"_Target",
                     output=sub["outputType"]+sub["axis"], refV=v, minDistance=sub["minDistance"],
                     maxDistance=sub["maxDistance"], startAngle=sub["startAngle"],
-                    autoFollow=follow_values.get(shortName(control), 1.0)))
+                    invertRotate=sub["invertRotate"], autoFollow=follow_values.get(shortName(control), 1.0)))
         result["items"].append(reader)
     return result
 
@@ -998,6 +1001,12 @@ def buildScript(config):
     lines = ["import maya.cmds as cmds", "", "", "def main():"]
     def emit(line=""):
         lines.append("    " + line if line else "")
+
+    def invertOutput(source, name):
+        emit("md = cmds.createNode(\"multiplyDivide\", n={})".format(sourceData(name)))
+        emit('cmds.setAttr(f"{md}.input2X", -1)')
+        emit('cmds.connectAttr({}, f"{{md}}.input1X")'.format(source))
+        return 'f"{md}.outputX"'
     offsets = planTargetOffsets(config)
     emit()
     emit("# Target offsets")
@@ -1076,7 +1085,8 @@ def buildScript(config):
                 created_attrs.add(key)
                 follow_settings[control + "." + attribute] = reader["drivens"][i]["autoFollow"]
         simple = (conventional_controls and conventional_targets and len(set(attributes)) == 1
-                  and len(create_indices) == len(controls) and len(direct_indices) == len(controls))
+                  and len(create_indices) == len(controls) and len(direct_indices) == len(controls)
+                  and not any(d["invertRotate"] for d in reader["drivens"]))
         emit("cp_follicle_shape, cpos = createPoseReaderSystem({}, {}, {})".format(
             sourceData(pose_reader), sourceData(shortName(reader["parent"])), sourceData(shortName(reader["end"]))))
         emit()
@@ -1100,20 +1110,38 @@ def buildScript(config):
                 if i in create_indices:
                     emit("cmds.addAttr({}, ln={}, at=\"double\", min=0, max=2, dv=1, k=True)".format(sourceData(control), sourceData(attribute)))
                 emit('cmds.connectAttr({}, f"{{raise_influence_nodes[{}]}}.input2X")'.format(sourceData(control + "." + attribute), i))
+                invert = reader["drivens"][i]["invertRotate"]
                 if i in direct_indices:
-                    emit('cmds.connectAttr(f"{{raise_influence_nodes[{}]}}.outputX", {})'.format(i, sourceData(plug)))
+                    source = 'f"{{raise_influence_nodes[{}]}}.outputX"'.format(i)
+                    if invert:
+                        source = invertOutput(source, plug.replace(".", "_") + "_Invert_MD")
+                    emit("cmds.connectAttr({}, {})".format(source, sourceData(plug)))
                 else:
                     index = len(paired[plug])
                     suffix = ("left", "right")[index] if index < 2 else "item_{:02d}".format(index+1)
                     variable = "pair_{:02d}_{}".format(pair_numbers[plug], suffix)
                     emit('{} = f"{{raise_influence_nodes[{}]}}.outputX"'.format(variable, i))
-                    paired[plug].append(variable)
+                    paired[plug].append((variable, invert))
         for i in create_indices:
             plug = controls[i] + "." + attributes[i]
             emit("cmds.setAttr({}, {})".format(sourceData(plug), sourceData(follow_settings[plug])))
     for plug, sources in paired.items():
-        left, right = sources[:2]
         target_base = plug.replace(".", "_")
+        all_inverted = all(invert for source, invert in sources)
+        mixed = any(invert for source, invert in sources) and not all_inverted
+        signed = []
+        emit()
+        if mixed:
+            for index, (source, invert) in enumerate(sources, 1):
+                if invert:
+                    inverted = invertOutput(source, target_base + "_Sub{:02d}_Invert_MD".format(index))
+                    name = "signed_{:02d}_{:02d}".format(pair_numbers[plug], index)
+                    emit("{} = {}".format(name, inverted))
+                    signed.append(name)
+                else:
+                    signed.append(source)
+        sources = [source for source, invert in sources]
+        left, right = sources[:2]
         emit()
         emit("# Akali: use the greater influence for the shared channel.")
         emit("front_cond = cmds.createNode('condition', n={!r})".format(target_base + "_Condition"))
@@ -1122,16 +1150,24 @@ def buildScript(config):
         emit("cmds.connectAttr({}, f'{{front_cond}}.colorIfTrueR')".format(left))
         emit("cmds.connectAttr({}, f'{{front_cond}}.secondTerm')".format(right))
         emit("cmds.connectAttr({}, f'{{front_cond}}.colorIfFalseR')".format(right))
+        if mixed:
+            emit("cmds.connectAttr({}, f'{{front_cond}}.colorIfTrueG')".format(signed[0]))
+            emit("cmds.connectAttr({}, f'{{front_cond}}.colorIfFalseG')".format(signed[1]))
         for index, source in enumerate(sources[2:], 2):
             emit("previous_output = f'{front_cond}.outColorR'")
+            if mixed:
+                emit("previous_signed = f'{front_cond}.outColorG'")
             emit("front_cond = cmds.createNode('condition', n={!r})".format(target_base + "_Condition{:02d}".format(index)))
             emit("cmds.setAttr(f'{front_cond}.operation', 3)")
             emit("cmds.connectAttr(previous_output, f'{front_cond}.firstTerm')")
             emit("cmds.connectAttr(previous_output, f'{front_cond}.colorIfTrueR')")
             emit("cmds.connectAttr({}, f'{{front_cond}}.secondTerm')".format(source))
             emit("cmds.connectAttr({}, f'{{front_cond}}.colorIfFalseR')".format(source))
+            if mixed:
+                emit("cmds.connectAttr(previous_signed, f'{front_cond}.colorIfTrueG')")
+                emit("cmds.connectAttr({}, f'{{front_cond}}.colorIfFalseG')".format(signed[index]))
         emit("front_mult = cmds.createNode('multiplyDivide', n={!r})".format(target_base + "_RaiseValue_Mult"))
-        emit("cmds.connectAttr(f'{front_cond}.outColorR', f'{front_mult}.input1X')")
+        emit("cmds.connectAttr(f'{front_cond}.outColor" + ("G" if mixed else "R") + "', f'{front_mult}.input1X')")
         emit("cmds.setAttr(f'{front_mult}.input2X', 2)")
         emit("raw_src_attr = f'{front_mult}.outputX'")
         emit("val = cmds.getAttr(raw_src_attr) or 0.0")
@@ -1141,7 +1177,8 @@ def buildScript(config):
         emit("    cmds.connectAttr(raw_src_attr, f'{pma}.input1D[0]')")
         emit("    cmds.setAttr(f'{pma}.input1D[1]', val)")
         emit("    raw_src_attr = f'{pma}.output1D'")
-        emit("cmds.connectAttr(raw_src_attr, {!r})".format(plug))
+        source = invertOutput("raw_src_attr", target_base + "_Invert_MD") if all_inverted else "raw_src_attr"
+        emit("cmds.connectAttr({}, {!r})".format(source, plug))
     skirt_source = inspect.getsource(createSkirtRigSystem).rstrip()
     if distance_max_limit > 2:
         skirt_source = skirt_source.replace('ln="minDistance", at="double", min=0, max=2,',
