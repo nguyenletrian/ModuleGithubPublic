@@ -978,29 +978,57 @@ def sourceData(value):
 def planTargetOffsets(config):
     targets = {}
     for reader in config["items"]:
+        counts = {}
+        sphere = shortName(reader["sphere"])
         for spec in reader["drivens"]:
             target = shortName(spec["target"])
             control = shortName(spec["control"])
-            controls = targets.setdefault(target, [])
-            if control not in controls: controls.append(control)
+            counts[control] = counts.get(control, 0) + 1
+            suffix = "" if counts[control] == 1 else "_Sub{:02d}".format(counts[control])
+            prefix = sphere + "_" + jointName(control) + suffix
+            output = spec.get("output", "rotateZ")
+            entry = targets.setdefault(target, {"controls": [], "channels": {}})
+            if control not in entry["controls"]: entry["controls"].append(control)
+            source = prefix + ("_Invert_MD.outputX" if spec["invertRotate"] else "_Weight_MD.outputX")
+            entry["channels"].setdefault(output, []).append(source)
 
     offsets = {}
-    for target, controls in targets.items():
+    for target, entry in targets.items():
         names = cmds.ls(target, long=True, type="transform") or []
         if len(names) != 1:
             raise ValueError("RigAutoSkirtFnc: missing or ambiguous Target: " + target)
         target_path = names[0]
         offset = target + "_Offset"
         existing = cmds.ls(offset, long=True, type="transform") or []
-        if existing and existing != [target_path + "|" + offset]:
+        existing_child = existing == [target_path + "|" + offset]
+        # Preserve an existing dedicated offset when exporting a built rig.
+        needs_offset = existing_child
+        for output, sources in entry["channels"].items():
+            plug = target + "." + output
+            source = cmds.connectionInfo(plug, sourceFromDestination=True) or ""
+            if len(sources) > 1:
+                prefix = target + "_" + output
+                own_sources = (prefix + "_RaiseValue_Mult.outputX", prefix + "_ZeroOut_PMA.output1D")
+            else:
+                own_sources = sources
+            # Ignore the rig's own output when exporting after Run.
+            own_connection = shortName(source) in own_sources
+            if own_connection:
+                continue
+            if (source or not cmds.getAttr(plug, settable=True) or cmds.getAttr(plug, lock=True)
+                    or abs(cmds.getAttr(plug)) > 1e-8):
+                needs_offset = True
+        if needs_offset and existing and not existing_child:
             raise ValueError("RigAutoSkirtFnc: Target Offset name already in use: " + offset)
         branches = []
-        for control in controls:
+        for control in entry["controls"]:
             matches = cmds.ls(control, long=True, type="transform") or []
             if len(matches) != 1 or not matches[0].startswith(target_path + "|"):
                 raise ValueError("RigAutoSkirtFnc: Target must be an ancestor of its Driven: {} / {}".format(target, control))
             relative = matches[0][len(target_path)+1:].split("|")
-            if existing:
+            if not needs_offset:
+                continue
+            if existing_child:
                 if relative[0] != offset or len(relative) < 2:
                     raise ValueError("RigAutoSkirtFnc: existing Target Offset does not contain Driven: " + control)
                 branch = relative[1]
@@ -1010,7 +1038,7 @@ def planTargetOffsets(config):
         for branch in branches:
             if len(cmds.ls(branch, long=True) or []) != 1:
                 raise ValueError("RigAutoSkirtFnc: ambiguous Driven branch: " + branch)
-        offsets[target] = (offset, branches)
+        offsets[target] = (offset, branches) if needs_offset else (target, [])
     return offsets
 
 
@@ -1029,8 +1057,10 @@ def buildScript(config):
         return 'f"{{{}}}.outputX"'.format(variable)
 
     offsets = planTargetOffsets(config)
-    emit("# Target offsets")
+    if any(target != destination for target, (destination, branches) in offsets.items()):
+        emit("# Target offsets")
     for target, (offset, branches) in offsets.items():
+        if offset == target: continue
         emit("cmds.createNode(\"transform\", name={}, parent={})".format(sourceData(offset), sourceData(target)))
         for branch in branches:
             emit("cmds.parent({}, {}, relative=True)".format(sourceData(branch), sourceData(offset)))
@@ -1089,7 +1119,7 @@ def buildScript(config):
         emit("raise_start_angle = " + sourceData([float(d["startAngle"]) for d in reader["drivens"]]))
         emit("shoulder_joints = " + sourceData(shoulder_joints))
         conventional_controls = controls == [name + "_FK" for name in shoulder_joints]
-        conventional_targets = targets == [name + "_Target_Offset" for name in controls] and all(output == "rotateZ" for output in outputs)
+        conventional_targets = all(target in (control + "_Target", control + "_Target_Offset") for control, target in zip(controls, targets)) and all(output == "rotateZ" for output in outputs)
         create_indices = []
         for i, (control, attribute) in enumerate(zip(controls, attributes)):
             key = (control, attribute)
@@ -1189,10 +1219,15 @@ def ExportPython(data, *args):
 
 def Run(data, *args):
     config = getData(data)
-    offsets = planTargetOffsets(convertConfig(config))
-    for offset, branches in offsets.values():
-        if cmds.objExists(offset):
+    converted = convertConfig(config)
+    offsets = planTargetOffsets(converted)
+    for target, (offset, branches) in offsets.items():
+        if offset != target and cmds.objExists(offset):
             raise ValueError("RigAutoSkirtFnc: Run on a clean scene; Target Offset already exists: " + offset)
+    for reader in converted["items"]:
+        cpos = shortName(reader["sphere"]) + "_cpos"
+        if cmds.objExists(cpos):
+            raise ValueError("RigAutoSkirtFnc: Run on a clean scene; Pose Reader already built: " + cpos)
     script = buildScript(config)
     exec(compile(script, "RigAutoSkirtFnc", "exec"), {"__name__": "__main__"})
     for reader in legacyConfig(config)["items"]:
