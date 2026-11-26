@@ -610,8 +610,11 @@ def applyLiveValue(row, control, index, key):
     if key in ("minDistance", "maxDistance"):
         minimum = value if key == "minDistance" else cmds.getAttr(ref[0] + ".minDistance")
         maximum = value if key == "maxDistance" else cmds.getAttr(ref[0] + ".maxDistance")
-        if not 0 <= minimum < maximum <= 2:
-            raise ValueError("Original Diana range: 0 <= Min < Max <= 2")
+        if not (math.isfinite(minimum) and math.isfinite(maximum) and 0 <= minimum < maximum):
+            raise ValueError("Distance requires 0 <= Min < Max (Min={}, Max={})".format(minimum, maximum))
+        limit = cmds.attributeQuery(key, node=ref[0], maximum=True)[0]
+        if value > limit:
+            cmds.addAttr(plug, edit=True, maxValue=max(3 if key == "minDistance" else 5, value))
     if key == "refV" and not 0 <= value <= 1:
         raise ValueError("Ref V must be 0-1")
     if key == "startAngle" and not 0 <= value <= 180:
@@ -846,8 +849,8 @@ def resolve(reader):
             else:
                 maximum = max(min((points[index].distanceTo(point) for i, point in enumerate(points) if i != index and shortName(specs[i]["control"]) != shortName(spec["control"])),
                                   default=radius), 0.001)
-        if not 0 <= minimum < maximum <= 2:
-            raise ValueError("Rig Auto Skirt Fnc: original Diana distance attributes require 0 <= Min < Max <= 2: " + spec["control"])
+        if not (math.isfinite(minimum) and math.isfinite(maximum) and 0 <= minimum < maximum):
+            raise ValueError("Rig Auto Skirt Fnc: {} requires 0 <= Min < Max (Min={}, Max={})".format(spec["control"], minimum, maximum))
         if not 0 <= float(spec["startAngle"]) <= 180:
             raise ValueError("Rig Auto Skirt Fnc: Start Angle must be 0-180")
         ranges.append((minimum, float(maximum)))
@@ -890,6 +893,7 @@ def buildScript(config):
     paired = {plug: [] for plug, count in target_counts.items() if count > 1}
     pair_numbers = {plug: i for i, plug in enumerate(paired, 1)}
     created_attrs = set()
+    distance_min_limit, distance_max_limit = 2, 2
     for reader in config["items"]:
         if not reader["drivens"]:
             raise ValueError("Rig Auto Skirt Fnc: add Driven controls to " + reader["id"])
@@ -897,6 +901,10 @@ def buildScript(config):
         if not attribute_name.isascii() or not attribute_name.isidentifier():
             raise ValueError("Rig Auto Skirt Fnc: invalid Attribute Name: " + attribute_name)
         ref_parameterV, min_max_distance = resolve(reader)
+        for minimum, maximum in min_max_distance:
+            if maximum > 2:
+                distance_min_limit = max(distance_min_limit, 3, minimum)
+                distance_max_limit = max(distance_max_limit, 5, maximum)
         pose_reader = shortName(reader["sphere"])
         controls = [shortName(d["control"]) for d in reader["drivens"]]
         shoulder_joints = []
@@ -999,8 +1007,14 @@ def buildScript(config):
         emit("    cmds.setAttr(f'{pma}.input1D[1]', val)")
         emit("    raw_src_attr = f'{pma}.output1D'")
         emit("cmds.connectAttr(raw_src_attr, {!r})".format(plug))
+    skirt_source = inspect.getsource(createSkirtRigSystem).rstrip()
+    if distance_max_limit > 2:
+        skirt_source = skirt_source.replace('ln="minDistance", at="double", min=0, max=2,',
+            'ln="minDistance", at="double", min=0, max={},'.format(sourceData(distance_min_limit)))
+        skirt_source = skirt_source.replace('ln="maxDistance", at="double", min=0, max=2,',
+            'ln="maxDistance", at="double", min=0, max={},'.format(sourceData(distance_max_limit)))
     lines.extend(["", "", inspect.getsource(createPoseReaderSystem).rstrip(), "", "",
-                  inspect.getsource(createSkirtRigSystem).rstrip(), "", "",
+                  skirt_source, "", "",
                   'if __name__ == "__main__":', "    main()", ""])
     script = "\n".join(lines)
     compile(script, "Python_Scene_Pattern_RigAutoSkirtFnc.py", "exec")
