@@ -637,7 +637,7 @@ def _read_profile():
 def _status(message):
     """Report full feedback to Script Editor and short feedback in the panel."""
     message = str(message)
-    print("[NLTA Retarget] " + message)
+    print("[NLTA Retarget] " + message, flush=True)
     label = UIs.get("status")
     if label is not None:
         try:
@@ -655,6 +655,28 @@ def _safe(action):
         cmds.warning("Retarget: " + str(exc))
         _status("Error: " + str(exc))
         return None
+
+
+def _run_exclusive(action):
+    """Prevent another Retarget action during Maya file I/O or module execution."""
+    if _STATE.get("running"):
+        _status("Retarget is already running.")
+        return None
+    _STATE["running"] = True
+    widget = UIs.get("widget")
+    previous_enabled = None
+    try:
+        if widget is not None:
+            previous_enabled = widget.isEnabled()
+            widget.setEnabled(False)
+        return _safe(action)
+    finally:
+        _STATE["running"] = False
+        if widget is not None and previous_enabled is not None:
+            try:
+                widget.setEnabled(previous_enabled)
+            except RuntimeError:
+                pass
 
 
 def _get_step(identifier):
@@ -710,7 +732,7 @@ def _run_card(identifier):
         _general_context(general, _STATE["context"])
         _status("Testing module: " + item["name"])
         return _run_step(item, _STATE["context"])
-    return _safe(work)
+    return _run_exclusive(work)
 
 
 def _pick_transform(field):
@@ -2279,7 +2301,7 @@ def _reload_current_scene(*args):
         _STATE["context"] = {}
         _status("Reopened current Maya scene: " + scene)
         return scene
-    return _safe(lambda: _quiet_file_run(work))
+    return _run_exclusive(lambda: _quiet_file_run(work))
 
 
 def _load_all(*args):
@@ -2530,7 +2552,9 @@ def _process_clip(general, clip, steps):
         general, {"batch": True, "animation_path_override": clip,
                   "pre_bake": True})
     # Do not import the clip again inside the Animation step.
+    _status("Loading assets: " + str(clip))
     _import_assets_with_fbx_mode(general, clip, context)
+    _status("Assets loaded: " + str(clip))
 
     # Alignment stages need a unique top-level controller in the new rig.
     if any(item["kind"] == "Rotate" or
@@ -2672,7 +2696,9 @@ def _run_retarget(*args):
         success = False
         try:
             for index, clip in enumerate(clips):
+                _status("Clip {}/{}: {}".format(index + 1, len(clips), clip))
                 if index:
+                    _status("Reopening base scene: " + str(template))
                     _open_scene_template(template, original)
                 output = _process_clip(general, clip, steps)
                 completed.append(output if save_enabled else clip)
@@ -2695,7 +2721,7 @@ def _run_retarget(*args):
             _status("Retarget complete: {} clip(s) processed.".format(
                 len(completed)))
         return completed
-    return _safe(lambda: _quiet_file_run(work))
+    return _run_exclusive(lambda: _quiet_file_run(work))
 
 
 def GetPairsName(*args):
