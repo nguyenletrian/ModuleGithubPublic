@@ -7,8 +7,6 @@ alongside the JSON. Right-click Export Py > Open Folder.
 import os
 import importlib
 import inspect
-import pprint
-import re
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
 import maya.mel as mel
@@ -22,69 +20,23 @@ for module in (NLTA_General, NLTA_UI):
 ITEMS = {"items": {}, "order": []}
 
 
-def _create_rivet_plane(vertex_names, plane_name):
-    """Create a rivet plane at the source vertices' exact world positions."""
-    components = []
-    for vertex in vertex_names:
-        found = cmds.ls(vertex, long=True, flatten=True) or []
-        if len(found) != 1:
-            raise ValueError("Cannot resolve exactly one vertex: {}".format(vertex))
-        components.append(found[0])
-
-    if len(components) < 3:
-        raise ValueError("Rivet plane requires at least 3 vertices")
-
-    parsed = []
-    for component in components:
-        match = re.match(r"^(.+)\.vtx\[(\d+)\]$", component)
-        if not match:
-            raise ValueError("Expected polygon vertex, got: {}".format(component))
-        parsed.append((match.group(1), int(match.group(2))))
-
-    mesh = parsed[0][0]
-    if any(source != mesh for source, _ in parsed):
-        raise ValueError("Rivet vertices must belong to the same mesh")
-    vertex_ids = [index for _, index in parsed]
-    if len(set(vertex_ids)) != len(vertex_ids):
-        raise ValueError("Rivet vertex list contains duplicates")
-
-    shapes = cmds.listRelatives(mesh, shapes=True, noIntermediate=True, fullPath=True, type="mesh") or []
-    if len(shapes) != 1:
-        raise ValueError("Expected one visible mesh shape under: {}".format(mesh))
-
+def createRivetPlane(vertices, plane_name):
+    mesh = vertices[0].split(".vtx[", 1)[0]
+    vertex_ids = [int(vertex.rsplit("[", 1)[1][:-1]) for vertex in vertices]
+    shape = cmds.listRelatives(mesh, shapes=True, noIntermediate=True, fullPath=True, type="mesh")[0]
     selection = om.MSelectionList()
-    selection.add(shapes[0])
-    source_dag = selection.getDagPath(0)
-    original_points = om.MFnMesh(source_dag).getPoints(om.MSpace.kWorld)
-    positions = [original_points[index] for index in vertex_ids]
-
-    # Create the rivet plane using Maya's internal world-space units.
+    selection.add(shape)
+    points = om.MFnMesh(selection.getDagPath(0)).getPoints(om.MSpace.kWorld)
+    positions = [points[index] for index in vertex_ids]
     new_object = om.MFnMesh().create(positions, [len(positions)], list(range(len(positions))))
     plane = cmds.rename(om.MFnDagNode(new_object).fullPathName(), plane_name)
+    plane_shape = cmds.listRelatives(plane, shapes=True, noIntermediate=True, fullPath=True, type="mesh")[0]
+    return plane, plane_shape
 
-    new_shapes = cmds.listRelatives(plane, shapes=True, noIntermediate=True, fullPath=True, type="mesh") or []
-    if len(new_shapes) != 1:
-        cmds.delete(plane)
-        raise RuntimeError("Cannot find newly created rivet plane mesh shape")
-
-    new_selection = om.MSelectionList()
-    new_selection.add(new_shapes[0])
-    created_points = om.MFnMesh(new_selection.getDagPath(0)).getPoints(om.MSpace.kWorld)
-
-    # Verify the new plane matches the original vertex positions.
-    max_error_cm = max((a - b).length() for a, b in zip(positions, created_points))
-    if max_error_cm > 0.0001:
-        cmds.delete(plane)
-        raise RuntimeError("Plane does not match source vertices (max error {:.6f} cm)".format(max_error_cm))
-
-    return plane, new_shapes[0]
-
-
-def _follow_mode(info):
+def followMode(info):
     """Resolve one checked follow type; old Rivet JSON defaults to Parent."""
     keys = (("parent", "followParent"), ("position", "followPosition"),
             ("rotation", "followRotation"))
-    # Migrate old Matrix Delta items to Parent constraint when no other mode is selected.
     if (info.get("followMatrixDelta") or str(info.get("followMode", "")).strip().lower() == "matrixdelta") and not any(info.get(key, False) for _, key in keys):
         return "parent"
     present = [key for _, key in keys if key in info]
@@ -103,21 +55,15 @@ def _follow_mode(info):
     return mode
 
 
-def _connect_rivet_follow(locator, offset, child, name, follow_mode="parent"):
-    """Blend only the requested rivet channels with rest via AutoFollow."""
-    if follow_mode not in ("parent", "position", "rotation"):
-        raise ValueError("RigRivet: unsupported follow mode " + str(follow_mode))
+def connectRivetFollow(locator, offset, child, name, constraintCommand):
+    # Blend the rivet and rest with AutoFollow.
     parents = cmds.listRelatives(offset, parent=True, fullPath=True) or []
     rest_name = child.rsplit("|", 1)[-1].replace(":", "_") + "_RivetRest"
-    if cmds.objExists(rest_name):
-        raise RuntimeError("Rivet rest transform already exists: " + rest_name)
     rest = cmds.createNode("transform", name=rest_name, parent=parents[0]) if parents else cmds.createNode("transform", name=rest_name)
     bind_matrix = cmds.xform(offset, query=True, worldSpace=True, matrix=True)
     cmds.xform(rest, worldSpace=True, matrix=bind_matrix)
 
-    # Stage: Keep the Rivet's bind offset inside the offset parent's scale space.
-    # A world-space parentConstraint maintainOffset does not scale its saved
-    # translation offset when the global rig scale changes.
+    # Keep the bind offset in the parent scale space.
     follow_name = name + "_FollowSpace"
     follow_space = (cmds.createNode("transform", name=follow_name, parent=parents[0])
                     if parents else cmds.createNode("transform", name=follow_name))
@@ -129,19 +75,8 @@ def _connect_rivet_follow(locator, offset, child, name, follow_mode="parent"):
     if not cmds.attributeQuery("AutoFollow", node=child, exists=True):
         cmds.addAttr(child, longName="AutoFollow", attributeType="double", min=0, max=1, defaultValue=1, keyable=True)
 
-    # Stage: Both target and rest match bind pose; drive only chosen channels.
-    # Parent keeps the original translate + rotate behavior. Position leaves
-    # rotation untouched, and Rotation leaves translation untouched.
-    if follow_mode == "parent":
-        constraint_type = cmds.parentConstraint
-    elif follow_mode == "position":
-        constraint_type = cmds.pointConstraint
-    else:
-        constraint_type = cmds.orientConstraint
-    constraint = constraint_type(follow_target, rest, offset, maintainOffset=False)[0]
-    weights = constraint_type(constraint, query=True, weightAliasList=True) or []
-    if len(weights) != 2:
-        raise RuntimeError("Expected locator and rest weights on " + constraint)
+    constraint = constraintCommand(follow_target, rest, offset, maintainOffset=False)[0]
+    weights = constraintCommand(constraint, query=True, weightAliasList=True)
 
     reverse = cmds.createNode("reverse", name=name + "_RestWeightReverse")
     cmds.connectAttr(child + ".AutoFollow", constraint + "." + weights[0], force=True)
@@ -165,7 +100,7 @@ def DefaultSetting(path, *arr):
     }
 
 
-def _data_path(data):
+def dataPath(data):
     newestData = NLTA_General.JsonGetByID({
         "path": os.path.join(data["sceneDataPath"], "ScenePatternData.json"),
         "id": data["id"]
@@ -176,7 +111,7 @@ def _data_path(data):
 
 
 def Load(data, listUI, *arr):
-    path = _data_path(data)
+    path = dataPath(data)
     children = cmds.layout(listUI, q=True, ca=True) or []
     for child in children:
         if cmds.control(child, exists=True):
@@ -189,7 +124,7 @@ def Load(data, listUI, *arr):
 
 def OpenExportFolder(data, *args):
     try:
-        folder = os.path.dirname(_data_path(data))
+        folder = os.path.dirname(dataPath(data))
     except Exception as exc:
         cmds.warning(str(exc))
         return
@@ -202,7 +137,7 @@ def OpenExportFolder(data, *args):
 def Form(data, *args):
     def Save(data, *args):
         saveData = NLTA_UI.GetData(ITEMS["items"])
-        NLTA_General.writeJsonFile(_data_path(data), saveData)
+        NLTA_General.writeJsonFile(dataPath(data), saveData)
 
     def SaveAndExport(*args):
         Save(data)
@@ -216,7 +151,7 @@ def Form(data, *args):
     cmds.rowColumnLayout(numberOfColumns=4, parent=buttonUI)
     cmds.button(label="Add", width=90, c=partial(Add, listUI, {}))
     cmds.button(label="Save", width=90, c=partial(Save, data))
-    cmds.button(label="Run", width=90, c=partial(Run, data))
+    cmds.button(label="Run", width=90, c=lambda *unused: (Save(data), Run(data)))
     exportBtn = cmds.button(label="Export Py", width=110, c=SaveAndExport)
     cmds.popupMenu(parent=exportBtn, button=3)
     cmds.menuItem(label="Open Folder", c=partial(OpenExportFolder, data))
@@ -224,22 +159,13 @@ def Form(data, *args):
     Load(data, listUI)
 
 
-def _source_skin(mesh):
+def sourceSkin(mesh):
     # Use Maya's stock findRelatedSkinCluster MEL procedure.
     escaped = mesh.replace('\\', '\\\\').replace('"', '\\"')
     skin = mel.eval('findRelatedSkinCluster "{}"'.format(escaped))
-    return skin if skin and cmds.objExists(skin) else None
+    return skin
 
-def _mesh_shape(mesh):
-    if cmds.nodeType(mesh) == 'mesh':
-        return mesh
-    shapes = cmds.listRelatives(mesh, shapes=True, noIntermediate=True, fullPath=True, type='mesh') or []
-    if len(shapes) != 1:
-        raise ValueError('Expected one mesh shape under {}'.format(mesh))
-    return shapes[0]
-
-
-def _offset_group(child, name):
+def offsetGroup(child, name):
     # Preserve the child's world pose while inserting its offset group.
     world_matrix = cmds.xform(child, query=True, worldSpace=True, matrix=True)
     parents = cmds.listRelatives(child, parent=True, fullPath=True) or []
@@ -252,44 +178,17 @@ def _offset_group(child, name):
 
 
 
-def _create_rivet(info):
-    vertex_lines = [str(line).strip() for line in str(info.get('vertexs') or '').splitlines() if str(line).strip()]
-    vertices = cmds.ls(vertex_lines, flatten=True, long=True) or []
-    if len(vertices) < 3:
-        raise ValueError('At least 3 existing vertices are required')
-    if len(set(vertices)) != len(vertices):
-        raise ValueError('Duplicate vertices in rivet input')
-    if any('.vtx[' not in v for v in vertices):
-        raise ValueError('Only mesh vertex components are supported')
-
-    mesh = vertices[0].split('.vtx[', 1)[0]
-    if any(v.split('.vtx[', 1)[0] != mesh for v in vertices):
-        raise ValueError('All vertices in a rivet must be from one mesh')
-    _mesh_shape(mesh)
-
-    child = str(info.get('child') or '').strip()
-    parent = str(info.get('parent') or '').strip()
-    copy_transform = str(info.get('copyTransform') or '').strip()
-    follow_mode = _follow_mode(info)
-    for obj in (child, parent, copy_transform):
-        if obj and not cmds.objExists(obj):
-            raise ValueError('Missing Maya object: {}'.format(obj))
-
-    # Use a short name for all rivet nodes.
-    short_child = child.rsplit('|', 1)[-1].replace(':', '_')
-    name = short_child + '_Rivet'  # Blank child matches original '_Rivet'.
-    plane_name = name + '_Plane'
-    loc_name = name + '_Loc'
-    offset_name = short_child + '_RivetOffset'
-    names_to_check = [plane_name, loc_name]
-    if child:
-        names_to_check.append(offset_name)
-    for node in names_to_check:
-        if cmds.objExists(node):
-            raise RuntimeError('Rivet node already exists: {}'.format(node))
+def createRivet(vertex_names, child, parent, copy_transform, constraintCommand):
+    vertices = cmds.ls(vertex_names, flatten=True, long=True)
+    mesh = vertices[0].split(".vtx[", 1)[0]
+    short_child = child.rsplit("|", 1)[-1].replace(":", "_")
+    name = short_child + "_Rivet"
+    plane_name = name + "_Plane"
+    loc_name = name + "_Loc"
+    offset_name = short_child + "_RivetOffset"
 
     # Create the one-face rivet plane.
-    plane, plane_shape = _create_rivet_plane(vertices, plane_name)
+    plane, plane_shape = createRivetPlane(vertices, plane_name)
 
     # Build a live surface from the rivet plane edges.
     cfme1 = cmds.createNode('curveFromMeshEdge', name=name + '_EdgeA')
@@ -330,12 +229,13 @@ def _create_rivet(info):
     offset = None
     constraint = None
     rest = None
+    # Blend rivet motion and rest with AutoFollow.
     if child:
-        offset = _offset_group(child, offset_name)
-        constraint, rest = _connect_rivet_follow(loc, offset, child, name, follow_mode)
+        offset = offsetGroup(child, offset_name)
+        constraint, rest = connectRivetFollow(loc, offset, child, name, constraintCommand)
 
     # Transfer source skin weights to the rivet plane.
-    skin = _source_skin(mesh)
+    skin = sourceSkin(mesh)
     if skin:
         # Skin history already follows rig joints; do not inherit the parent
         # group's transform again when the surface is parented below it.
@@ -350,105 +250,49 @@ def _create_rivet(info):
         cmds.parent([plane, loc], parent, absolute=True)
     cmds.setAttr(plane + '.visibility', 0)
     cmds.setAttr(loc + '.visibility', 0)
-    return {'plane': plane, 'locator': loc, 'offset': offset, 'constraint': constraint, 'rest': rest, 'copyTransform': matched_group, 'followMode': follow_mode}
+    return {'plane': plane, 'locator': loc, 'offset': offset, 'constraint': constraint, 'rest': rest, 'copyTransform': matched_group}
 
+
+
+def rivetArguments(info):
+    vertices = [line.strip() for line in str(info.get("vertexs") or "").splitlines() if line.strip()]
+    child = str(info.get("child") or "").strip()
+    parent = str(info.get("parent") or "").strip()
+    copy_transform = str(info.get("copyTransform") or "").strip()
+    command = {"parent": "parentConstraint", "position": "pointConstraint", "rotation": "orientConstraint"}[followMode(info)]
+    return vertices, child, parent, copy_transform, command
 
 
 def BuildRigRivet(datas):
-    """Build the rivet networks using saved scene-pattern data."""
-    # Create one rivet network for each saved item.
     created = []
     for info in datas:
-        created.append(_create_rivet(info))
+        vertices, child, parent, copy_transform, command = rivetArguments(info)
+        created.append(createRivet(vertices, child, parent, copy_transform, getattr(cmds, command)))
     return created
 
 
-def ExportPython(data, *args):
-    data_path = _data_path(data)
-    rivet_data = NLTA_General.readJsonFile(data_path)
-    if not isinstance(rivet_data, list) or not rivet_data:
-        cmds.warning("RigRivet Export: no saved rivet items")
-        return None
-
-    import ast
-    functions = (_create_rivet_plane, _source_skin, _mesh_shape, _offset_group,
-                 _follow_mode, _connect_rivet_follow,
-                 _create_rivet, BuildRigRivet)
-    tree = ast.parse("\n\n".join(inspect.getsource(fn).rstrip() for fn in functions))
-
-    class ExportCode(ast.NodeTransformer):
-        def visit_Raise(self, node):
-            return None
-
-        def visit_Assert(self, node):
-            return None
-
-        def visit_Try(self, node):
-            self.generic_visit(node)
-            return node.body + node.orelse + node.finalbody
-
-        def visit_If(self, node):
-            if any(isinstance(stmt, (ast.Raise, ast.Assert)) for stmt in node.body):
-                self.generic_visit(node)
-                return node.orelse
-            self.generic_visit(node)
-            return node if node.body else node.orelse
-
-        def visit_For(self, node):
-            self.generic_visit(node)
-            return node if node.body else node.orelse or None
-
-        def visit_While(self, node):
-            self.generic_visit(node)
-            return node if node.body else node.orelse
-
-        def visit_Assign(self, node):
-            if any(isinstance(target, ast.Name)
-                   and target.id in ("new_selection", "created_points", "max_error_cm", "parent_bind")
-                   for target in node.targets):
-                return None
-            return self.generic_visit(node)
-
-        def visit_Expr(self, node):
-            value = node.value
-            if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                return None
-            if isinstance(value, ast.Call):
-                fn = value.func
-                if (isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name)
-                        and fn.value.id == "cmds" and fn.attr == "warning"):
-                    return None
-                if (isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name)
-                        and fn.value.id == "new_selection" and fn.attr == "add"):
-                    return None
-            return self.generic_visit(node)
-
-        def visit_FunctionDef(self, node):
-            if node.name == "close":
-                return None
-            self.generic_visit(node)
-            if not node.body:
-                node.body = [ast.Pass()]
-            return node
-
-    tree = ExportCode().visit(tree)
-    ast.fix_missing_locations(tree)
-    body = ast.unparse(tree)
-    body = "\n".join("    " + line if line.strip() else "" for line in body.splitlines())
-    saved = repr(rivet_data)
+def buildScript(datas):
+    functions = (createRivetPlane, sourceSkin, offsetGroup, connectRivetFollow, createRivet)
+    builders = "\n\n".join(inspect.getsource(fn).rstrip() for fn in functions)
+    calls = []
+    for info in datas:
+        vertices, child, parent, copy_transform, command = rivetArguments(info)
+        calls.append("    createRivet({!r}, {!r}, {!r}, {!r}, cmds.{})".format(vertices, child, parent, copy_transform, command))
     source = (
-        "def main():\n"
-        "    import re\n"
-        "    import maya.cmds as cmds\n"
-        "    import maya.mel as mel\n"
-        "    import maya.api.OpenMaya as om\n\n"
-        "    RIVET_DATA = " + saved + "\n\n"
-        + body + "\n\n"
-        "    BuildRigRivet(RIVET_DATA)\n\n"
-        'if __name__ == "__main__":\n    main()\n'
+        "import maya.cmds as cmds\nimport maya.mel as mel\nimport maya.api.OpenMaya as om\n\n"
+        + builders + "\n\ndef main():\n"
+        + ("\n".join(calls) or "    pass")
+        + '\n\nif __name__ == "__main__":\n    main()\n'
     )
+    compile(source, "Python_Scene_Pattern_RigRivet.py", "exec")
+    return source
+
+
+def ExportPython(data, *args):
+    data_path = dataPath(data)
+    datas = NLTA_General.readJsonFile(data_path) or []
+    source = buildScript(datas)
     filename = "Python_" + os.path.splitext(os.path.basename(__file__))[0] + ".py"
-    compile(source, filename, "exec")
     output = os.path.join(os.path.dirname(data_path), filename)
     with open(output, "w", encoding="utf-8") as stream:
         stream.write(source)
@@ -456,10 +300,7 @@ def ExportPython(data, *args):
 
 
 def Run(data, *args):
-    """Build the saved rig using the standalone builder."""
-    rivet_data = NLTA_General.readJsonFile(_data_path(data)) or []
-    return BuildRigRivet(rivet_data)
-
+    return BuildRigRivet(NLTA_General.readJsonFile(dataPath(data)) or [])
 
 def Add(listUI, data, *args):
     global ITEMS
@@ -489,18 +330,19 @@ def Add(listUI, data, *args):
 
     # A single exclusive checkbox controls which channels follow the rivet.
     # Legacy JSON without these fields stays on Parent, matching old rigs.
-    mode = _follow_mode(data)
-    modes = (("parent", "Parent", "followParent"),
-             ("position", "Position", "followPosition"),
-             ("rotation", "Rotation", "followRotation"))
+    mode = followMode(data)
+    modes = (("parent", "Parent"), ("position", "Position"),
+             ("rotation", "Rotation"))
     follow_controls = {}
     follow_row = cmds.rowColumnLayout(numberOfColumns=4,
-                                     columnWidth=[(1, 80), (2, 68), (3, 75), (4, 76)])
+                                     columnWidth=[(1, 80), (2, 100),
+                                                  (3, 100), (4, 100)])
     cmds.text(label="Follow Type", align="left")
-    for key, caption, json_key in modes:
+    for key, caption in modes:
+        name = "follow" + caption
         control = cmds.checkBox(label=caption, value=(mode == key))
         follow_controls[key] = control
-        itemData[json_key] = control
+        itemData[name] = control
     def select_mode(chosen, *unused):
         for key, control in follow_controls.items():
             cmds.checkBox(control, edit=True, value=(key == chosen))
