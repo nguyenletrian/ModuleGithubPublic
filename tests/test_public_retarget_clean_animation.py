@@ -74,7 +74,7 @@ class CleanAnimationTests(unittest.TestCase):
                         cutKey=cut, delete=delete,
                         objExists=lambda curve: curve in values,
                         isConnected=lambda source, plug: True,
-                        getAttr=lambda plug, **kw: 0 if plug.endswith(".postInfinity") else True,
+                        getAttr=lambda plug, **kw: 0 if plug.endswith(".postInfinity") or kw.get("lock") else True,
                         setAttr=lambda *args: writes.append(args)))
         result = env["Run"]({}, {"target_namespace": "Rig"})
         self.assertEqual(result["controls"], 1)
@@ -102,7 +102,7 @@ class CleanAnimationTests(unittest.TestCase):
                         listRelatives=lambda *a, **kw: ["shape"],
                         listAttr=lambda *a, **kw: ["rotateX", "scaleX"],
                         keyframe=keyframe, listConnections=lambda *a, **kw: ["onePlug"],
-                        getAttr=lambda plug, **kw: 0 if plug.endswith(".postInfinity") else True,
+                        getAttr=lambda plug, **kw: 0 if plug.endswith(".postInfinity") or kw.get("lock") else True,
                         isConnected=lambda *a: True, delete=delete,
                         setAttr=lambda *a: writes.append(a)))
         result = env["Run"]({}, {"target_namespace": "Rig"})
@@ -111,6 +111,42 @@ class CleanAnimationTests(unittest.TestCase):
         self.assertEqual(writes, [("|Rig:FK.rotateX", 0)])
         self.assertEqual(result["removed_keys"], 1)
         self.assertEqual(result["zero_channels"], 1)
+
+
+    def test_baked_pairblend_zero_key_and_near_zero_at_frame_zero(self):
+        values = {"blendCurve": [0.0], "tinyCurve": [2e-8], "nonzero": [0.01]}
+        curves = {"rotateX": "blendCurve", "rotateY": "tinyCurve", "rotateZ": "nonzero"}
+        outputs = {"blendCurve": "pairBlend1.inRotateX2", "tinyCurve": "|Rig:FK.rotateY",
+                   "nonzero": "|Rig:FK.rotateZ"}
+        writes, deleted = [], []
+        def keyframe(name, **kw):
+            if kw.get("name"):
+                return [curves[name.rsplit(".", 1)[-1]]]
+            if kw.get("timeChange"):
+                return [0]
+            return values[name]
+        def delete(curve):
+            deleted.append(curve)
+            del values[curve]
+        def node_type(node):
+            if node == "pairBlend1":
+                return "pairBlend"
+            return "transform" if node.startswith("|") else "animCurveTA"
+        env = scope(rt=SimpleNamespace(mapping_candidates=lambda ns: ["|Rig:FK"],
+                                        leaf=lambda node: "FK"),
+                    cmds=SimpleNamespace(nodeType=node_type,
+                        listRelatives=lambda *a, **kw: ["shape"],
+                        listAttr=lambda *a, **kw: list(curves),
+                        keyframe=keyframe,
+                        listConnections=lambda plug, **kw: [outputs[plug.split(".")[0]]],
+                        getAttr=lambda plug, **kw: False,
+                        isConnected=lambda source, plug: outputs[source.split(".")[0]] == plug,
+                        delete=delete, setAttr=lambda *a: writes.append(a)))
+        result = env["Run"]({}, {"target_namespace": "Rig"})
+        self.assertEqual(deleted, ["blendCurve", "tinyCurve"])
+        self.assertEqual(writes, [("pairBlend1.inRotateX2", 0), ("|Rig:FK.rotateY", 0)])
+        self.assertEqual(values, {"nonzero": [0.01]})
+        self.assertEqual(result["removed_keys"], 2)
 
 
 if __name__ == "__main__":
