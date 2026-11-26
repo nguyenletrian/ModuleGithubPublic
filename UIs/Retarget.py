@@ -40,6 +40,7 @@ STEP_FILES = (
     ("MatchRotatePair", "Retarget_MatchRotatePair.py"),
     ("MatchRotate", "Retarget_MatchRotate.py"),
     ("CreateJoint", "Retarget_CreateJoint.py"),
+    ("PoleVector", "Retarget_PoleVector.py"),
     ("Animation", "Retarget_Animation.py"),
     ("Constraint", "Retarget_Constraint.py"),
     ("Bake", "Retarget_Bake.py"),
@@ -99,7 +100,7 @@ def _default_steps():
     # Optional modules require an object/file or a later Bake stage.
     for step in steps:
         if step["kind"] in ("Bake", "CleanAnimation", "Clean", "PythonFile", "Transform",
-                            "OffsetPosition", "SetValue", "MatchTransform", "MatchRotatePair", "MatchRotate", "CreateJoint", "Constraint"):
+                            "OffsetPosition", "SetValue", "MatchTransform", "MatchRotatePair", "MatchRotate", "CreateJoint", "PoleVector", "Constraint"):
             step["enabled"] = False
     return steps
 
@@ -1022,6 +1023,8 @@ def _module_field_columns(kind, descriptors):
         "Scale": (("source_role", "old_low", "old_high"),
                   ("target_role", "new_low", "new_high"),
                   "Scale Ref", "Scale Object"),
+        "PoleVector": (("source_role", "start", "middle", "end"),
+                       ("name", "distance_ratio"), "Joint Chain", "Pole Vector"),
         "OffsetPosition": (("ref_role", "ref_root", "ref_object"),
                            ("affect_role", "affect_root", "affect_object"),
                            "Ref", "Affect"),
@@ -1119,7 +1122,7 @@ class RetargetCard(QtWidgets.QFrame):
         detail.setContentsMargins(7, 5, 5, 3)
         detail.setSpacing(6)
         self.name = None
-        if self.kind not in ("MatchTransform", "MatchRotate", "CreateJoint", "Constraint", "Bake", "Clean", "CleanAnimation"):
+        if self.kind not in ("MatchTransform", "MatchRotate", "CreateJoint", "PoleVector", "Constraint", "Bake", "Clean", "CleanAnimation"):
             name_label = QtWidgets.QLabel("Module Name")
             detail.addWidget(name_label)
             self.name = QtWidgets.QLineEdit(record["name"])
@@ -1546,7 +1549,9 @@ class RetargetCard(QtWidgets.QFrame):
                                  52 if caption == "Folder" else 46)
             button.clicked.connect(
                 lambda checked=False, target=widget, way=mode: _safe(
-                    lambda: _pick_transform(target) if way == "pick"
+                    lambda: _pick_constraint_object(target, self.widgets["source_role"][1])
+                    if way == "pick" and self.kind == "PoleVector"
+                    else _pick_transform(target) if way == "pick"
                     else _pick_scale_reference(target) if way == "pick_ref"
                     else _pick_offset_element(target) if way == "pick_element"
                     else _pick_channel_attribute(
