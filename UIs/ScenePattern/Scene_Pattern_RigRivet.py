@@ -274,13 +274,15 @@ def BuildRigRivet(datas):
 def buildScript(datas):
     functions = (createRivetPlane, sourceSkin, offsetGroup, connectRivetFollow, createRivet)
     builders = "\n\n".join(inspect.getsource(fn).rstrip() for fn in functions)
+    builders = "\n".join("    " + line if line.strip() else "" for line in builders.splitlines())
     calls = []
     for info in datas:
         vertices, child, parent, copy_transform, command = rivetArguments(info)
         calls.append("    createRivet({!r}, {!r}, {!r}, {!r}, cmds.{})".format(vertices, child, parent, copy_transform, command))
     source = (
-        "import maya.cmds as cmds\nimport maya.mel as mel\nimport maya.api.OpenMaya as om\n\n"
-        + builders + "\n\ndef main():\n"
+        "def main():\n"
+        "    import maya.cmds as cmds\n    import maya.mel as mel\n    import maya.api.OpenMaya as om\n\n"
+        + builders + "\n\n"
         + ("\n".join(calls) or "    pass")
         + '\n\nif __name__ == "__main__":\n    main()\n'
     )
