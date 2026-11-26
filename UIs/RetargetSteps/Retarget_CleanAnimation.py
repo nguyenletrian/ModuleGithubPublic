@@ -87,6 +87,7 @@ def Run(settings, context):
             # were the final animation of this channel.
             if len(curves) != 1 or cmds.nodeType(curves[0]) not in _TIME_CURVES:
                 skipped += 1
+                print("[Clean Animation] Skipped {}: multiple curves or non-time curve".format(plug))
                 continue
             curve = curves[0]
             if curve in seen:
@@ -96,39 +97,58 @@ def Run(settings, context):
                                            destination=True, plugs=True) or []
             if len(set(outputs)) != 1:
                 skipped += 1
+                print("[Clean Animation] Skipped {}: shared or missing curve output".format(plug))
                 continue
             values = cmds.keyframe(curve, query=True, valueChange=True) or []
             indices, zero = _removal_indices(
                 values, trim_tail=(cmds.getAttr(curve + ".postInfinity") == 0))
+
+            # Bake may leave a tiny floating-point residual displayed as 0.
+            if len(values) == 1 and abs(values[0]) <= 1e-6 and not zero:
+                times = cmds.keyframe(curve, query=True, timeChange=True) or []
+                zero = times == [0]
+                if zero:
+                    indices = [0]
+
             if not indices:
                 continue
-            # A directly connected all-zero curve can be removed outright.
-            # Maya may retain a final key when cutting the last key range.
-            direct = cmds.isConnected(curve + ".output", plug)
-            if zero and direct:
-                cmds.delete(curve)
-                if cmds.getAttr(plug, settable=True):
-                    cmds.setAttr(plug, 0)
-                removed += len(values)
-                zero_channels += 1
-                cleaned.add(node)
+
+            # A baked animation curve may drive a pairBlend input rather
+            # than the controller itself. Preserve that input at zero,
+            # leaving the blend, constraints and all other channels intact.
+            destination = None
+            if cmds.isConnected(curve + ".output", plug):
+                destination = plug
+            else:
+                output = outputs[0]
+                if cmds.nodeType(output.split(".", 1)[0]) in ("pairBlend", "unitConversion"):
+                    destination = output
+
+            if zero:
+                if destination and not cmds.getAttr(destination, lock=True):
+                    cmds.delete(curve)
+                    cmds.setAttr(destination, 0)
+                    removed += len(values)
+                    zero_channels += 1
+                    cleaned.add(node)
+                else:
+                    skipped += 1
+                    print("[Clean Animation] Retained zero curve {}: {} (protected or unsupported connection)".format(plug, outputs))
                 continue
+
             for first, last in _ranges(indices):
                 cmds.cutKey(curve, index=(first, last), animation="objects",
                             option="keys", clear=True)
-            # Recheck the actual remaining keys after Maya's cut operation.
             remaining = (cmds.keyframe(curve, query=True, valueChange=True) or []
                          if cmds.objExists(curve) else [])
-            if remaining == [0]:
+            if len(remaining) == 1 and abs(remaining[0]) <= 1e-6:
                 times = cmds.keyframe(curve, query=True, timeChange=True) or []
-                if times == [0] and cmds.isConnected(curve + ".output", plug):
+                if times == [0] and destination and not cmds.getAttr(destination, lock=True):
                     cmds.delete(curve)
+                    cmds.setAttr(destination, 0)
                     remaining = []
-                    zero = True
-            if zero and not remaining and cmds.getAttr(plug, settable=True):
-                cmds.setAttr(plug, 0)
+                    zero_channels += 1
             removed += len(values) - len(remaining)
-            zero_channels += int(zero and not remaining)
             cleaned.add(node)
     return {"namespace": namespace, "controls": len(controls),
             "cleaned_controls": len(cleaned), "removed_keys": removed,
