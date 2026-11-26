@@ -9,7 +9,7 @@ from functools import partial
 import maya.cmds as cmds
 import NLTA_General
 
-STATE = {"top": {}, "rows": []}
+STATE = {"top": {}, "rows": [], "autoFollow": {}}
 
 
 def DefaultSetting(path, *args):
@@ -463,6 +463,8 @@ def addRow(parent, record=None):
         entries = saved_subs[i] if i < len(saved_subs) else None
         subs[control] = normalizeSubItems(entries)
     saved_ref_values = record.get("refV", [])
+    for control, value in zip(raw_controls, record.get("autoFollow", [])):
+        STATE["autoFollow"].setdefault(shortName(control), float(value))
     row = {"settings": settings, "subItems": subs,
            "referenceV": {control: float(v) for control, v in zip(raw_controls, saved_ref_values) if v is not None}}
     frame = cmds.frameLayout(parent=parent, label="Pose Reader", collapsable=True, marginHeight=5, marginWidth=5)
@@ -536,6 +538,7 @@ def readUi():
             "attributeName": cmds.textField(row["attributeName"], query=True, text=True).strip(),
             "equatorU": 0.5,
             "joints": controls,
+            "autoFollow": [autoFollowValue(row, c) for c in controls],
             "subItems": [normalizeSubItems(row["subItems"].get(c)) for c in controls],
             "refV": [row["referenceV"].get(c) for c in controls]}
         if not all(reader.get(key) for key in ("id", "sphere", "parent", "end")):
@@ -654,6 +657,32 @@ def applyLiveValue(row, control, index, key):
     return True
 
 
+def autoFollowPlug(row, control):
+    sphere = shortName(cmds.textField(row["sphere"], q=True, text=True).strip())
+    node = sphere + "_" + jointName(control) + "_md_RaiseInfluence"
+    if not cmds.objExists(node): return None
+    sources = cmds.listConnections(node + ".input2X", source=True, destination=False, plugs=True) or []
+    if len(sources) == 1 and shortName(sources[0].split(".", 1)[0]) == shortName(control):
+        return sources[0]
+    return None
+
+
+def autoFollowValue(row, control):
+    name = shortName(control)
+    if name not in STATE["autoFollow"]:
+        plug = autoFollowPlug(row, control)
+        STATE["autoFollow"][name] = float(cmds.getAttr(plug)) if plug else 1.0
+    return STATE["autoFollow"][name]
+
+
+def setAutoFollow(row, control, widget, *args):
+    value = float(cmds.floatField(widget, q=True, value=True))
+    STATE["autoFollow"][shortName(control)] = value
+    plug = autoFollowPlug(row, control)
+    if plug:
+        cmds.setAttr(plug, value)
+
+
 def editSubItems(row, *args):
     controls = getControls(row)
     window = "NLTA_RigAutoSkirtFnc_SubItems"
@@ -663,12 +692,14 @@ def editSubItems(row, *args):
     body = cmds.columnLayout(adjustableColumn=True, rowSpacing=4)
     scroll = cmds.scrollLayout(parent=body, childResizable=True, height=455)
     holder = cmds.columnLayout(parent=scroll, adjustableColumn=True, rowSpacing=4)
-    editor = {"window": window, "widgets": {}}
+    editor = {"window": window, "widgets": {}, "autoFollow": {}}
     row["subEditor"] = editor
     for control in controls:
         row["subItems"].setdefault(control, normalizeSubItems(None))
 
     def sync():
+        for control, widget in editor["autoFollow"].items():
+            STATE["autoFollow"][shortName(control)] = float(cmds.floatField(widget, q=True, value=True))
         for control, widgets in editor["widgets"].items():
             for sub, fields in zip(row["subItems"][control], widgets):
                 sub["axis"] = cmds.optionMenu(fields["axis"], q=True, value=True)
@@ -719,10 +750,16 @@ def editSubItems(row, *args):
         for child in cmds.layout(holder, q=True, childArray=True) or []:
             cmds.deleteUI(child)
         editor["widgets"] = {}
+        editor["autoFollow"] = {}
         for control in controls:
             frame = cmds.frameLayout(parent=holder, label=control, collapsable=True, marginWidth=6)
             column = cmds.columnLayout(parent=frame, adjustableColumn=True, rowSpacing=4)
             editor["widgets"][control] = []
+            line = cmds.rowLayout(parent=column, numberOfColumns=2, columnWidth2=(125, 160))
+            cmds.text(parent=line, label="AutoFollow", align="left")
+            widget = cmds.floatField(parent=line, precision=6, minValue=0, maxValue=2, value=autoFollowValue(row, control))
+            editor["autoFollow"][control] = widget
+            cmds.floatField(widget, edit=True, changeCommand=partial(setAutoFollow, row, control, widget))
             for index, sub in enumerate(row["subItems"][control]):
                 item = cmds.frameLayout(parent=column, label="Sub Item {:02d}".format(index+1), collapsable=True)
                 col = cmds.columnLayout(parent=item, adjustableColumn=True, rowSpacing=4)
@@ -760,7 +797,7 @@ def editSubItems(row, *args):
         saveSettings(STATE["data"])
     editor["sync"] = sync
     draw()
-    cmds.text(parent=body, label="Live: Ref V, Min/Max Distance, Start Angle. Ref V -1 / Max 0 = Auto.", align="left")
+    cmds.text(parent=body, label="Live: AutoFollow, Ref V, Min/Max Distance, Start Angle.", align="left")
     cmds.text(parent=body, label="Add/Remove/Type/Axis/Target: Save, then Run on a clean scene.", align="left")
     cmds.button(parent=body, label="Save Sub Items", height=28, command=finish)
     cmds.showWindow(window)
@@ -778,7 +815,15 @@ def convertConfig(config):
     if config.get("group", "RigUtil") != "RigUtil":
         raise ValueError("RigAutoSkirtFnc: original Diana core requires RigUtil. Set Contain to RigUtil in JSON.")
     result = {"version": 2, "group": "RigUtil", "items": []}
-    for item in legacyConfig(config).get("items", []):
+    items = legacyConfig(config).get("items", [])
+    follow_values = {}
+    for item in items:
+        for control, value in zip(item.get("joints", []), item.get("autoFollow", [])):
+            value = float(value)
+            if not math.isfinite(value) or not 0 <= value <= 2:
+                raise ValueError("RigAutoSkirtFnc: AutoFollow must be 0..2: " + control)
+            follow_values.setdefault(shortName(control), value)
+    for item in items:
         reader = {key: item.get(key, "") for key in ("id", "sphere", "parent", "end")}
         reader["attributeName"] = item.get("attributeName", "autoShoulderGuard")
         reader["drivens"] = []
@@ -793,7 +838,8 @@ def convertConfig(config):
                 if v is None and i < len(refs): v = refs[i]
                 reader["drivens"].append(dict(control=control, target=sub.get("target") or shortName(control)+"_Target",
                     output=sub["outputType"]+sub["axis"], refV=v, minDistance=sub["minDistance"],
-                    maxDistance=sub["maxDistance"], startAngle=sub["startAngle"]))
+                    maxDistance=sub["maxDistance"], startAngle=sub["startAngle"],
+                    autoFollow=follow_values.get(shortName(control), 1.0)))
         result["items"].append(reader)
     return result
 
@@ -802,6 +848,7 @@ def Load(data, listUI, *args):
     for child in cmds.layout(listUI, q=True, childArray=True) or []: cmds.deleteUI(child)
     if cmds.window("NLTA_RigAutoSkirtFnc_SubItems", exists=True): cmds.deleteUI("NLTA_RigAutoSkirtFnc_SubItems")
     STATE["top"], STATE["rows"], STATE["data"], STATE["listUI"] = {}, [], data, listUI
+    STATE["autoFollow"] = {}
     config = legacyConfig(getData(data))
     STATE["group"] = config["group"]
     frame = cmds.frameLayout(parent=listUI, label="AutoSkirt Settings", collapsable=True, marginWidth=5)
@@ -975,6 +1022,7 @@ def buildScript(config):
     paired = {plug: [] for plug, count in target_counts.items() if count > 1}
     pair_numbers = {plug: i for i, plug in enumerate(paired, 1)}
     created_attrs = set()
+    follow_settings = {}
     distance_min_limit, distance_max_limit = 2, 2
     for reader in config["items"]:
         if not reader["drivens"]:
@@ -1026,6 +1074,7 @@ def buildScript(config):
             if key not in created_attrs:
                 create_indices.append(i)
                 created_attrs.add(key)
+                follow_settings[control + "." + attribute] = reader["drivens"][i]["autoFollow"]
         simple = (conventional_controls and conventional_targets and len(set(attributes)) == 1
                   and len(create_indices) == len(controls) and len(direct_indices) == len(controls))
         emit("cp_follicle_shape, cpos = createPoseReaderSystem({}, {}, {})".format(
@@ -1059,6 +1108,9 @@ def buildScript(config):
                     variable = "pair_{:02d}_{}".format(pair_numbers[plug], suffix)
                     emit('{} = f"{{raise_influence_nodes[{}]}}.outputX"'.format(variable, i))
                     paired[plug].append(variable)
+        for i in create_indices:
+            plug = controls[i] + "." + attributes[i]
+            emit("cmds.setAttr({}, {})".format(sourceData(plug), sourceData(follow_settings[plug])))
     for plug, sources in paired.items():
         left, right = sources[:2]
         target_base = plug.replace(".", "_")
