@@ -870,6 +870,62 @@ def sourceData(value):
     return repr(value)
 
 
+def planAutoOffsets(config):
+    # Decide from the scene, not inside the exported rig script.
+    targets = {}
+    for reader in config["items"]:
+        counts = {}
+        for spec in reader["drivens"]:
+            control = shortName(spec["control"])
+            target = shortName(spec["target"])
+            counts[control] = counts.get(control, 0) + 1
+            suffix = "" if counts[control] == 1 else "_Sub{:02d}".format(counts[control])
+            node = shortName(reader["sphere"]) + "_" + jointName(control) + suffix + "_md_RaiseInfluence"
+            entry = targets.setdefault(target, {"controls": [], "channels": {}})
+            if control not in entry["controls"]: entry["controls"].append(control)
+            entry["channels"].setdefault(spec["output"], []).append(node)
+
+    offsets = {}
+    for target, entry in targets.items():
+        names = cmds.ls(target, long=True, type="transform") or []
+        if len(names) != 1:
+            raise ValueError("RigAutoSkirtFnc: missing or ambiguous Target: " + target)
+        target_path = names[0]
+        offset = (target[:-7] if target.endswith("_Target") else target) + "_AutoOffset"
+        existing = cmds.ls(offset, long=True, type="transform") or []
+        expected_path = target_path + "|" + offset
+        if existing and existing != [expected_path]:
+            raise ValueError("RigAutoSkirtFnc: AutoOffset name already in use: " + offset)
+        occupied = False
+        for channel, nodes in entry["channels"].items():
+            plug = target_path + "." + channel
+            sources = cmds.listConnections(plug, source=True, destination=False, plugs=True, skipConversionNodes=True) or []
+            own_nodes = list(nodes)
+            prefix = target + "_" + channel
+            own_nodes.extend((prefix + "_RaiseValue_Mult", prefix + "_ZeroOut_PMA"))
+            if any(shortName(source.split(".", 1)[0]) not in own_nodes for source in sources):
+                occupied = True
+        if not occupied and not existing: continue
+        branches = []
+        for control in entry["controls"]:
+            matches = cmds.ls(control, long=True, type="transform") or []
+            if len(matches) != 1 or not matches[0].startswith(target_path + "|"):
+                raise ValueError("RigAutoSkirtFnc: Target must be an ancestor of its Driven to insert AutoOffset: {} / {}".format(target, control))
+            relative = matches[0][len(target_path)+1:].split("|")
+            if existing:
+                if relative[0] != offset or len(relative) < 2:
+                    raise ValueError("RigAutoSkirtFnc: existing AutoOffset does not contain Driven: " + control)
+                branch = relative[1]
+            else:
+                branch = relative[0]
+            if branch not in branches: branches.append(branch)
+        for branch in branches:
+            if len(cmds.ls(branch, long=True) or []) != 1:
+                raise ValueError("RigAutoSkirtFnc: ambiguous Driven branch: " + branch)
+        offsets[target] = (offset, branches)
+    return offsets
+
+
 def buildScript(config):
     config = convertConfig(config)
     if not config["items"]:
@@ -877,6 +933,14 @@ def buildScript(config):
     lines = ["import maya.cmds as cmds", "", "", "def main():"]
     def emit(line=""):
         lines.append("    " + line if line else "")
+    offsets = planAutoOffsets(config)
+    if offsets:
+        emit()
+        emit("# Auto offsets for occupied target channels")
+        for target, (offset, branches) in offsets.items():
+            emit("cmds.createNode(\"transform\", name={}, parent={})".format(sourceData(offset), sourceData(target)))
+            for branch in branches:
+                emit("cmds.parent({}, {}, relative=True)".format(sourceData(branch), sourceData(offset)))
     seen_spheres = set()
     control_counts = {}
     target_counts = {}
@@ -888,6 +952,7 @@ def buildScript(config):
             output = spec.get("output", "rotateZ")
             if output not in ("rotateX", "rotateY", "rotateZ", "translateX", "translateY", "translateZ"):
                 raise ValueError("Rig Auto Skirt Fnc: invalid output: " + output)
+            target = offsets[target][0] if target in offsets else target
             plug = target + "." + output
             target_counts[plug] = target_counts.get(plug, 0) + 1
     paired = {plug: [] for plug, count in target_counts.items() if count > 1}
@@ -914,6 +979,7 @@ def buildScript(config):
             suffix = "" if counts[control] == 1 else "_Sub{:02d}".format(counts[control])
             shoulder_joints.append(jointName(control) + suffix)
         targets = [shortName(d.get("target") or shortName(d["control"]) + "_Target") for d in reader["drivens"]]
+        targets = [offsets[target][0] if target in offsets else target for target in targets]
         if pose_reader in seen_spheres:
             raise ValueError("Rig Auto Skirt Fnc: one item per original pose reader: " + pose_reader)
         seen_spheres.add(pose_reader)
@@ -1032,16 +1098,18 @@ def ExportPython(data, *args):
 
 def Run(data, *args):
     config = getData(data)
-    conflicts = {}
-    for reader in convertConfig(config)["items"]:
+    converted = convertConfig(config)
+    offsets = planAutoOffsets(converted)
+    for target, (offset, branches) in offsets.items():
+        if cmds.objExists(offset):
+            raise ValueError("RigAutoSkirtFnc: Run on a clean scene; AutoOffset already exists: " + offset)
+    for reader in converted["items"]:
         for spec in reader["drivens"]:
-            plug = shortName(spec["target"]) + "." + spec["output"]
-            incoming = cmds.listConnections(plug, source=True, destination=False, plugs=True) or []
-            if incoming:
-                conflicts[plug] = ", ".join(incoming)
-    if conflicts:
-        details = "\n".join("{} <- {}".format(plug, source) for plug, source in conflicts.items())
-        raise ValueError("RigAutoSkirtFnc: select an unconnected Target channel in Edit Sub Items; existing connections are preserved:\n" + details)
+            target = shortName(spec["target"])
+            if target in offsets: continue
+            plug = target + "." + spec["output"]
+            if cmds.listConnections(plug, source=True, destination=False, plugs=True):
+                raise ValueError("RigAutoSkirtFnc: Run on a clean scene; Output already connected: " + plug)
     script = buildScript(config)
     exec(compile(script, "RigAutoSkirtFnc", "exec"), {"__name__": "__main__"})
 
