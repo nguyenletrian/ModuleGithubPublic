@@ -789,7 +789,7 @@ def _pick_constraint_object(field, role):
 
 
 def _constraint_duplicate_groups(cards, general, mirror_name):
-    """Group repeated From/To names separately, including effective mirror rows."""
+    """Group repeated target names, including effective mirror rows."""
     groups = {}
     for identifier, settings in cards:
         rows = settings["pairs"]
@@ -809,12 +809,12 @@ def _constraint_duplicate_groups(cards, general, mirror_name):
                     occurrences.append({"from": source, "to": opposite})
                     generated.add(opposite)
             for occurrence in occurrences:
-                for side, name in occurrence.items():
-                    if not name:
-                        continue
-                    namespace = _constraint_role_namespace(settings[side + "_role"], general)
-                    key = (side, namespace, name)
-                    groups.setdefault(key, set()).add((identifier, index))
+                name = occurrence["to"]
+                if not name:
+                    continue
+                namespace = _constraint_role_namespace(settings["to_role"], general)
+                key = ("to", namespace, name)
+                groups.setdefault(key, set()).add((identifier, index))
     return {key: members for key, members in groups.items() if len(members) > 1}
 
 
@@ -1640,7 +1640,7 @@ class RetargetCard(QtWidgets.QFrame):
             match.clicked.connect(lambda checked=False: _safe(self._constraint_match_by_name))
             buttons.addWidget(match, 1)
             check = QtWidgets.QPushButton("Check Duplicate")
-            check.setToolTip("Highlight repeated From / To objects, including mirror pairs and enabled Constraint modules")
+            check.setToolTip("Highlight repeated To objects, including mirror pairs and enabled Constraint modules")
             check.clicked.connect(lambda checked=False: _safe(self._constraint_check_duplicates))
             buttons.addWidget(check, 1)
             parent.addLayout(buttons)
@@ -1699,7 +1699,7 @@ class RetargetCard(QtWidgets.QFrame):
             row, side = picked
             index = self.rotate_pair_rows.index(row)
             labels = marks.get((self.identifier, index), {}).get(side, [])
-            if labels:
+            if labels and side == "to":
                 QtWidgets.QMessageBox.warning(
                     self, "Duplicate Constraint Object",
                     "Repeated object:\n" + "\n".join(labels)
