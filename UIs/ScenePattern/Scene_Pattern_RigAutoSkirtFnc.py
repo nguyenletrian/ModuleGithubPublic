@@ -979,10 +979,10 @@ def buildScript(config):
     def emit(line=""):
         lines.append("    " + line if line else "")
 
-    def weightOutput(source, name, value, variable="weight_md"):
+    def weightOutput(source, name, value_expression, variable="weight_md"):
         emit("{} = cmds.createNode(\"multiplyDivide\", n={})".format(variable, sourceData(name)))
         emit('cmds.connectAttr({}, f"{{{}}}.input1X")'.format(source, variable))
-        emit('cmds.setAttr(f"{{{}}}.input2X", {})'.format(variable, sourceData(value)))
+        emit('cmds.setAttr(f"{{{}}}.input2X", {})'.format(variable, value_expression))
         return 'f"{{{}}}.outputX"'.format(variable)
 
     offsets = planTargetOffsets(config)
@@ -1049,6 +1049,7 @@ def buildScript(config):
         emit("min_max_distance = " + sourceData(min_max_distance))
         emit()
         emit("raise_start_angle = " + sourceData([float(d["startAngle"]) for d in reader["drivens"]]))
+        emit("weights = " + sourceData([float(d["weight"]) for d in reader["drivens"]]))
         emit()
         emit("shoulder_joints = " + sourceData(shoulder_joints))
         emit()
@@ -1088,9 +1089,9 @@ def buildScript(config):
         for i, plug in enumerate(plugs):
             spec = reader["drivens"][i]
             raw_source = 'f"{{raise_influence_nodes[{}]}}.outputX"'.format(i)
-            weighted = weightOutput(raw_source, pose_reader + "_" + shoulder_joints[i] + "_Weight_MD", spec["weight"])
+            weighted = weightOutput(raw_source, pose_reader + "_" + shoulder_joints[i] + "_Weight_MD", "weights[{}]".format(i))
             if spec["invertRotate"]:
-                weighted = weightOutput(weighted, pose_reader + "_" + shoulder_joints[i] + "_Invert_MD", -1, "invert_md")
+                weighted = weightOutput(weighted, pose_reader + "_" + shoulder_joints[i] + "_Invert_MD", "-1", "invert_md")
             if i in direct_indices:
                 emit("cmds.connectAttr({}, {})".format(weighted, sourceData(plug)))
             else:
