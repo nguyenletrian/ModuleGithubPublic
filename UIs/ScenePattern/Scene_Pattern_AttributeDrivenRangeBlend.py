@@ -293,6 +293,8 @@ def createBlend(driverObject, driverAttr, driverMin, driverMax, driverDefault, d
         else:
             command(rest, driven, weight=0)
         restAlias = next(alias for alias in command(constraint, query=True, weightAliasList=True) if alias != original)
+        if kind in ("parentConstraint", "orientConstraint"):
+            cmds.setAttr(constraint + ".interpType", 2)
         weights.append((constraint + "." + original, constraint + "." + restAlias))
 
     for originalPlug, restPlug in weights:
