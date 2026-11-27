@@ -22,13 +22,13 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
         kinds = {"Parent": "parentConstraint", "Position": "pointConstraint",
                  "Rotation": "orientConstraint"}
         aliases = {name: ["OriginalW0"] for name in kinds}
-        nodes, attrs, connections, added, poses, events = {}, {}, {}, [], {}, []
+        nodes, attrs, connections, added, poses, events, matched = {}, {}, {}, [], {}, [], []
         matrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 3, 4, 1]
 
         def constraint_command(name):
             def command(*args, **kwargs):
                 if kwargs.get("query"):
-                    return list(aliases[name])
+                    return [name + "_Original"] if kwargs.get("targetList") else list(aliases[name])
                 events.append(("add", name))
                 added.append((name, args, kwargs))
                 aliases[name].append("RestW1")
@@ -46,6 +46,7 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
             poses[node] = kwargs["matrix"]
 
         def connect(src, dst, **kwargs):
+            events.append(("connect", dst))
             connections[dst] = (src, kwargs)
 
         cmds = SimpleNamespace(
@@ -55,6 +56,8 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
             listConnections=lambda plug, **kwargs: [plug.split(".")[0] + "_Driven"],
             listRelatives=lambda node, **kwargs: ["|Rig|Group"],
             xform=xform, createNode=create_node,
+            getAttr=lambda plug: 3,
+            matchTransform=lambda rest, target, **kwargs: matched.append((rest, target, kwargs)),
             setAttr=lambda plug, value: attrs.update({plug: value}),
             connectAttr=connect,
             parentConstraint=constraint_command("Parent"),
@@ -65,13 +68,18 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
         blend = "Driver_AutoFollow_RangeBlend"
         self.assertEqual(events[:3], [("capture", name + "_Driven") for name in kinds])
         self.assertEqual(added, [(name, (name + "_Rest", name + "_Driven"),
-                                 {"weight": 0}) for name in kinds])
+                                 dict(weight=0, **({"maintainOffset": True} if name == "Parent" else {}))) for name in kinds])
+        self.assertEqual(matched, [(name + "_Rest", name + "_Original",
+                                    {"rotation": True, "position": False, "scale": False}) for name in kinds])
+        first_weight = next(i for i, event in enumerate(events) if event[0] == "connect" and event[1].endswith(".OriginalW0"))
+        self.assertTrue(all(events.index(("add", name)) < first_weight for name in kinds))
         self.assertEqual(sum(kind == "remapValue" for kind, _ in nodes.values()), 1)
         self.assertEqual(sum(kind == "reverse" for kind, _ in nodes.values()), 1)
         self.assertEqual(attrs[blend + ".value[0].value_Interp"], 1)
         for name in kinds:
             self.assertEqual(nodes[name + "_Rest"], ("transform", {"parent": "|Rig|Group"}))
             self.assertEqual(poses[name + "_Rest"], matrix)
+            self.assertEqual(attrs[name + "_Rest.rotateOrder"], 3)
             self.assertEqual(connections[name + ".OriginalW0"], (blend + ".outValue", {"force": True}))
             self.assertEqual(connections[name + ".RestW1"], (blend + "_Reverse.outputX", {}))
 
@@ -95,7 +103,8 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
         self.assertIn("createBlend(*('Driver', 'AutoFollow', 0.0, 1.0, 1.0, ['Constraint']))", source)
         self.assertNotIn("raise ", source)
         self.assertNotIn("validateItem", source)
-        self.assertNotIn("maintainOffset", source)
+        self.assertIn("maintainOffset=True", source)
+        self.assertIn("targetList=True", source)
         self.assertNotIn("NLTA_", source)
 
 
