@@ -8,7 +8,7 @@ import math
 import maya.cmds as cmds
 import NLTA_RetargetV2 as rt
 
-LABEL = "Match Scale"
+LABEL = "Scale From Objects Height"
 
 
 def DefaultSetting():
