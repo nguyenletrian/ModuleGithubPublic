@@ -29,7 +29,7 @@ class ModuleInstanceTests(unittest.TestCase):
                     uuid=uuid, _STATE=state, UIs={"step_type": selected},
                     _module=lambda kind: SimpleNamespace(
                         LABEL="Match Rotate Vector", DefaultSetting=lambda: {"pairs": []}),
-                    _save_editor=lambda: None, _rebuild_cards=lambda **kw: None,
+                    _collect_card_orders=lambda: None, _append_card=lambda record: None,
                     _status=lambda message: None, _safe=lambda f: f(),
                     os=__import__("os"),
                     LEGACY_STEP_MAP={"MatchRotatePair": "Retarget_MatchRotatePair.py"})
@@ -46,6 +46,64 @@ class ModuleInstanceTests(unittest.TestCase):
         path = env["_instance_data_path"]
         self.assertNotEqual(path("RetargetData", first["kind"], first["id"]),
                             path("RetargetData", second["kind"], second["id"]))
+
+    def test_move_reuses_cards_and_keeps_unsaved_fields(self):
+        class Order:
+            def __init__(self, value):
+                self.current = value
+                self.blocked = False
+            def value(self):
+                return self.current
+            def setValue(self, value):
+                self.current = value
+            def blockSignals(self, flag):
+                previous = self.blocked
+                self.blocked = flag
+                return previous
+
+        class Arrow:
+            def setEnabled(self, enabled):
+                self.enabled = enabled
+
+        class Layout:
+            def __init__(self, widgets):
+                self.widgets = list(widgets)
+                self.moves = 0
+            def indexOf(self, widget):
+                return self.widgets.index(widget) if widget in self.widgets else -1
+            def removeWidget(self, widget):
+                self.widgets.remove(widget)
+            def insertWidget(self, index, widget):
+                self.widgets.insert(index, widget)
+                self.moves += 1
+
+        rows = [{"id": key, "order": order, "data": {"pairs": []}}
+                for key, order in (("a", 10), ("b", 20), ("c", 30))]
+        cards = {row["id"]: SimpleNamespace(order=Order(row["order"]),
+                  up=Arrow(), down=Arrow(), unsaved=["original widget edit"])
+                 for row in rows}
+        layout = Layout(cards.values())
+        redraws = []
+        state = {"steps": rows}
+        ui = {"cards": cards, "cards_layout": layout,
+              "cards_container": SimpleNamespace(updatesEnabled=lambda: True,
+                  setUpdatesEnabled=redraws.append)}
+        env = scope("_get_step", "_sorted_steps", "_collect_card_orders",
+                    "_sync_card_order", "_move_step", "_apply_manual_order",
+                    _STATE=state, UIs=ui, _safe=lambda fn: fn(), _status=lambda msg: None)
+        env["_move_step"]("b", 1)
+        self.assertEqual(layout.widgets, [cards["a"], cards["c"], cards["b"]])
+        self.assertEqual(layout.moves, 1)
+        self.assertEqual(cards["b"].order.value(), 30)
+        self.assertFalse(cards["b"].down.enabled)
+        self.assertEqual(cards["b"].unsaved, ["original widget edit"])
+        self.assertEqual(redraws, [False, True])
+        self.assertTrue(state["dirty"])
+        self.assertFalse(cards["b"].order.blocked)
+        cards["b"].order.setValue(5)
+        env["_apply_manual_order"]()
+        self.assertEqual(layout.widgets, [cards["b"], cards["a"], cards["c"]])
+        self.assertFalse(cards["b"].up.enabled)
 
     def test_same_kind_runs_multiple_times_in_order(self):
         env = scope("_validate_sequence")
