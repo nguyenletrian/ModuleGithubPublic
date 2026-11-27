@@ -105,6 +105,33 @@ class ModuleInstanceTests(unittest.TestCase):
         self.assertEqual(layout.widgets, [cards["b"], cards["a"], cards["c"]])
         self.assertFalse(cards["b"].up.enabled)
 
+    def test_drag_drop_moves_across_multiple_modules_and_preserves_data(self):
+        rows = [{"id": key, "order": index * 10,
+                 "data": {"pairs": [key]}}
+                for index, key in enumerate("abcde", 1)]
+        state = {"steps": rows, "dirty": False}
+        synced = []
+        env = scope("_get_step", "_sorted_steps", "_drop_step",
+                    _STATE=state, _collect_card_orders=lambda: None,
+                    _sync_card_order=lambda: synced.append(True),
+                    _status=lambda msg: None)
+        order = lambda: [row["id"] for row in env["_sorted_steps"]()]
+        env["_drop_step"]("b", 5)
+        self.assertEqual(order(), list("acdeb"))
+        self.assertEqual(len(synced), 1)
+        self.assertTrue(state["dirty"])
+        self.assertEqual([row["order"] for row in env["_sorted_steps"]()],
+                         [10, 20, 30, 40, 50])
+        env["_drop_step"]("b", 0)
+        self.assertEqual(order(), list("bacde"))
+        self.assertEqual(len(synced), 2)
+        state["dirty"] = False
+        env["_drop_step"]("b", 1)
+        self.assertFalse(state["dirty"])
+        self.assertEqual(len(synced), 2)
+        self.assertEqual([row["data"]["pairs"] for row in rows],
+                         [[key] for key in "abcde"])
+
     def test_same_kind_runs_multiple_times_in_order(self):
         env = scope("_validate_sequence")
         rows = [
