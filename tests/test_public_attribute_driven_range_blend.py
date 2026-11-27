@@ -23,12 +23,16 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
         kinds = {"Parent": "parentConstraint", "Position": "pointConstraint",
                  "Rotation": "orientConstraint"}
         aliases = {name: ["OldAW0", "OldBW1"] for name in kinds}
+        targets = {name: [name + "_OldA", name + "_OldB"] for name in kinds}
+        aliases["Rotation"].append("NewW2")
+        targets["Rotation"].append("Rotation_New")
         def constraint_command(name):
             def command(*args, **kwargs):
                 if kwargs.get("query"):
-                    return list(aliases[name])
+                    return list(targets[name] if kwargs.get("targetList") else aliases[name])
                 added.append((name, args, kwargs))
                 aliases[name].append("NewW2")
+                targets[name].append(args[0])
                 return [name]
             return command
         def create_node(kind, name):
@@ -40,6 +44,7 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
             connections[dst] = src
         cmds = SimpleNamespace(
             objExists=lambda plug: True,
+            ls=lambda name, **kwargs: [name],
             nodeType=lambda name: kinds[name],
             listConnections=lambda plug, **kwargs: [plug.split(".")[0] + "_Driven"],
             parentConstraint=constraint_command("Parent"),
@@ -54,7 +59,7 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
                            [(name, name + "_New") for name in kinds])
         blend = "Driver_rotateX_RangeBlend"
         self.assertEqual(added, [(name, (name + "_New", name + "_Driven"),
-                                 {"edit": True, "weight": 0}) for name in kinds])
+                                 {"edit": True, "weight": 0}) for name in kinds if name != "Rotation"])
         self.assertEqual(list(nodes.values()).count("remapValue"), 1)
         self.assertEqual(list(nodes.values()).count("reverse"), 1)
         self.assertEqual(attrs[blend + ".value[0].value_Interp"], 1)
