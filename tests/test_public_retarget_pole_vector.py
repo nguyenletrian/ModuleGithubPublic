@@ -1,6 +1,7 @@
 """Offline contracts for the live Pole Vector builder (no Maya required)."""
 import ast
 import math
+import re
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ STEP = ROOT / "UIs/RetargetSteps/Retarget_PoleVector.py"
 def scope(**dependencies):
     tree = ast.parse(STEP.read_text(encoding="utf-8"))
     body = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
-    env = dict(math=math, **dependencies)
+    env = dict(math=math, re=re, **dependencies)
     exec(compile(ast.Module(body=body, type_ignores=[]), str(STEP), "exec"), env)
     return env
 
@@ -26,6 +27,37 @@ class PoleVectorTests(unittest.TestCase):
         self.assertEqual(env["namespaceForRole"]("Anim", {
             "reference_namespaces": {"old_animations": "RT_ANIM"}}), "RT_ANIM")
         self.assertEqual({row[1] for row in env["Fields"]()}, set(data))
+
+    def test_mirror_creates_two_independent_chains_with_same_ratio(self):
+        cmds = SimpleNamespace(ls=lambda name, **kw: [name], objExists=lambda name: False)
+        env = scope(cmds=cmds, rt=SimpleNamespace(leaf=lambda name: name.split(":")[-1]))
+        calls = []
+        def create(*args):
+            calls.append(args)
+            return args[3], []
+        env["createPoleVector"] = create
+        context = {"source_namespace_animation": "Anim"}
+        result = env["Run"]({"start": "L_Thigh", "middle": "L_Knee", "end": "L_Ankle",
+                             "name": "L_Knee_PV", "distance_ratio": 1.25, "mirror": True}, context)
+        self.assertEqual(calls, [
+            (":Anim:L_Thigh", ":Anim:L_Knee", ":Anim:L_Ankle", ":Anim:L_Knee_PV", 1.25),
+            (":Anim:R_Thigh", ":Anim:R_Knee", ":Anim:R_Ankle", ":Anim:R_Knee_PV", 1.25)])
+        self.assertEqual(len(context["pole_vectors"]), 2)
+        self.assertEqual(result["mirror"]["locator"], ":Anim:R_Knee_PV")
+        self.assertEqual(env["mirrorName"]("Bip001FBXASC032LFBXASC032Calf"),
+                         "Bip001FBXASC032RFBXASC032Calf")
+        self.assertFalse(env["DefaultSetting"]()["mirror"])
+
+    def test_mirror_checks_both_sides_before_building(self):
+        cmds = SimpleNamespace(ls=lambda name, **kw: [name] if "R_Ankle" not in name else [],
+                               objExists=lambda name: False)
+        env = scope(cmds=cmds, rt=SimpleNamespace(leaf=lambda name: name.split(":")[-1]))
+        calls = []
+        env["createPoleVector"] = lambda *args: calls.append(args)
+        with self.assertRaisesRegex(ValueError, "expected one joint"):
+            env["Run"]({"start": "L_Thigh", "middle": "L_Knee", "end": "L_Ankle", "mirror": True},
+                       {"source_namespace_animation": "Anim"})
+        self.assertEqual(calls, [])
 
     def test_live_builder_uses_world_matrices_and_locator_offset_matrix(self):
         nodes, connections, attrs = {}, {}, {}
