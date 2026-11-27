@@ -55,6 +55,7 @@ patterns = {
 
     "Scene_Pattern_AttributeCreate":"Attribute Create",
     "Scene_Pattern_AttributeDrivenRange":"Attribute Driven Range",
+    "Scene_Pattern_AttributeDrivenRangeBlend":"Attribute Driven Range Blend",
     "Scene_Pattern_AttributeDelete":"Attribute Delete",
     "Scene_Pattern_AttributeDefaultValue":"Attribute Default Value",
     "Scene_Pattern_AttributeTransfer":"Attribute Transfer",
