@@ -103,6 +103,7 @@ patterns = {
     "Scene_Pattern_RigGradientTexture":"Rig Gradient Texture",
     "Scene_Pattern_RigCurveGuide":"Rig Curve Guide",
     "Scene_Pattern_RigRivet":"Rig Rivet",
+    "Scene_Pattern_RigRivetFromFace":"Rig Rivet From Face",
     "Scene_Pattern_RigRopeRoll":"Rig Rope Roll",
     "Scene_Pattern_RigRopeStraight":"Rig Rope Straight",
     "Scene_Pattern_RigSpline":"Rig Spline",
