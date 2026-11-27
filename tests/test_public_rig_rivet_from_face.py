@@ -60,12 +60,45 @@ class RigRivetFromFaceTests(unittest.TestCase):
         source = env["buildScript"]([{"face": "Proxy.f[7]", "child": "Control",
                                      "followRotation": True}])
         compile(source, "<rivet from face export>", "exec")
-        self.assertIn("createRivet('Proxy.f[7]', 'Control', '', '', cmds.orientConstraint)", source)
+        self.assertIn("('Proxy.f[7]', 'Control', '', '', 'orientConstraint')", source)
+        self.assertIn("for face, child, parent, copy_transform, command in RIVET_DATA:", source)
+        self.assertIn("constraintCommand = getattr(cmds, command)", source)
+        self.assertIn("mesh_shape, instance, edges = dag.fullPathName(), dag.instanceNumber(), polygon.getEdges()", source)
+        self.assertIn("offset = cmds.createNode('transform', name=offset_name)", source)
+        self.assertIn("child = cmds.parent(child, offset, absolute=True)[0]", source)
+        self.assertIn("def connectRivetFollow(", source)
+        for helper in ("createRivet", "offsetGroup", "faceEdges"):
+            self.assertNotIn("def " + helper + "(", source)
+            self.assertNotIn(helper + "(", source)
+        compile(env["buildScript"]([]), "<empty rivet export>", "exec")
         self.assertNotIn("copySkinWeights", source)
         self.assertNotIn("createRivetPlane", source)
         self.assertNotIn("validateFace", source)
         self.assertNotIn("NLTA_", source)
 
+
+    def test_vertex_rivet_single_pass_export(self):
+        path = STEP.with_name("Scene_Pattern_RigRivet.py")
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        env = dict(inspect=inspect)
+        exec(compile(ast.Module(body=[node for node in tree.body
+                                      if isinstance(node, ast.FunctionDef)],
+                                type_ignores=[]), str(path), "exec"), env)
+        data = {"vertexs": "Proxy.vtx[0]\nProxy.vtx[1]\nProxy.vtx[2]\nProxy.vtx[3]",
+                "child": "Control", "followParent": True}
+        source = env["buildScript"]([data])
+        compile(source, "<vertex rivet export>", "exec")
+        self.assertIn("for vertex_names, child, parent, copy_transform, command in RIVET_DATA:", source)
+        self.assertIn("def createRivetPlane(", source)
+        self.assertIn("def connectRivetFollow(", source)
+        self.assertIn("offset = cmds.createNode('transform', name=offset_name)", source)
+        self.assertIn("findRelatedSkinCluster", source)
+        self.assertIn("cmds.copySkinWeights(", source)
+        for helper in ("createRivet", "offsetGroup", "sourceSkin"):
+            self.assertNotIn(helper + "(", source)
+        self.assertNotIn("raise ", source)
+        self.assertNotIn("try:", source)
+        compile(env["buildScript"]([]), "<empty vertex rivet export>", "exec")
 
 if __name__ == "__main__":
     unittest.main()
