@@ -26,19 +26,27 @@ def _data_path(data):
     return os.path.normpath(entry["path"])
 
 
+def normalizeItem(item):
+    result = {key: item.get(key, "") for key in ("driverObject", "driverAttr", "driverMin", "driverMax", "driverDefault")}
+    result["drivens"] = item.get("drivens", [{"constraint": item.get("constraint", ""), "target": item.get("target", "")}])
+    return result
+
+
 def _read_saved(data):
     path = _data_path(data)
-    return (NLTA_General.readJsonFile(path) or []) if os.path.isfile(path) else []
+    saved = (NLTA_General.readJsonFile(path) or []) if os.path.isfile(path) else []
+    return [normalizeItem(item) for item in saved]
 
 
 def pickConstraint(field, *unused):
-    selected = cmds.ls(selection=True, long=True, type="parentConstraint") or []
-    if not selected:
-        objects = cmds.ls(selection=True, long=True, objectsOnly=True) or []
-        if len(objects) == 1:
-            selected = cmds.listRelatives(objects[0], children=True, type="parentConstraint", fullPath=True) or []
+    types = ("parentConstraint", "pointConstraint", "orientConstraint")
+    objects = cmds.ls(selection=True, long=True, objectsOnly=True) or []
+    selected = [node for node in objects if cmds.nodeType(node) in types]
+    if not selected and len(objects) == 1:
+        selected = [node for node in (cmds.listRelatives(objects[0], children=True, fullPath=True) or [])
+                    if cmds.nodeType(node) in types]
     if len(selected) != 1:
-        cmds.warning("Driven Range Blend: select one parentConstraint.")
+        cmds.warning("Driven Range Blend: select one Parent, Point or Orient Constraint.")
         return
     cmds.textField(field, edit=True, text=selected[0])
 
@@ -118,11 +126,10 @@ def _remove(row, *unused):
 
 
 def _snapshot(row):
-    fields = ("driverObject", "driverAttr", "driverMin", "driverMax", "driverDefault",
-              "constraint", "target", "blendMin", "blendMax")
+    fields = ("driverObject", "driverAttr", "driverMin", "driverMax", "driverDefault")
     item = {key: cmds.textField(row[key], query=True, text=True) for key in fields}
-    item["smooth"] = cmds.checkBox(row["smooth"], query=True, value=True)
-    item["maintainOffset"] = cmds.checkBox(row["maintainOffset"], query=True, value=True)
+    item["drivens"] = [{key: cmds.textField(sub[key], query=True, text=True)
+                         for key in ("constraint", "target")} for sub in row["drivens"]]
     return item
 
 
@@ -130,24 +137,40 @@ def _duplicate(row, *unused):
     return Add(STATE["list"], _snapshot(row))
 
 
-def Add(listUI, item=None, *unused):
+def removeDriven(row, sub, *unused):
+    row["drivens"].remove(sub)
+    cmds.deleteUI(sub["layout"])
+
+
+def AddDriven(row, item=None, *unused):
     item = item or {}
+    layout = cmds.columnLayout(parent=row["drivenList"], adjustableColumn=True, rowSpacing=2)
+    sub = {"layout": layout}
+    sub["constraint"] = _picker_field(layout, "Constraint", item.get("constraint", ""), pickConstraint)
+    sub["target"] = _picker_field(layout, "New Target Object", item.get("target", ""), _pick_object)
+    cmds.button(parent=layout, label="Remove Driven", height=19, command=partial(removeDriven, row, sub))
+    row["drivens"].append(sub)
+    return sub
+
+
+def Add(listUI, item=None, *unused):
+    item = normalizeItem(item or {})
     frame = cmds.frameLayout(parent=listUI, label="Driver / Constraint Blend", collapsable=True, collapse=False, marginWidth=4, marginHeight=3)
     column = cmds.columnLayout(parent=frame, adjustableColumn=True, rowSpacing=2)
     pair = cmds.rowLayout(parent=column, numberOfColumns=2, columnWidth2=(180, 180))
     driver = cmds.columnLayout(parent=pair, adjustableColumn=True, rowSpacing=2)
-    row = {"frame": frame}
+    row = {"frame": frame, "drivens": []}
     row["driverObject"] = _picker_field(driver, "Driver Object", item.get("driverObject", ""), _pick_object)
     row["driverAttr"] = _picker_field(driver, "Driver Attribute", item.get("driverAttr", ""), _pick_attribute, row["driverObject"])
     row["driverMin"], row["driverMax"] = _range_fields(driver, "Driver", item.get("driverMin"), item.get("driverMax"))
     row["driverDefault"] = _default_field(driver, "Driver", item.get("driverDefault"))
 
     driven = cmds.columnLayout(parent=pair, adjustableColumn=True, rowSpacing=2)
-    row["constraint"] = _picker_field(driven, "Parent Constraint", item.get("constraint", ""), pickConstraint)
-    row["target"] = _picker_field(driven, "New Target Object", item.get("target", ""), _pick_object)
-    row["blendMin"], row["blendMax"] = _range_fields(driven, "New Target Weight", item.get("blendMin"), item.get("blendMax"))
-    row["smooth"] = cmds.checkBox(parent=driven, label="Smooth", value=bool(item.get("smooth", True)))
-    row["maintainOffset"] = cmds.checkBox(parent=driven, label="Maintain Offset", value=bool(item.get("maintainOffset", True)))
+    cmds.text(parent=driven, label="Weight: 0 - 1", align="left")
+    row["drivenList"] = cmds.columnLayout(parent=driven, adjustableColumn=True, rowSpacing=3)
+    for sub in item["drivens"] or [{}]:
+        AddDriven(row, sub)
+    cmds.button(parent=driven, label="+ Add Driven", height=22, command=lambda *_: AddDriven(row))
 
     actions = cmds.rowLayout(parent=column, numberOfColumns=2, columnWidth2=(180, 180))
     cmds.button(parent=actions, label="Duplicate", height=22, command=partial(_duplicate, row))
@@ -160,19 +183,18 @@ def _collect():
     items = []
     for row in STATE["rows"]:
         item = _snapshot(row)
-        for key in ("driverObject", "driverAttr", "constraint", "target"):
+        for key in ("driverObject", "driverAttr"):
             item[key] = item[key].strip()
-        if not all(item[key] for key in ("driverObject", "driverAttr", "constraint", "target")):
-            raise ValueError("Driven Range Blend: complete the driver, constraint and new target.")
-        for key, default in (("driverMin", 0), ("driverMax", 1), ("blendMin", 0), ("blendMax", 1)):
+        item["drivens"] = [{key: value.strip() for key, value in sub.items()} for sub in item["drivens"]]
+        if not item["driverObject"] or not item["driverAttr"] or not item["drivens"] or any(not all(sub.values()) for sub in item["drivens"]):
+            raise ValueError("Driven Range Blend: complete the driver and at least one constraint / target pair.")
+        for key, default in (("driverMin", 0), ("driverMax", 1)):
             item[key] = float(item[key].strip() or default)
         item["driverDefault"] = float(item["driverDefault"].strip() or item["driverMin"])
-        if not all(math.isfinite(item[key]) for key in ("driverMin", "driverMax", "driverDefault", "blendMin", "blendMax")):
+        if not all(math.isfinite(item[key]) for key in ("driverMin", "driverMax", "driverDefault")):
             raise ValueError("Driven Range Blend: enter finite numbers.")
         if not item["driverMin"] < item["driverMax"] or not item["driverMin"] <= item["driverDefault"] <= item["driverMax"]:
             raise ValueError("Driven Range Blend: invalid Driver Min/Max/Default.")
-        if not all(0 <= item[key] <= 1 for key in ("blendMin", "blendMax")):
-            raise ValueError("Driven Range Blend: new target weights must be within 0–1.")
         items.append(item)
     return items
 
@@ -194,90 +216,106 @@ def Load(data, listUI, *unused):
         Add(listUI)
 
 
-def createBlend(driverObject, driverAttr, driverMin, driverMax, driverDefault, constraint, target, blendMin, blendMax, smooth, maintainOffset):
+def createBlend(driverObject, driverAttr, driverMin, driverMax, driverDefault, drivens):
     driver = driverObject + "." + driverAttr
     if not cmds.objExists(driver):
         cmds.addAttr(driverObject, longName=driverAttr, attributeType="double", keyable=True, minValue=driverMin, maxValue=driverMax, defaultValue=driverDefault)
 
-    driven = cmds.listConnections(constraint + ".constraintParentInverseMatrix", source=True, destination=False)[0]
-    oldAliases = cmds.parentConstraint(constraint, query=True, weightAliasList=True)
-    oldPlugs = [constraint + "." + alias for alias in oldAliases]
-    oldInputs = [(cmds.connectionInfo(plug, sourceFromDestination=True), cmds.getAttr(plug)) for plug in oldPlugs]
-
-    # Add a target to the existing constraint, initially with no influence.
-    cmds.parentConstraint(target, driven, maintainOffset=maintainOffset, weight=0)
-    newAlias = next(alias for alias in cmds.parentConstraint(constraint, query=True, weightAliasList=True) if alias not in oldAliases)
-    name = constraint.rsplit("|", 1)[-1].replace(":", "_") + "_RangeBlend"
-
+    name = driverObject.rsplit("|", 1)[-1].replace(":", "_") + "_" + driverAttr.replace(".", "_").replace("[", "_").replace("]", "") + "_RangeBlend"
     blend = cmds.createNode("remapValue", name=name)
     cmds.setAttr(blend + ".inputMin", driverMin)
     cmds.setAttr(blend + ".inputMax", driverMax)
+    cmds.setAttr(blend + ".outputMin", 0)
+    cmds.setAttr(blend + ".outputMax", 1)
     cmds.setAttr(blend + ".value[0].value_Position", 0)
-    cmds.setAttr(blend + ".value[0].value_FloatValue", blendMin)
-    cmds.setAttr(blend + ".value[0].value_Interp", 2 if smooth else 1)
+    cmds.setAttr(blend + ".value[0].value_FloatValue", 0)
+    cmds.setAttr(blend + ".value[0].value_Interp", 1)
     cmds.setAttr(blend + ".value[1].value_Position", 1)
-    cmds.setAttr(blend + ".value[1].value_FloatValue", blendMax)
-    cmds.setAttr(blend + ".value[1].value_Interp", 2 if smooth else 1)
+    cmds.setAttr(blend + ".value[1].value_FloatValue", 1)
+    cmds.setAttr(blend + ".value[1].value_Interp", 1)
     cmds.connectAttr(driver, blend + ".inputValue")
     reverse = cmds.createNode("reverse", name=name + "_Reverse")
     cmds.connectAttr(blend + ".outValue", reverse + ".inputX")
 
-    # Keep each original weight live and preserve its relative contribution.
-    total = cmds.createNode("plusMinusAverage", name=name + "_OldTotal")
-    for index, (plug, (source, value)) in enumerate(zip(oldPlugs, oldInputs)):
-        multiply = cmds.createNode("multiplyDivide", name=name + "_Old{:02d}".format(index + 1))
-        if source:
-            cmds.disconnectAttr(source, plug)
-            cmds.connectAttr(source, multiply + ".input1X")
-        else:
-            cmds.setAttr(multiply + ".input1X", value)
-        cmds.connectAttr(multiply + ".input1X", total + ".input1D[{}]".format(index))
-        cmds.connectAttr(reverse + ".outputX", multiply + ".input2X")
-        cmds.connectAttr(multiply + ".outputX", plug)
+    for constraint, target in drivens:
+        command = getattr(cmds, cmds.nodeType(constraint))
+        driven = cmds.listConnections(constraint + ".constraintParentInverseMatrix", source=True, destination=False)[0]
+        oldAliases = command(constraint, query=True, weightAliasList=True)
+        oldPlugs = [constraint + "." + alias for alias in oldAliases]
+        oldInputs = [(cmds.connectionInfo(plug, sourceFromDestination=True), cmds.getAttr(plug)) for plug in oldPlugs]
 
-    # Scale the new weight by the original total; use one if all old weights are zero.
-    safeTotal = cmds.createNode("condition", name=name + "_SafeTotal")
-    cmds.setAttr(safeTotal + ".operation", 2)
-    cmds.connectAttr(total + ".output1D", safeTotal + ".firstTerm")
-    cmds.connectAttr(total + ".output1D", safeTotal + ".colorIfTrueR")
-    cmds.setAttr(safeTotal + ".colorIfFalseR", 1)
-    newWeight = cmds.createNode("multiplyDivide", name=name + "_New")
-    cmds.connectAttr(safeTotal + ".outColorR", newWeight + ".input1X")
-    cmds.connectAttr(blend + ".outValue", newWeight + ".input2X")
-    cmds.connectAttr(newWeight + ".outputX", constraint + "." + newAlias)
+        # Edit the existing constraint, initially at zero new weight.
+        command(target, driven, edit=True, weight=0)
+        newAlias = next(alias for alias in command(constraint, query=True, weightAliasList=True) if alias not in oldAliases)
+        prefix = constraint.rsplit("|", 1)[-1].replace(":", "_") + "_RangeBlend"
+        total = cmds.createNode("plusMinusAverage", name=prefix + "_OldTotal")
+        safeTotal = cmds.createNode("condition", name=prefix + "_SafeTotal")
+        cmds.setAttr(safeTotal + ".operation", 2)
+        cmds.connectAttr(total + ".output1D", safeTotal + ".firstTerm")
+        cmds.connectAttr(total + ".output1D", safeTotal + ".colorIfTrueR")
+        cmds.setAttr(safeTotal + ".colorIfFalseR", 1)
+
+        # Normalize the original weights and keep their inputs live.
+        for index, (plug, (source, value)) in enumerate(zip(oldPlugs, oldInputs)):
+            divide = cmds.createNode("multiplyDivide", name=prefix + "_Normalize{:02d}".format(index + 1))
+            multiply = cmds.createNode("multiplyDivide", name=prefix + "_Old{:02d}".format(index + 1))
+            cmds.setAttr(divide + ".operation", 2)
+            if source:
+                cmds.disconnectAttr(source, plug)
+                cmds.connectAttr(source, divide + ".input1X")
+            else:
+                cmds.setAttr(divide + ".input1X", value)
+            cmds.connectAttr(divide + ".input1X", total + ".input1D[{}]".format(index))
+            cmds.connectAttr(safeTotal + ".outColorR", divide + ".input2X")
+            cmds.connectAttr(divide + ".outputX", multiply + ".input1X")
+            cmds.connectAttr(reverse + ".outputX", multiply + ".input2X")
+            cmds.connectAttr(multiply + ".outputX", plug)
+        cmds.connectAttr(blend + ".outValue", constraint + "." + newAlias)
 
 
 def blendArguments(item):
+    item = normalizeItem(item)
     return (item["driverObject"], item["driverAttr"], float(item["driverMin"]), float(item["driverMax"]),
-            float(item.get("driverDefault", item["driverMin"])), item["constraint"], item["target"],
-            float(item.get("blendMin", 0)), float(item.get("blendMax", 1)),
-            bool(item.get("smooth", True)), bool(item.get("maintainOffset", True)))
+            float(item["driverMin"] if item.get("driverDefault") in (None, "") else item["driverDefault"]),
+            [(sub["constraint"], sub["target"]) for sub in item["drivens"]])
 
 
 def validateItem(item):
-    driverObject, driverAttr, dmin, dmax, default, constraint, target, bmin, bmax, _, _ = blendArguments(item)
-    if not cmds.objExists(driverObject) or not cmds.objExists(constraint) or cmds.nodeType(constraint) != "parentConstraint":
-        raise ValueError("Driven Range Blend: driver and parentConstraint must exist.")
-    target = (cmds.ls(target, long=True, type="transform") or cmds.ls(target, long=True, type="joint") or [None])[0]
-    if not target:
-        raise ValueError("Driven Range Blend: select a new transform target.")
-    driven = cmds.listConnections(constraint + ".constraintParentInverseMatrix", source=True, destination=False) or []
-    if len(driven) != 1:
-        raise ValueError("Driven Range Blend: cannot resolve the constrained object.")
-    driven = cmds.ls(driven[0], long=True)[0]
-    constraints = cmds.listConnections(driven + ".parentInverseMatrix[0]", source=False, destination=True, type="parentConstraint") or []
-    if set(cmds.ls(constraints, long=True) or []) != set(cmds.ls(constraint, long=True) or []):
-        raise ValueError("Driven Range Blend: the driven object must have one parentConstraint.")
-    targets = cmds.parentConstraint(constraint, query=True, targetList=True) or []
-    if target in (cmds.ls(targets, long=True) or []) or target == driven or target.startswith(driven + "|"):
-        raise ValueError("Driven Range Blend: target already exists or creates a dependency cycle.")
-    aliases = cmds.parentConstraint(constraint, query=True, weightAliasList=True) or []
-    if not aliases or any(cmds.getAttr(constraint + "." + alias, lock=True) for alias in aliases):
-        raise ValueError("Driven Range Blend: existing weights must be unlocked.")
-    if not (dmin < dmax and dmin <= default <= dmax and 0 <= bmin <= 1 and 0 <= bmax <= 1):
+    driverObject, driverAttr, dmin, dmax, default, drivens = blendArguments(item)
+    if not cmds.objExists(driverObject) or not drivens:
+        raise ValueError("Driven Range Blend: driver and driven pairs are required.")
+    if not (math.isfinite(dmin) and math.isfinite(dmax) and math.isfinite(default) and dmin < dmax and dmin <= default <= dmax):
         raise ValueError("Driven Range Blend: invalid range.")
-    if driverObject in (constraint, driven) and driverAttr in aliases:
-        raise ValueError("Driven Range Blend: do not drive a blend from its own constraint weight.")
+    seen = set()
+    for constraint, target in drivens:
+        matches = cmds.ls(constraint, long=True) or []
+        if len(matches) != 1 or cmds.nodeType(matches[0]) not in ("parentConstraint", "pointConstraint", "orientConstraint"):
+            raise ValueError("Driven Range Blend: select one Parent, Point or Orient Constraint.")
+        constraint = matches[0]
+        kind = cmds.nodeType(constraint)
+        command = getattr(cmds, kind)
+        if constraint in seen:
+            raise ValueError("Driven Range Blend: repeated constraint in one item: " + constraint)
+        seen.add(constraint)
+        targets = cmds.ls(target, long=True) or []
+        if len(targets) != 1 or cmds.nodeType(targets[0]) not in ("transform", "joint"):
+            raise ValueError("Driven Range Blend: select a new transform target.")
+        target = targets[0]
+        driven = cmds.listConnections(constraint + ".constraintParentInverseMatrix", source=True, destination=False) or []
+        if len(driven) != 1:
+            raise ValueError("Driven Range Blend: cannot resolve the constrained object.")
+        driven = cmds.ls(driven[0], long=True)[0]
+        constraints = cmds.listConnections(driven + ".parentInverseMatrix[0]", source=False, destination=True, type=kind) or []
+        if set(cmds.ls(constraints, long=True) or []) != {constraint}:
+            raise ValueError("Driven Range Blend: ambiguous existing constraint of the same type.")
+        oldTargets = command(constraint, query=True, targetList=True) or []
+        if target in (cmds.ls(oldTargets, long=True) or []) or target == driven or target.startswith(driven + "|"):
+            raise ValueError("Driven Range Blend: target already exists or creates a dependency cycle.")
+        aliases = command(constraint, query=True, weightAliasList=True) or []
+        if not aliases or any(cmds.getAttr(constraint + "." + alias, lock=True) for alias in aliases):
+            raise ValueError("Driven Range Blend: existing weights must be unlocked.")
+        if constraint in (cmds.ls(driverObject, long=True) or []) and driverAttr in aliases:
+            raise ValueError("Driven Range Blend: do not drive a blend from its own constraint weight.")
 
 
 def BuildAttributeDrivenRangeBlend(items):
