@@ -7,7 +7,6 @@ No NLTA installation or network access is required at runtime.
 """
 import os
 import json
-import inspect
 import math
 import re
 from functools import partial
@@ -1010,7 +1009,7 @@ def sourceData(value):
     return repr(value)
 
 
-def checkTargetFree(target, controls, channels):
+checkTargetFree_source = """def checkTargetFree(target, controls, channels):
     plugs = [f"{target}.{channel}" for channel in channels]
     if all(cmds.getAttr(p, settable=True) and not cmds.connectionInfo(p, isDestination=True) and abs(cmds.getAttr(p)) <= 1e-8 for p in plugs):
         return target
@@ -1019,10 +1018,10 @@ def checkTargetFree(target, controls, channels):
     offset = cmds.createNode("transform", n=target + "_Offset", parent=target)
     for branch in branches:
         cmds.parent(branch, offset, relative=True)
-    return offset
+    return offset"""
 
 
-def sharedChannel(plug, sources):
+sharedChannel_source = """def sharedChannel(plug, sources):
     name = plug.replace(".", "_")
     magnitude, weighted = sources[0]
     for i, (next_magnitude, next_weighted) in enumerate(sources[1:], 1):
@@ -1047,7 +1046,7 @@ def sharedChannel(plug, sources):
         cmds.connectAttr(output, f"{pma}.input1D[0]")
         cmds.setAttr(f"{pma}.input1D[1]", val)
         output = f"{pma}.output1D"
-    return output
+    return output"""
 
 
 def buildScript(config):
@@ -1184,13 +1183,13 @@ def buildScript(config):
             emit("raw_src_attr = sharedChannel({}, [{}])".format(sourceData(plug), ", ".join(sources)))
             dest = destination(plug)
             emit("cmds.connectAttr(raw_src_attr, {})".format(dest))
-    skirt_source = inspect.getsource(createSkirtRigSystem).rstrip()
+    skirt_source = createSkirtRigSystem_source
     if distance_max_limit > 2:
         skirt_source = skirt_source.replace('ln="minDistance", at="double", min=0, max=2,',
             'ln="minDistance", at="double", min=0, max={},'.format(sourceData(distance_min_limit)))
         skirt_source = skirt_source.replace('ln="maxDistance", at="double", min=0, max=2,',
             'ln="maxDistance", at="double", min=0, max={},'.format(sourceData(distance_max_limit)))
-    lines.extend(["", inspect.getsource(checkTargetFree).rstrip(), "", inspect.getsource(sharedChannel).rstrip(), "", inspect.getsource(createPoseReaderSystem).rstrip(), "",
+    lines.extend(["", checkTargetFree_source, "", sharedChannel_source, "", createPoseReaderSystem_source, "",
                   skirt_source, "",
                   'if __name__ == "__main__":', "    main()", ""])
     script = "\n".join(lines)
@@ -1231,7 +1230,7 @@ def runFromForm(data, *args):
     return result
 
 
-def createPoseReaderSystem(poseReader, poseReader_constraint_target, closest_point_ref_object):
+createPoseReaderSystem_source = """def createPoseReaderSystem(poseReader, poseReader_constraint_target, closest_point_ref_object):
     # Target locator
     target_loc_group = cmds.createNode("transform", n=f"{poseReader}_Target_Loc_Group")
     target_loc = cmds.spaceLocator(n=f"{poseReader}_Target_Loc")[0]
@@ -1258,9 +1257,10 @@ def createPoseReaderSystem(poseReader, poseReader_constraint_target, closest_poi
     cmds.connectAttr(f"{cp_follicleShape}.outRotate", f"{cp_follicleTransform}.rotate")
     cmds.connectAttr(f"{cpos}.parameterU", f"{cp_follicleShape}.parameterU")
     cmds.connectAttr(f"{cpos}.parameterV", f"{cp_follicleShape}.parameterV")
-    return cp_follicleShape, cpos
+    return cp_follicleShape, cpos"""
 
-def createSkirtRigSystem(pose_reader, cp_follicleShape, cpos, skirt_joints, ref_parameterV, min_max_distance, raise_start_angle):
+
+createSkirtRigSystem_source = """def createSkirtRigSystem(pose_reader, cp_follicleShape, cpos, skirt_joints, ref_parameterV, min_max_distance, raise_start_angle):
 
     pose_reader_shape = cmds.listRelatives(pose_reader, shapes=True, fullPath=False)[0]
     raise_influence_nodes = []
@@ -1320,7 +1320,7 @@ def createSkirtRigSystem(pose_reader, cp_follicleShape, cpos, skirt_joints, ref_
         cmds.setAttr(f"{equator_follicles[0]}.minDistance", min_max_distance[i][0])
         cmds.setAttr(f"{equator_follicles[0]}.maxDistance", min_max_distance[i][1])
         cmds.setAttr(f"{equator_follicles[0]}.raiseStartAngle", raise_start_angle[i])
-    return raise_influence_nodes
+    return raise_influence_nodes"""
 
 
 if __name__ == "__main__":
