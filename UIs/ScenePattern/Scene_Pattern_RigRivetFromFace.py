@@ -260,11 +260,14 @@ def BuildRigRivet(datas):
 
 
 def buildScript(datas):
-    helpers = inspect.getsource(connectRivetFollow).rstrip()
+    helpers = inspect.getsource(connectRivetFollow).rstrip().rsplit("\n", 1)[0]
     body = inspect.getsource(createRivet).split("\n", 1)[1].rstrip().rsplit("\n", 1)[0]
     faceBody = inspect.getsource(faceEdges).split("\n", 1)[1].rstrip()
     faceBody = faceBody.replace("return dag.fullPathName()", "mesh_shape, instance, edges = dag.fullPathName()")
     body = body.replace("    mesh_shape, instance, edges = faceEdges(face)", faceBody)
+    for line in ("    matched_group = None", "    offset = None", "    constraint = None", "    rest = None"):
+        body = body.replace(line + "\n", "")
+    body = body.replace("constraint, rest = connectRivetFollow(", "connectRivetFollow(")
     data = ",\n".join("        " + repr(rivetArguments(info)) for info in datas)
     helpers = "\n".join("    " + line if line.strip() else "" for line in helpers.splitlines())
     body = "\n".join("    " + line if line.strip() else "" for line in body.splitlines())
