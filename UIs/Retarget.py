@@ -1103,14 +1103,14 @@ class RetargetCard(QtWidgets.QFrame):
             lambda: _safe(_apply_manual_order))
 
         index = _sorted_steps().index(record)
-        up = _new_tool_button("", "Move module up", lambda: _move_step(
+        self.up = _new_tool_button("", "Move module up", lambda: _move_step(
             self.identifier, -1), arrow=QtCore.Qt.UpArrow)
-        down = _new_tool_button("", "Move module down", lambda: _move_step(
+        self.down = _new_tool_button("", "Move module down", lambda: _move_step(
             self.identifier, 1), arrow=QtCore.Qt.DownArrow)
-        up.setEnabled(index > 0)
-        down.setEnabled(index < len(_STATE["steps"]) - 1)
-        header.addWidget(up)
-        header.addWidget(down)
+        self.up.setEnabled(index > 0)
+        self.down.setEnabled(index < len(_STATE["steps"]) - 1)
+        header.addWidget(self.up)
+        header.addWidget(self.down)
         header.addWidget(_new_tool_button(
             "Run", "Test only this module using current form values",
             lambda: _run_card(self.identifier)))
@@ -2361,9 +2361,49 @@ def _rebuild_cards(focus=None):
         UIs["building"] = False
 
 
+def _collect_card_orders():
+    """Read only order fields; leave all other unsaved edits in their widgets."""
+    cards = UIs.get("cards", {})
+    for record in _STATE["steps"]:
+        card = cards.get(record["id"])
+        if card is not None:
+            record["order"] = card.order.value()
+
+
+def _sync_card_order():
+    """Reorder existing widgets without rebuilding their detail editors."""
+    area = UIs.get("cards_layout")
+    if area is None:
+        return
+    cards = UIs.get("cards", {})
+    steps = _sorted_steps()
+    container = UIs["cards_container"]
+    was_building = UIs.get("building", False)
+    updates = container.updatesEnabled()
+    UIs["building"] = True
+    container.setUpdatesEnabled(False)
+    try:
+        for index, record in enumerate(steps):
+            card = cards[record["id"]]
+            if area.indexOf(card) != index:
+                if area.indexOf(card) >= 0:
+                    area.removeWidget(card)
+                area.insertWidget(index, card)
+            blocked = card.order.blockSignals(True)
+            try:
+                card.order.setValue(record["order"])
+            finally:
+                card.order.blockSignals(blocked)
+            card.up.setEnabled(index > 0)
+            card.down.setEnabled(index < len(steps) - 1)
+    finally:
+        container.setUpdatesEnabled(updates)
+        UIs["building"] = was_building
+
+
 def _move_step(identifier, direction):
     def work():
-        _save_editor()
+        _collect_card_orders()
         steps = _sorted_steps()
         record = _get_step(identifier)
         index = steps.index(record)
@@ -2374,7 +2414,7 @@ def _move_step(identifier, direction):
         for number, item in enumerate(steps, 1):
             item["order"] = number * 10
         _STATE["dirty"] = True
-        _rebuild_cards()
+        _sync_card_order()
         _status("Module order changed. Click Save to keep it.")
     return _safe(work)
 
@@ -2382,8 +2422,8 @@ def _move_step(identifier, direction):
 def _apply_manual_order():
     if UIs.get("building"):
         return
-    _save_editor()
-    _rebuild_cards()
+    _collect_card_orders()
+    _sync_card_order()
     _STATE["dirty"] = True
     _status("Order changed. Click Save to keep it.")
 
@@ -2409,15 +2449,33 @@ def _delete_step(identifier):
     return _safe(work)
 
 
+def _append_card(record):
+    """Build only the newly added module, retaining all existing cards."""
+    area = UIs.get("cards_layout")
+    if area is None:
+        return
+    identifier = record["id"]
+    was_building = UIs.get("building", False)
+    UIs["building"] = True
+    try:
+        _STATE.setdefault("expanded", {})[identifier] = True
+        card = RetargetCard(record, UIs["cards_container"])
+        UIs["cards"][identifier] = card
+        area.insertWidget(max(0, area.count() - 1), card)
+    finally:
+        UIs["building"] = was_building
+    _sync_card_order()
+
+
 def _add_step(*args):
     def work():
-        _save_editor()
+        _collect_card_orders()
         kind = UIs["step_type"].currentData()
         record = _new_step(kind, max(
             (s["order"] for s in _STATE["steps"]), default=0) + 10)
         _STATE["steps"].append(record)
         _STATE["dirty"] = True
-        _rebuild_cards(focus=record["id"])
+        _append_card(record)
         _status("Added module " + record["name"] + ". Click Save to keep it.")
     return _safe(work)
 
