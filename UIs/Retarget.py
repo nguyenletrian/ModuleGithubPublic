@@ -32,6 +32,7 @@ _STATE = {"steps": [], "path": "", "context": {}, "general": {},
           "expanded": {}, "selected_id": None}
 STEP_FILES = (
     ("Scale", "Retarget_Scale.py"),
+    ("ScaleFromObjectDistance", "Retarget_ScaleFromObjectDistance.py"),
     ("MatchTransform", "Retarget_MatchTransform.py"),
     ("Transform", "Retarget_Transform.py"),  # Legacy kind: Extra Transform.
     ("SetValue", "Retarget_SetValue.py"),
@@ -100,7 +101,7 @@ def _default_steps():
              for index, (kind, _) in enumerate(STEP_FILES)]
     # Optional modules require an object/file or a later Bake stage.
     for step in steps:
-        if step["kind"] in ("Bake", "CleanAnimation", "Clean", "PythonFile", "Transform",
+        if step["kind"] in ("ScaleFromObjectDistance", "Bake", "CleanAnimation", "Clean", "PythonFile", "Transform",
                             "OffsetPosition", "SetValue", "MatchTransform", "MatchRotatePair", "MatchRotate", "CreateJoint", "PoleVector", "Connect", "Constraint"):
             step["enabled"] = False
     return steps
@@ -245,6 +246,8 @@ def _validate_entries(records):
                     "REF" if (_STATE.get("general") or {}).get(
                         "reference_pose_path") else "Anim")
         label = str(item.get("name") or _module(kind).LABEL)
+        if kind == "Scale" and label in ("Scale", "Set Scale", "Match Scale"):
+            label = "Scale From Objects Height"
         if kind == "Transform" and label == "Transform":
             label = "Extra Transform"
         if kind == "MatchRotatePair" and label in ("Match Rotate Pair", "MatchRotatePair"):
@@ -865,6 +868,24 @@ def _pick_scale_reference(field):
     field.setText(rt.leaf(node))
 
 
+def _pick_scale_vertex(field, role):
+    """Pick one mesh vertex in the selected measurement namespace."""
+    selected = cmds.ls(selection=True, long=True, flatten=True) or []
+    if len(selected) != 1:
+        raise ValueError("Select exactly one mesh vertex.")
+    match = re.fullmatch(r"(.+)\.vtx\[(\d+)\]", str(selected[0]))
+    if not match:
+        raise ValueError("Select exactly one mesh vertex.")
+    mesh, index = match.groups()
+    namespace = mesh.split("|")[-1].rpartition(":")[0]
+    key = {"Rig": "new_namespace", "Anim": "old_animations_namespace",
+           "REF": "reference_pose_namespace"}[role.currentText()]
+    expected = str(_general_from_form().get(key) or "").strip(":")
+    if not expected or namespace != expected:
+        raise ValueError("Pick a vertex in namespace: " + expected)
+    field.setText("{}.vtx[{}]".format(rt.leaf(mesh), index))
+
+
 def _pick_offset_element(field):
     """Pick one DAG transform/joint or supported geometric component."""
     selected = cmds.ls(selection=True, long=True, flatten=True) or []
@@ -1021,6 +1042,9 @@ def _module_field_columns(kind, descriptors):
     if kind in ("SetValue", "Transform", "MatchRotatePair", "MatchRotate", "MatchTransform", "Constraint", "Connect", "Bake", "Clean", "CleanAnimation"):
         return "", [], "", [], descriptors
     paired = {
+        "ScaleFromObjectDistance": (("source_role", "vertex1", "vertex2"),
+                                    ("target_role", "vertex3", "vertex4"),
+                                    "Namespace 1", "Namespace 2"),
         "Scale": (("source_role", "old_low", "old_high"),
                   ("target_role", "new_low", "new_high"),
                   "Scale Ref", "Scale Object"),
@@ -1553,6 +1577,8 @@ class RetargetCard(QtWidgets.QFrame):
         modes = []
         if kind == "pick":
             modes = [("Pick", "pick")]
+        elif kind == "pick_vertex":
+            modes = [("Pick", "pick_vertex")]
         elif kind == "pick_ref":
             modes = [("Pick", "pick_ref")]
         elif kind == "pick_element":
@@ -1568,10 +1594,13 @@ class RetargetCard(QtWidgets.QFrame):
             button.setFixedWidth(58 if caption == "Browse" else
                                  52 if caption == "Folder" else 46)
             button.clicked.connect(
-                lambda checked=False, target=widget, way=mode: _safe(
+                lambda checked=False, target=widget, way=mode, field_key=key: _safe(
                     lambda: _pick_constraint_object(target, self.widgets["source_role"][1])
                     if way == "pick" and self.kind == "PoleVector"
                     else _pick_transform(target) if way == "pick"
+                    else _pick_scale_vertex(target, self.widgets[
+                        "source_role" if field_key in ("vertex1", "vertex2") else "target_role"][1])
+                    if way == "pick_vertex"
                     else _pick_scale_reference(target) if way == "pick_ref"
                     else _pick_offset_element(target) if way == "pick_element"
                     else _pick_channel_attribute(
