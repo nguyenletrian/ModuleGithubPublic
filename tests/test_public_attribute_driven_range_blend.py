@@ -18,15 +18,19 @@ def scope(**dependencies):
 
 
 class AttributeDrivenRangeBlendTests(unittest.TestCase):
-    def test_add_target_and_preserve_existing_weight_network(self):
+    def test_multiple_constraint_types_share_one_blend(self):
         nodes, attrs, connections, disconnects, added = {}, {}, {}, [], []
-        aliases = ["OldAW0", "OldBW1"]
-        def parent_constraint(*args, **kwargs):
-            if kwargs.get("query"):
-                return list(aliases)
-            added.append((args, kwargs))
-            aliases.append("NewW2")
-            return ["Constraint"]
+        kinds = {"Parent": "parentConstraint", "Position": "pointConstraint",
+                 "Rotation": "orientConstraint"}
+        aliases = {name: ["OldAW0", "OldBW1"] for name in kinds}
+        def constraint_command(name):
+            def command(*args, **kwargs):
+                if kwargs.get("query"):
+                    return list(aliases[name])
+                added.append((name, args, kwargs))
+                aliases[name].append("NewW2")
+                return [name]
+            return command
         def create_node(kind, name):
             nodes[name] = kind
             return name
@@ -36,31 +40,47 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
             connections[dst] = src
         cmds = SimpleNamespace(
             objExists=lambda plug: True,
-            listConnections=lambda plug, **kwargs: ["Driven"],
-            parentConstraint=parent_constraint,
+            nodeType=lambda name: kinds[name],
+            listConnections=lambda plug, **kwargs: [plug.split(".")[0] + "_Driven"],
+            parentConstraint=constraint_command("Parent"),
+            pointConstraint=constraint_command("Position"),
+            orientConstraint=constraint_command("Rotation"),
             connectionInfo=lambda plug, **kwargs: "Control.AutoFollow" if plug.endswith("OldAW0") else "",
             getAttr=lambda plug: 0.6 if plug.endswith("OldAW0") else 0.4,
             createNode=create_node, setAttr=set_attr, connectAttr=connect,
             disconnectAttr=lambda src, dst: disconnects.append((src, dst)))
         env = scope(cmds=cmds)
         env["createBlend"]("Driver", "rotateX", 0, 90, 0,
-                           "Constraint", "New", 0, 1, True, True)
-        name = "Constraint_RangeBlend"
-        self.assertEqual(added, [(("New", "Driven"), {"maintainOffset": True, "weight": 0})])
-        self.assertEqual(attrs[name + ".value[0].value_Interp"], 2)
-        self.assertEqual(attrs[name + ".inputMax"], 90)
-        self.assertEqual(disconnects, [("Control.AutoFollow", "Constraint.OldAW0")])
-        self.assertEqual(connections[name + "_Old01.input1X"], "Control.AutoFollow")
-        self.assertEqual(attrs[name + "_Old02.input1X"], 0.4)
-        self.assertEqual(connections["Constraint.OldAW0"], name + "_Old01.outputX")
-        self.assertEqual(connections["Constraint.OldBW1"], name + "_Old02.outputX")
-        self.assertEqual(connections[name + "_Old01.input2X"], name + "_Reverse.outputX")
-        self.assertEqual(connections[name + "_OldTotal.input1D[0]"], name + "_Old01.input1X")
-        self.assertEqual(connections[name + "_OldTotal.input1D[1]"], name + "_Old02.input1X")
-        self.assertEqual(connections[name + "_New.input1X"], name + "_SafeTotal.outColorR")
-        self.assertEqual(connections[name + "_New.input2X"], name + ".outValue")
-        self.assertEqual(connections["Constraint.NewW2"], name + "_New.outputX")
-        self.assertNotIn("parentConstraint", nodes.values())
+                           [(name, name + "_New") for name in kinds])
+        blend = "Driver_rotateX_RangeBlend"
+        self.assertEqual(added, [(name, (name + "_New", name + "_Driven"),
+                                 {"edit": True, "weight": 0}) for name in kinds])
+        self.assertEqual(list(nodes.values()).count("remapValue"), 1)
+        self.assertEqual(list(nodes.values()).count("reverse"), 1)
+        self.assertEqual(attrs[blend + ".value[0].value_Interp"], 1)
+        self.assertEqual(attrs[blend + ".inputMax"], 90)
+        self.assertEqual(attrs[blend + ".outputMin"], 0)
+        self.assertEqual(attrs[blend + ".outputMax"], 1)
+        for name in kinds:
+            prefix = name + "_RangeBlend"
+            self.assertIn(("Control.AutoFollow", name + ".OldAW0"), disconnects)
+            self.assertEqual(connections[prefix + "_Normalize01.input1X"], "Control.AutoFollow")
+            self.assertEqual(attrs[prefix + "_Normalize02.input1X"], 0.4)
+            self.assertEqual(connections[name + ".OldAW0"], prefix + "_Old01.outputX")
+            self.assertEqual(connections[prefix + "_Old01.input1X"], prefix + "_Normalize01.outputX")
+            self.assertEqual(connections[prefix + "_Old01.input2X"], blend + "_Reverse.outputX")
+            self.assertEqual(connections[prefix + "_OldTotal.input1D[0]"], prefix + "_Normalize01.input1X")
+            self.assertEqual(connections[prefix + "_Normalize01.input2X"], prefix + "_SafeTotal.outColorR")
+            self.assertEqual(connections[name + ".NewW2"], blend + ".outValue")
+
+    def test_legacy_single_driven_and_fixed_weight_range(self):
+        env = scope()
+        data = {"driverObject": "Driver", "driverAttr": "rotateX",
+                "driverMin": -90, "driverMax": 90, "driverDefault": 0,
+                "constraint": "Constraint", "target": "New",
+                "blendMin": 0.2, "blendMax": 0.7, "smooth": True, "maintainOffset": True}
+        self.assertEqual(env["blendArguments"](data),
+                         ("Driver", "rotateX", -90.0, 90.0, 0.0, [("Constraint", "New")]))
 
     def test_single_pass_export(self):
         env = scope()
@@ -69,7 +89,9 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
                 "constraint": "Constraint", "target": "New"}
         source = env["buildScript"]([data])
         compile(source, "<range blend export>", "exec")
-        self.assertIn("createBlend(*('Driver', 'rotateX', 0.0, 90.0, 0.0, 'Constraint', 'New', 0.0, 1.0, True, True))", source)
+        self.assertIn("createBlend(*('Driver', 'rotateX', 0.0, 90.0, 0.0, [('Constraint', 'New')]))", source)
+        self.assertNotIn("maintainOffset", source)
+        self.assertNotIn("smooth", source)
         self.assertNotIn("raise ", source)
         self.assertNotIn("validateItem", source)
         self.assertNotIn("NLTA_", source)
