@@ -144,6 +144,18 @@ class ModuleInstanceTests(unittest.TestCase):
         self.assertEqual([x["id"] for x in env["_validate_sequence"](True, rows)],
                          ["a", "b", "c", "d"])
 
+    def test_notes_never_execute_or_affect_save_last_rule(self):
+        env = scope("_validate_sequence", "_run_step")
+        rows = [
+            {"id": "n1", "kind": "Note", "enabled": True, "order": 10},
+            {"id": "b", "kind": "Bake", "enabled": True, "order": 20},
+            {"id": "s", "kind": "Save", "enabled": True, "order": 30},
+            {"id": "n2", "kind": "Note", "enabled": True, "order": 40},
+        ]
+        self.assertEqual([row["id"] for row in env["_validate_sequence"](True, rows)],
+                         ["b", "s"])
+        self.assertIsNone(env["_run_step"](rows[0], {}))
+
     def test_save_last_constraint_retained(self):
         env = scope("_validate_sequence")
         rows = [{"kind": "Save", "enabled": True, "order": 10},
