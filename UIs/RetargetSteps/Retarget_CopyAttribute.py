@@ -1,4 +1,4 @@
-"""Copy current attribute values between two objects in the same namespace."""
+"""Copy current attribute values between two objects with independent namespaces."""
 import maya.cmds as cmds
 import NLTA_RetargetV2 as rt
 
@@ -6,12 +6,20 @@ LABEL = "Copy Attribute"
 
 
 def DefaultSetting():
-    return {"source_role": "Rig", "from": "", "to": "", "attributes": [""]}
+    return {"source_role": "Rig", "target_role": "Rig", "from": "", "to": "", "attributes": [""]}
+
+
+def NormalizeSettings(settings):
+    data = dict(DefaultSetting(), **settings)
+    if "target_role" not in settings:
+        data["target_role"] = data["source_role"]
+    return data
 
 
 def Fields():
-    return [("Namespace", "source_role", "choice", ("Rig", "Anim", "REF")),
+    return [("Namespace From", "source_role", "choice", ("Rig", "Anim", "REF")),
             ("Object From", "from", "copy_object"),
+            ("Namespace To", "target_role", "choice", ("Rig", "Anim", "REF")),
             ("Object To", "to", "copy_object"),
             ("Attributes", "attributes", "copy_attributes")]
 
@@ -37,10 +45,9 @@ def _namespace(role, context):
 
 
 def Run(settings, context):
-    data = dict(DefaultSetting(), **settings)
-    namespace = _namespace(data["source_role"], context)
-    source = rt.resolve(namespace, data["from"])
-    target = rt.resolve(namespace, data["to"])
+    data = NormalizeSettings(settings)
+    source = rt.resolve(_namespace(data["source_role"], context), data["from"])
+    target = rt.resolve(_namespace(data["target_role"], context), data["to"])
     attributes = list(dict.fromkeys(str(name).strip() for name in data["attributes"]
                                     if str(name).strip()))
     if not attributes:
