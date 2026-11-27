@@ -255,6 +255,7 @@ def createBlend(driverObject, driverAttr, driverMin, driverMax, driverDefault, d
     reverse = cmds.createNode("reverse", name=name + "_Reverse")
     cmds.connectAttr(blend + ".outValue", reverse + ".inputX")
 
+    weights = []
     for constraint, driven, kind, command, original, rest in rests:
         # Parent constraints have a separate offset for each target.
         if kind == "parentConstraint":
@@ -262,8 +263,11 @@ def createBlend(driverObject, driverAttr, driverMin, driverMax, driverDefault, d
         else:
             command(rest, driven, weight=0)
         restAlias = next(alias for alias in command(constraint, query=True, weightAliasList=True) if alias != original)
-        cmds.connectAttr(blend + ".outValue", constraint + "." + original, force=True)
-        cmds.connectAttr(reverse + ".outputX", constraint + "." + restAlias)
+        weights.append((constraint + "." + original, constraint + "." + restAlias))
+
+    for originalPlug, restPlug in weights:
+        cmds.connectAttr(blend + ".outValue", originalPlug, force=True)
+        cmds.connectAttr(reverse + ".outputX", restPlug)
 
 
 def blendArguments(item):
