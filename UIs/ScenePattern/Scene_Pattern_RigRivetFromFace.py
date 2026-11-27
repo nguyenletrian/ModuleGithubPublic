@@ -265,20 +265,23 @@ def BuildRigRivet(datas):
 
 
 def buildScript(datas):
-    functions = (faceEdges, offsetGroup, connectRivetFollow, createRivet)
-    builders = "\n\n".join(inspect.getsource(fn).rstrip() for fn in functions)
-    builders = "\n".join("    " + line if line.strip() else "" for line in builders.splitlines())
-    calls = []
-    for info in datas:
-        face, child, parent, copy_transform, command = rivetArguments(info)
-        calls.append("    createRivet({!r}, {!r}, {!r}, {!r}, cmds.{})".format(face, child, parent, copy_transform, command))
-    source = (
-        "def main():\n"
-        "    import maya.cmds as cmds\n    import maya.api.OpenMaya as om\n\n"
-        + builders + "\n\n"
-        + ("\n".join(calls) or "    pass")
-        + '\n\nif __name__ == "__main__":\n    main()\n'
-    )
+    functions = (connectRivetFollow,)
+    helpers = "\n\n".join(inspect.getsource(fn).rstrip() for fn in functions)
+    body = inspect.getsource(createRivet).split("\n", 1)[1].rstrip().rsplit("\n", 1)[0]
+    offsetBody = inspect.getsource(offsetGroup).split("\n", 1)[1].rstrip().rsplit("\n", 1)[0]
+    offsetBody = offsetBody.replace("name=name)", "name=offset_name)")
+    body = body.replace("        offset, child = offsetGroup(child, offset_name)", "\n".join("    " + line for line in offsetBody.splitlines()))
+    faceBody = inspect.getsource(faceEdges).split("\n", 1)[1].rstrip()
+    faceBody = faceBody.replace("return dag.fullPathName()", "mesh_shape, instance, edges = dag.fullPathName()")
+    body = body.replace("    mesh_shape, instance, edges = faceEdges(face)", faceBody)
+    data = ",\n".join("        " + repr(rivetArguments(info)) for info in datas)
+    helpers = "\n".join("    " + line if line.strip() else "" for line in helpers.splitlines())
+    body = "\n".join("    " + line if line.strip() else "" for line in body.splitlines())
+    source = ("def main():\n    import maya.cmds as cmds\n    import maya.api.OpenMaya as om\n\n"
+              + "    RIVET_DATA = [\n" + data + "\n    ]\n\n" + helpers + "\n\n"
+              + "    for face, child, parent, copy_transform, command in RIVET_DATA:\n"
+              + "        constraintCommand = getattr(cmds, command)\n" + body
+              + '\n\nif __name__ == "__main__":\n    main()\n')
     compile(source, "Python_Scene_Pattern_RigRivetFromFace.py", "exec")
     return source
 
