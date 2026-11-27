@@ -52,6 +52,7 @@ STEP_FILES = (
     ("Script", "Retarget_Script.py"),
     ("PythonFile", "Retarget_PythonFile.py"),
     ("Save", "Retarget_Save.py"),
+    ("Note", "Retarget_Note.py"),
 )
 STEP_MAP = dict(STEP_FILES, Rotate="Retarget_Rotate.py")
 # This identifier is accepted only while migrating older saved JSONs.
@@ -73,7 +74,9 @@ def _module(kind):
     # Compile the source, not __pycache__ bytecode. This also avoids Maya
     # reusing an older step implementation after a repository update.
     exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
-    required = ("LABEL", "DefaultSetting", "Fields", "Run")
+    required = ("LABEL", "DefaultSetting", "Fields")
+    if kind != "Note":
+        required += ("Run",)
     missing = [name for name in required
                if not hasattr(module, name) or
                (name != "LABEL" and not callable(getattr(module, name)))]
@@ -93,13 +96,13 @@ def _new_step(kind, order):
     while any(item["id"] == identifier for item in _STATE["steps"]):
         identifier = uuid.uuid4().hex
     return {"id": identifier, "kind": kind,
-            "name": module.LABEL, "order": int(order), "enabled": True,
+            "name": module.LABEL, "order": int(order), "enabled": kind != "Note",
             "data": module.DefaultSetting()}
 
 
 def _default_steps():
     steps = [_new_step(kind, (index + 1) * 10)
-             for index, (kind, _) in enumerate(STEP_FILES)]
+             for index, (kind, _) in enumerate(STEP_FILES) if kind != "Note"]
     # Optional modules require an object/file or a later Bake stage.
     for step in steps:
         if step["kind"] in ("ScaleFromObjectDistance", "Bake", "CleanAnimation", "Clean", "PythonFile", "Transform",
@@ -261,7 +264,7 @@ def _validate_entries(records):
             "id": key, "kind": kind,
             "name": label,
             "order": int(item.get("order", (index + 1) * 10)),
-            "enabled": bool(item.get("enabled", True)),
+            "enabled": kind != "Note" and bool(item.get("enabled", True)),
             "data": defaults,
         })
     return cleaned
@@ -424,7 +427,7 @@ def _read_manifest():
             "kind": item["kind"],
             "name": label,
             "order": order,
-            "enabled": bool(item["enabled"]),
+            "enabled": item["kind"] != "Note" and bool(item["enabled"]),
         })
     return result
 
@@ -1259,10 +1262,12 @@ class RetargetCard(QtWidgets.QFrame):
         self.expand.setFixedSize(24, 28)
         header.addWidget(self.expand)
 
-        self.enabled = QtWidgets.QCheckBox()
-        self.enabled.setChecked(bool(record.get("enabled", True)))
-        self.enabled.setToolTip("Enable this module in the ordered pipeline")
-        header.addWidget(self.enabled)
+        self.enabled = None
+        if self.kind != "Note":
+            self.enabled = QtWidgets.QCheckBox()
+            self.enabled.setChecked(bool(record.get("enabled", True)))
+            self.enabled.setToolTip("Enable this module in the ordered pipeline")
+            header.addWidget(self.enabled)
 
         self.title = QtWidgets.QLabel()
         self.title.setSizePolicy(QtWidgets.QSizePolicy.Ignored,
@@ -1293,9 +1298,10 @@ class RetargetCard(QtWidgets.QFrame):
         self.down.setEnabled(index < len(_STATE["steps"]) - 1)
         header.addWidget(self.up)
         header.addWidget(self.down)
-        header.addWidget(_new_tool_button(
-            "Run", "Test only this module using current form values",
-            lambda: _run_card(self.identifier)))
+        if self.kind != "Note":
+            header.addWidget(_new_tool_button(
+                "Run", "Test only this module using current form values",
+                lambda: _run_card(self.identifier)))
         header.addWidget(_new_tool_button("X", "Delete this module",
                                           lambda: _delete_step(self.identifier)))
         layout.addLayout(header)
@@ -1305,7 +1311,7 @@ class RetargetCard(QtWidgets.QFrame):
         detail.setContentsMargins(7, 5, 5, 3)
         detail.setSpacing(6)
         self.name = None
-        if self.kind not in ("MatchTransform", "MatchRotate", "CreateJoint", "PoleVector", "Connect", "Constraint", "Bake", "Clean", "CleanAnimation"):
+        if self.kind not in ("Note", "MatchTransform", "MatchRotate", "CreateJoint", "PoleVector", "Connect", "Constraint", "Bake", "Clean", "CleanAnimation"):
             name_label = QtWidgets.QLabel("Module Name")
             detail.addWidget(name_label)
             self.name = QtWidgets.QLineEdit(record["name"])
@@ -1350,14 +1356,15 @@ class RetargetCard(QtWidgets.QFrame):
         self.expand.setChecked(bool(expanded))
         self._set_expanded(bool(expanded))
         self.expand.toggled.connect(self._set_expanded)
-        self.enabled.toggled.connect(_queue_save)
+        if self.enabled is not None:
+            self.enabled.toggled.connect(_queue_save)
         self.refresh_title(record)
 
     def refresh_title(self, record):
         # The visible name stays unchanged. The unique instance ID is in the tooltip.
         self.title.setText(record["name"])
         self.title.setToolTip("{}\nID: {}".format(record["name"], record["id"]))
-        self.title.setEnabled(record.get("enabled", True))
+        self.title.setEnabled(self.kind == "Note" or record.get("enabled", True))
 
     def _set_expanded(self, expanded):
         self.details.setVisible(expanded)
@@ -1366,6 +1373,16 @@ class RetargetCard(QtWidgets.QFrame):
         _STATE.setdefault("expanded", {})[self.identifier] = bool(expanded)
 
     def _add_field(self, parent, label, key, kind, value, options):
+        if kind == "note":
+            widget = QtWidgets.QPlainTextEdit()
+            widget.setPlainText(str(value or ""))
+            widget.setPlaceholderText("Stage notes...")
+            widget.setFixedHeight(100)
+            widget.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+            widget.textChanged.connect(_queue_save)
+            parent.addWidget(widget)
+            self.widgets[key] = (kind, widget)
+            return
         if kind == "clean_namespaces":
             data = _get_step(self.identifier)["data"]
             line = QtWidgets.QHBoxLayout()
@@ -2469,7 +2486,7 @@ class RetargetCard(QtWidgets.QFrame):
                     for row in widget]
             elif kind == "bool":
                 value = widget.isChecked()
-            elif kind == "script":
+            elif kind in ("script", "note"):
                 value = widget.toPlainText()
             elif kind in ("int", "float"):
                 value = widget.value()
@@ -2532,7 +2549,8 @@ class RetargetCard(QtWidgets.QFrame):
             values = {"pairs": values.get("pairs", []),
                       "mirror": bool(values.get("mirror", True))}
         return {"name": name, "order": self.order.value(),
-                "enabled": self.enabled.isChecked(), "data": values}
+                "enabled": self.enabled.isChecked() if self.enabled is not None else False,
+                "data": values}
 
 
 def _fit_form_to_contents():
@@ -2966,7 +2984,7 @@ def _validate_sequence(batch, records=None):
     """Validate the execution sequence sorted by each module's saved order."""
     ordered = (_sorted_steps() if records is None else
                sorted(records, key=lambda item: int(item["order"])))
-    steps = [step for step in ordered if step.get("enabled")]
+    steps = [step for step in ordered if step.get("enabled") and step["kind"] != "Note"]
     seen = set()
     for item in steps:
         kind = item["kind"]
@@ -3000,6 +3018,8 @@ def _saved_execution_steps(batch):
 
 
 def _run_step(item, context):
+    if item["kind"] == "Note":
+        return None
     result = _module(item["kind"]).Run(copy.deepcopy(item["data"]), context)
     _status("{} [{}]: {}".format(item["name"], item["id"][:8], result))
     return result
