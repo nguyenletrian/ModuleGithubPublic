@@ -1,5 +1,6 @@
 """Create a live pole-vector locator from three joint world matrices."""
 import math
+import re
 
 import maya.cmds as cmds
 import NLTA_RetargetV2 as rt
@@ -9,7 +10,7 @@ LABEL = "Pole Vector"
 
 def DefaultSetting():
     return {"source_role": "Anim", "start": "", "middle": "", "end": "",
-            "name": "", "distance_ratio": 1.0}
+            "name": "", "distance_ratio": 1.0, "mirror": False}
 
 
 def Fields():
@@ -18,7 +19,8 @@ def Fields():
             ("Middle Joint", "middle", "pick"),
             ("End Joint", "end", "pick"),
             ("Locator Name", "name", "text"),
-            ("Distance Ratio", "distance_ratio", "float")]
+            ("Distance Ratio", "distance_ratio", "float"),
+            ("Mirror", "mirror", "bool")]
 
 
 def namespaceForRole(role, context):
@@ -159,6 +161,25 @@ def createPoleVector(start, middle, end, name, ratio):
     return locator, created
 
 
+def mirrorName(name):
+    """Swap explicit side tokens without changing unrelated letters."""
+    swaps = {"L": "R", "R": "L", "l": "r", "r": "l",
+             "Left": "Right", "Right": "Left",
+             "left": "right", "right": "left",
+             "LEFT": "RIGHT", "RIGHT": "LEFT"}
+    patterns = (
+        r"(?<=FBXASC032)[LR](?=FBXASC032)",
+        r"(?<![A-Za-z0-9])(?:Left|Right|left|right|LEFT|RIGHT|L|R|l|r)(?![A-Za-z0-9])",
+        r"^(?:Left|Right)(?=[A-Z0-9])",
+        r"(?:Left|Right)$",
+    )
+    for pattern in patterns:
+        mirrored, count = re.subn(pattern, lambda match: swaps[match.group()], name)
+        if count:
+            return mirrored
+    return name
+
+
 def Run(settings, context):
     data = dict(DefaultSetting(), **settings)
     namespace = namespaceForRole(data["source_role"], context)
@@ -171,11 +192,33 @@ def Run(settings, context):
     name = str(data["name"] or "").strip() or rt.leaf(joints[1]) + "_PoleVector"
     if any(character in name for character in "|:. "):
         raise ValueError("Enter a locator name without namespace or DAG path.")
-    qualified = ":" + namespace + ":" + name
-    if cmds.objExists(qualified):
-        raise ValueError("Pole Vector already exists: " + qualified)
-    locator, nodes = createPoleVector(*joints, qualified, ratio)
-    result = {"locator": locator, "joints": joints, "nodes": nodes,
-              "distance_ratio": ratio}
-    context.setdefault("pole_vectors", []).append(result)
+    chains = [(joints, name)]
+    if data["mirror"]:
+        names = [rt.leaf(joint) for joint in joints]
+        opposite_names = [mirrorName(joint) for joint in names]
+        if any(a == b for a, b in zip(names, opposite_names)):
+            raise ValueError("Pole Vector Mirror needs a side token on all three joints.")
+        opposite = [resolveJoint(namespace, joint) for joint in opposite_names]
+        if len(set(opposite)) != 3 or set(opposite) & set(joints):
+            raise ValueError("Pole Vector Mirror needs three distinct opposite-side joints.")
+        opposite_name = mirrorName(name)
+        if opposite_name == name:
+            opposite_name = name + "_" + rt.leaf(opposite[1])
+        chains.append((opposite, opposite_name))
+
+    # Resolve and check both sides before creating either network.
+    for _, locator_name in chains:
+        qualified = ":" + namespace + ":" + locator_name
+        if cmds.objExists(qualified):
+            raise ValueError("Pole Vector already exists: " + qualified)
+
+    results = []
+    for chain, locator_name in chains:
+        locator, nodes = createPoleVector(*chain, ":" + namespace + ":" + locator_name, ratio)
+        results.append({"locator": locator, "joints": chain, "nodes": nodes,
+                        "distance_ratio": ratio})
+    context.setdefault("pole_vectors", []).extend(results)
+    result = dict(results[0])
+    if data["mirror"]:
+        result["mirror"] = results[1]
     return result
