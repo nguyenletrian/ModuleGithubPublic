@@ -95,10 +95,13 @@ def BuildCreateRef(datas):
     for item in datas:
         objects = item["objects"].split("\n")
         for obj in objects:
-            # Match the reference group before parenting it.
-            group = cmds.group(empty=True, name=obj + "_Ref")
-            cmds.matchTransform(group, obj)
-            parent = item["parent"] or (cmds.listRelatives(obj, parent=True, fullPath=True) or [None])[0]
+            # Constraint references match the driven object, not the constraint node.
+            source = obj
+            if cmds.nodeType(obj) in ("parentConstraint", "pointConstraint", "orientConstraint"):
+                source = cmds.listConnections(obj + ".constraintParentInverseMatrix", source=True, destination=False)[0]
+            group = cmds.group(empty=True, name=obj.rsplit("|", 1)[-1] + "_Ref")
+            cmds.matchTransform(group, source)
+            parent = item["parent"] or (cmds.listRelatives(source, parent=True, fullPath=True) or [None])[0]
             if parent:
                 cmds.parent(group, parent)
 
