@@ -30,6 +30,8 @@ def Load(data,listUI,*arr):
         for child in children:
             if cmds.control(child, exists=True):
                 cmds.deleteUI(child)        
+        ITEMS["items"].clear()
+        ITEMS["order"].clear()
         itemDatas = NLTA_General.readJsonFile(path)
         if itemDatas:
             for i in range(len(itemDatas)):
@@ -169,7 +171,7 @@ def Add(listUI,data,*arr):
 
     cmds.setParent("..") #--
 
-    
+    cmds.button(label="Delete", w=375, bgc=(0.5, 0.2, 0.2), c=partial(Delete, itemUI))
     cmds.separator(height=10, style='none')
 
     cmds.setParent("..")    
