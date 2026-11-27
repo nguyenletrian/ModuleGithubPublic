@@ -223,16 +223,21 @@ def createBlend(driverObject, driverAttr, driverMin, driverMax, driverDefault, d
     # Capture all rest poses before changing any constraint weights.
     rests = []
     for constraint in drivens:
-        command = getattr(cmds, cmds.nodeType(constraint))
+        kind = cmds.nodeType(constraint)
+        command = getattr(cmds, kind)
         driven = cmds.listConnections(constraint + ".constraintParentInverseMatrix", source=True, destination=False)[0]
         original = command(constraint, query=True, weightAliasList=True)[0]
+        originalTarget = command(constraint, query=True, targetList=True)[0]
         matrix = cmds.xform(driven, query=True, worldSpace=True, matrix=True)
         parents = cmds.listRelatives(driven, parent=True, fullPath=True) or []
         restName = constraint.rsplit("|", 1)[-1] + "_Rest"
         rest = cmds.createNode("transform", name=restName, parent=parents[0]) if parents else cmds.createNode("transform", name=restName)
         rest = cmds.ls(rest, long=True)[0]
+        cmds.setAttr(rest + ".rotateOrder", cmds.getAttr(originalTarget + ".rotateOrder"))
         cmds.xform(rest, worldSpace=True, matrix=matrix)
-        rests.append((constraint, driven, command, original, rest))
+        # Match the original target axes without moving the rest position.
+        cmds.matchTransform(rest, originalTarget, rotation=True, position=False, scale=False)
+        rests.append((constraint, driven, kind, command, original, rest))
 
     name = driverObject.rsplit("|", 1)[-1].replace(":", "_") + "_" + driverAttr.replace(".", "_").replace("[", "_").replace("]", "") + "_RangeBlend"
     blend = cmds.createNode("remapValue", name=name)
@@ -250,9 +255,12 @@ def createBlend(driverObject, driverAttr, driverMin, driverMax, driverDefault, d
     reverse = cmds.createNode("reverse", name=name + "_Reverse")
     cmds.connectAttr(blend + ".outValue", reverse + ".inputX")
 
-    for constraint, driven, command, original, rest in rests:
-        # Add the neutral target to the existing constraint.
-        command(rest, driven, weight=0)
+    for constraint, driven, kind, command, original, rest in rests:
+        # Parent constraints have a separate offset for each target.
+        if kind == "parentConstraint":
+            command(rest, driven, weight=0, maintainOffset=True)
+        else:
+            command(rest, driven, weight=0)
         restAlias = next(alias for alias in command(constraint, query=True, weightAliasList=True) if alias != original)
         cmds.connectAttr(blend + ".outValue", constraint + "." + original, force=True)
         cmds.connectAttr(reverse + ".outputX", constraint + "." + restAlias)
