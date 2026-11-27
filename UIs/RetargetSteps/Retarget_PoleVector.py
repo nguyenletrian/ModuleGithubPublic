@@ -8,19 +8,27 @@ import NLTA_RetargetV2 as rt
 LABEL = "Pole Vector"
 
 
+def ItemData(data=None):
+    defaults = {"source_role": "Anim", "start": "", "middle": "", "end": "",
+                "name": "", "distance_ratio": 1.0, "mirror": False}
+    data = data or {}
+    defaults.update({key: data[key] for key in defaults if key in data})
+    return defaults
+
+
 def DefaultSetting():
-    return {"source_role": "Anim", "start": "", "middle": "", "end": "",
-            "name": "", "distance_ratio": 1.0, "mirror": False}
+    return {"items": [ItemData()]}
+
+
+def NormalizeSettings(settings):
+    if "items" in settings:
+        return {"items": [ItemData(item) for item in settings["items"]]}
+    # Migrate the old single-chain JSON without losing its settings.
+    return {"items": [ItemData(settings)]}
 
 
 def Fields():
-    return [("Namespace", "source_role", "choice", ("Rig", "Anim", "REF")),
-            ("Start Joint", "start", "pick"),
-            ("Middle Joint", "middle", "pick"),
-            ("End Joint", "end", "pick"),
-            ("Locator Name", "name", "text"),
-            ("Distance Ratio", "distance_ratio", "float"),
-            ("Mirror", "mirror", "bool")]
+    return [("Pole Vectors", "items", "pole_vector_items")]
 
 
 def namespaceForRole(role, context):
@@ -180,8 +188,7 @@ def mirrorName(name):
     return name
 
 
-def Run(settings, context):
-    data = dict(DefaultSetting(), **settings)
+def prepareItem(data, context):
     namespace = namespaceForRole(data["source_role"], context)
     joints = [resolveJoint(namespace, data[key]) for key in ("start", "middle", "end")]
     if len(set(joints)) != 3:
@@ -206,19 +213,32 @@ def Run(settings, context):
             opposite_name = name + "_" + rt.leaf(opposite[1])
         chains.append((opposite, opposite_name))
 
-    # Resolve and check both sides before creating either network.
-    for _, locator_name in chains:
-        qualified = ":" + namespace + ":" + locator_name
-        if cmds.objExists(qualified):
-            raise ValueError("Pole Vector already exists: " + qualified)
+    return [(chain, ":" + namespace + ":" + locator_name, ratio)
+            for chain, locator_name in chains]
 
-    results = []
-    for chain, locator_name in chains:
-        locator, nodes = createPoleVector(*chain, ":" + namespace + ":" + locator_name, ratio)
-        results.append({"locator": locator, "joints": chain, "nodes": nodes,
-                        "distance_ratio": ratio})
-    context.setdefault("pole_vectors", []).extend(results)
-    result = dict(results[0])
-    if data["mirror"]:
-        result["mirror"] = results[1]
-    return result
+
+def Run(settings, context):
+    prepared = [prepareItem(item, context)
+                for item in NormalizeSettings(settings)["items"]]
+    seen = set()
+    # Check all names, including mirrored names, before building any item.
+    for chains in prepared:
+        for _, name, _ in chains:
+            if name in seen or cmds.objExists(name):
+                raise ValueError("Pole Vector already exists or is duplicated: " + name)
+            seen.add(name)
+
+    items = []
+    for chains in prepared:
+        results = []
+        for chain, name, ratio in chains:
+            locator, nodes = createPoleVector(*chain, name, ratio)
+            results.append({"locator": locator, "joints": chain, "nodes": nodes,
+                            "distance_ratio": ratio})
+        context.setdefault("pole_vectors", []).extend(results)
+        result = dict(results[0])
+        if len(results) > 1:
+            result["mirror"] = results[1]
+        items.append(result)
+    # Preserve the previous return shape for a single item.
+    return items[0] if len(items) == 1 else {"items": items}
