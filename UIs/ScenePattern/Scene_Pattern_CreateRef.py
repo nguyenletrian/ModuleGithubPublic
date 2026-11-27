@@ -98,8 +98,9 @@ def BuildCreateRef(datas):
             # Match the reference group before parenting it.
             group = cmds.group(empty=True, name=obj + "_Ref")
             cmds.matchTransform(group, obj)
-            if item["parent"]:
-                cmds.parent(group, item["parent"])
+            parent = item["parent"] or (cmds.listRelatives(obj, parent=True, fullPath=True) or [None])[0]
+            if parent:
+                cmds.parent(group, parent)
 
 def Run(data, *args):
     """Build the saved pattern using the same function as ExportPython."""
