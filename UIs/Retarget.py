@@ -229,7 +229,7 @@ def _validate_entries(records):
         if not isinstance(settings, dict):
             raise ValueError("Invalid settings for step " + kind)
         defaults.update(settings)
-        if kind in ("Transform", "PoleVector", "CopyAttribute"):
+        if kind in ("Transform", "PoleVector", "CopyAttribute", "CreateJoint"):
             defaults = _module(kind).NormalizeSettings(settings)
         if kind == "Constraint":
             defaults = _module(kind).NormalizeSettings(defaults)
@@ -1522,67 +1522,18 @@ class RetargetCard(QtWidgets.QFrame):
             self._make_rotate_pairs(parent, value)
             self.widgets[key] = (kind, self.rotate_pair_rows)
             return
-        if kind == "create_joint":
-            data = _module("CreateJoint").JointData(value if isinstance(value, dict) else {})
-            fields = {}
-            matrix_row = QtWidgets.QHBoxLayout()
-            matrix_row.setSpacing(4)
-            matrix_field = QtWidgets.QLineEdit()
-            matrix_field.setReadOnly(True)
-            matrix_field.setMinimumWidth(0)
-            matrix_field.setPlaceholderText("World Matrix")
-            def show_matrix(values):
-                text = json.dumps(values, separators=(",", ":")) if values else ""
-                matrix_field.setText(text)
-                matrix_field.setToolTip(text or "Select an object and Pick Matrix")
-            show_matrix(data["matrix"])
-            def pick_matrix():
-                selected = cmds.ls(selection=True, long=True, objectsOnly=True) or []
-                if len(selected) != 1 or cmds.nodeType(selected[0]) not in ("transform", "joint"):
-                    raise ValueError("Select exactly one Maya transform or joint.")
-                show_matrix(cmds.xform(selected[0], query=True, worldSpace=True, matrix=True))
-            matrix_field.textChanged.connect(_queue_save)
-            matrix_pick = QtWidgets.QPushButton("Pick Matrix")
-            matrix_pick.clicked.connect(lambda checked=False: _safe(pick_matrix))
-            matrix_row.addWidget(matrix_field, 1)
-            matrix_row.addWidget(matrix_pick)
-            parent.addLayout(matrix_row)
-            fields["matrix"] = matrix_field
-
-            line = QtWidgets.QHBoxLayout()
-            line.setSpacing(4)
-            role = QtWidgets.QComboBox()
-            role.addItems(["Rig", "Anim", "REF"])
-            role.setCurrentText(data["parent_role"])
-            role.currentIndexChanged.connect(_queue_save)
-            field = QtWidgets.QLineEdit(data["parent"])
-            field.setMinimumWidth(0)
-            field.setPlaceholderText("Parent")
-            field.textChanged.connect(_queue_save)
-            pick = QtWidgets.QPushButton("Pick")
-            pick.setFixedWidth(44)
-            pick.clicked.connect(lambda checked=False: _safe(
-                lambda: _pick_pair_object(field, role)))
-            line.addWidget(role)
-            line.addWidget(field, 1)
-            line.addWidget(pick)
-            parent.addLayout(line)
-            fields["parent_role"] = role
-            fields["parent"] = field
-
-            name = QtWidgets.QLineEdit(data["name"])
-            name.setMinimumWidth(0)
-            name.setToolTip("Leave empty to use ParentName_extraJoint")
-            def update_placeholder(*args):
-                parent_name = rt.leaf(fields["parent"].text().strip())
-                name.setPlaceholderText(parent_name + "_extraJoint" if parent_name
-                                        else "Name (ParentName_extraJoint)")
-            fields["parent"].textChanged.connect(update_placeholder)
-            name.textChanged.connect(_queue_save)
-            update_placeholder()
-            parent.addWidget(name)
-            fields["name"] = name
-            self.widgets[key] = (kind, fields)
+        if kind == "create_joint_items":
+            self.create_joint_rows = []
+            self.create_joint_list = QtWidgets.QVBoxLayout()
+            self.create_joint_list.setSpacing(4)
+            data = _module("CreateJoint").NormalizeSettings(_get_step(self.identifier)["data"])
+            for item in data["items"]:
+                self._add_create_joint_item(item)
+            parent.addLayout(self.create_joint_list)
+            add = QtWidgets.QPushButton("+ Add Item")
+            add.clicked.connect(lambda checked=False: self._add_create_joint_item())
+            parent.addWidget(add)
+            self.widgets[key] = (kind, self.create_joint_rows)
             return
         if kind == "set_values":
             self._make_set_values(parent, value)
@@ -1847,6 +1798,93 @@ class RetargetCard(QtWidgets.QFrame):
     def _remove_copy_attribute(self, row):
         self.copy_attribute_rows.remove(row)
         self.copy_attribute_list.removeWidget(row["frame"])
+        row["frame"].deleteLater()
+        _queue_save()
+
+    def _add_create_joint_item(self, data=None):
+        data = _module("CreateJoint").JointData(data or {})
+        frame = QtWidgets.QFrame(self.details)
+        frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        parent = QtWidgets.QVBoxLayout(frame)
+        parent.setContentsMargins(4, 3, 4, 3)
+        parent.setSpacing(3)
+        fields = {"frame": frame}
+        matrix_row = QtWidgets.QHBoxLayout()
+        matrix_row.setSpacing(4)
+        matrix_field = QtWidgets.QLineEdit()
+        matrix_field.setReadOnly(True)
+        matrix_field.setMinimumWidth(0)
+        matrix_field.setPlaceholderText("World Matrix")
+        def show_matrix(values):
+            text = json.dumps(values, separators=(",", ":")) if values else ""
+            matrix_field.setText(text)
+            matrix_field.setToolTip(text or "Select an object and Pick Matrix")
+        show_matrix(data["matrix"])
+        def pick_matrix():
+            selected = cmds.ls(selection=True, long=True, objectsOnly=True) or []
+            if len(selected) != 1 or cmds.nodeType(selected[0]) not in ("transform", "joint"):
+                raise ValueError("Select exactly one Maya transform or joint.")
+            show_matrix(cmds.xform(selected[0], query=True, worldSpace=True, matrix=True))
+        matrix_field.textChanged.connect(_queue_save)
+        matrix_pick = QtWidgets.QPushButton("Pick Matrix")
+        matrix_pick.clicked.connect(lambda checked=False: _safe(pick_matrix))
+        matrix_row.addWidget(matrix_field, 1)
+        matrix_row.addWidget(matrix_pick)
+        parent.addLayout(matrix_row)
+        fields["matrix"] = matrix_field
+
+        line = QtWidgets.QHBoxLayout()
+        line.setSpacing(4)
+        role = QtWidgets.QComboBox()
+        role.addItems(["Rig", "Anim", "REF"])
+        role.setCurrentText(data["parent_role"])
+        role.currentIndexChanged.connect(_queue_save)
+        field = QtWidgets.QLineEdit(data["parent"])
+        field.setMinimumWidth(0)
+        field.setPlaceholderText("Parent")
+        field.textChanged.connect(_queue_save)
+        pick = QtWidgets.QPushButton("Pick")
+        pick.setFixedWidth(44)
+        pick.clicked.connect(lambda checked=False: _safe(
+            lambda: _pick_pair_object(field, role)))
+        line.addWidget(role)
+        line.addWidget(field, 1)
+        line.addWidget(pick)
+        parent.addLayout(line)
+        fields["parent_role"] = role
+        fields["parent"] = field
+
+        name = QtWidgets.QLineEdit(data["name"])
+        name.setMinimumWidth(0)
+        name.setToolTip("Leave empty to use ParentName_extraJoint")
+        def update_placeholder(*args):
+            parent_name = rt.leaf(fields["parent"].text().strip())
+            name.setPlaceholderText(parent_name + "_extraJoint" if parent_name
+                                    else "Name (ParentName_extraJoint)")
+        fields["parent"].textChanged.connect(update_placeholder)
+        name.textChanged.connect(_queue_save)
+        update_placeholder()
+        options = QtWidgets.QHBoxLayout()
+        options.setSpacing(4)
+        options.addWidget(name, 1)
+        mirror = QtWidgets.QCheckBox("Mirror")
+        mirror.setToolTip("Mirror world matrix across YZ and swap L/R parent and joint names")
+        mirror.setChecked(data["mirror"])
+        mirror.toggled.connect(_queue_save)
+        options.addWidget(mirror)
+        delete = QtWidgets.QPushButton("X")
+        delete.setFixedWidth(24)
+        options.addWidget(delete)
+        parent.addLayout(options)
+        fields.update(name=name, mirror=mirror)
+        self.create_joint_rows.append(fields)
+        self.create_joint_list.addWidget(frame)
+        delete.clicked.connect(lambda checked=False: self._remove_create_joint_item(fields))
+        _queue_save()
+
+    def _remove_create_joint_item(self, row):
+        self.create_joint_rows.remove(row)
+        self.create_joint_list.removeWidget(row["frame"])
         row["frame"].deleteLater()
         _queue_save()
 
@@ -2465,12 +2503,12 @@ class RetargetCard(QtWidgets.QFrame):
                 continue
             if kind == "pairs":
                 value = self._pairs()
-            elif kind == "create_joint":
-                value = {"matrix": json.loads(widget["matrix"].text())
-                                   if widget["matrix"].text() else [],
-                         "parent_role": widget["parent_role"].currentText(),
-                         "parent": widget["parent"].text().strip(),
-                         "name": widget["name"].text().strip()}
+            elif kind == "create_joint_items":
+                value = [{"matrix": json.loads(row["matrix"].text()) if row["matrix"].text() else [],
+                          "parent_role": row["parent_role"].currentText(),
+                          "parent": row["parent"].text().strip(),
+                          "name": row["name"].text().strip(),
+                          "mirror": row["mirror"].isChecked()} for row in widget]
             elif kind == "constraint_pairs":
                 value = [
                     dict({key: row[key].text().strip() for key in ("from", "to")},
@@ -2549,7 +2587,7 @@ class RetargetCard(QtWidgets.QFrame):
             values[key] = value
         if self.kind == "Bake":
             values = _module("Bake").NormalizeSettings(values)
-        elif self.kind in ("SetValue", "Transform", "PoleVector"):
+        elif self.kind in ("SetValue", "Transform", "PoleVector", "CreateJoint"):
             values = {"items": values.get("items", [])}
         elif self.kind == "MatchRotatePair":
             values = {"pairs": values.get("pairs", [])}
