@@ -177,19 +177,6 @@ def Form(data, *args):
     Load(data, listUI)
 
 
-def offsetGroup(child, name):
-    # Preserve the child's world pose while inserting its offset group.
-    world_matrix = cmds.xform(child, query=True, worldSpace=True, matrix=True)
-    parents = cmds.listRelatives(child, parent=True, fullPath=True) or []
-    offset = cmds.createNode('transform', name=name)
-    if parents:
-        offset = cmds.parent(offset, parents[0])[0]
-    cmds.xform(offset, worldSpace=True, matrix=world_matrix)
-    child = cmds.parent(child, offset, absolute=True)[0]
-    return offset, child
-
-
-
 def createRivet(face, child, parent, copy_transform, constraintCommand):
     mesh_shape, instance, edges = faceEdges(face)
     short_child = child.rsplit("|", 1)[-1].replace(":", "_") if child else face.rsplit("|", 1)[-1].replace(":", "_").replace(".f[", "_Face").replace("]", "")
@@ -240,7 +227,14 @@ def createRivet(face, child, parent, copy_transform, constraintCommand):
     rest = None
     # Blend rivet motion and rest with AutoFollow.
     if child:
-        offset, child = offsetGroup(child, offset_name)
+        # Preserve the child's world pose while inserting its offset group.
+        world_matrix = cmds.xform(child, query=True, worldSpace=True, matrix=True)
+        parents = cmds.listRelatives(child, parent=True, fullPath=True) or []
+        offset = cmds.createNode('transform', name=offset_name)
+        if parents:
+            offset = cmds.parent(offset, parents[0])[0]
+        cmds.xform(offset, worldSpace=True, matrix=world_matrix)
+        child = cmds.parent(child, offset, absolute=True)[0]
         constraint, rest = connectRivetFollow(loc, offset, child, name, constraintCommand)
 
     cmds.setAttr(loc + '.visibility', 0)
@@ -260,17 +254,14 @@ def rivetArguments(info):
 def BuildRigRivet(datas):
     arguments = [rivetArguments(info) for info in datas]
     faces = [validateFace(face) for face, _, _, _, _ in arguments]
-    return [createRivet(face, child, parent, copy_transform, getattr(cmds, command))
+    commands = {"parentConstraint": cmds.parentConstraint, "pointConstraint": cmds.pointConstraint, "orientConstraint": cmds.orientConstraint}
+    return [createRivet(face, child, parent, copy_transform, commands[command])
             for face, (_, child, parent, copy_transform, command) in zip(faces, arguments)]
 
 
 def buildScript(datas):
-    functions = (connectRivetFollow,)
-    helpers = "\n\n".join(inspect.getsource(fn).rstrip() for fn in functions)
+    helpers = inspect.getsource(connectRivetFollow).rstrip()
     body = inspect.getsource(createRivet).split("\n", 1)[1].rstrip().rsplit("\n", 1)[0]
-    offsetBody = inspect.getsource(offsetGroup).split("\n", 1)[1].rstrip().rsplit("\n", 1)[0]
-    offsetBody = offsetBody.replace("name=name)", "name=offset_name)")
-    body = body.replace("        offset, child = offsetGroup(child, offset_name)", "\n".join("    " + line for line in offsetBody.splitlines()))
     faceBody = inspect.getsource(faceEdges).split("\n", 1)[1].rstrip()
     faceBody = faceBody.replace("return dag.fullPathName()", "mesh_shape, instance, edges = dag.fullPathName()")
     body = body.replace("    mesh_shape, instance, edges = faceEdges(face)", faceBody)
@@ -279,8 +270,9 @@ def buildScript(datas):
     body = "\n".join("    " + line if line.strip() else "" for line in body.splitlines())
     source = ("def main():\n    import maya.cmds as cmds\n    import maya.api.OpenMaya as om\n\n"
               + "    RIVET_DATA = [\n" + data + "\n    ]\n\n" + helpers + "\n\n"
+              + '    commands = {"parentConstraint": cmds.parentConstraint, "pointConstraint": cmds.pointConstraint, "orientConstraint": cmds.orientConstraint}\n\n'
               + "    for face, child, parent, copy_transform, command in RIVET_DATA:\n"
-              + "        constraintCommand = getattr(cmds, command)\n" + body
+              + "        constraintCommand = commands[command]\n" + body
               + '\n\nif __name__ == "__main__":\n    main()\n')
     compile(source, "Python_Scene_Pattern_RigRivetFromFace.py", "exec")
     return source
