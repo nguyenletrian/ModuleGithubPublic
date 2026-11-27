@@ -225,7 +225,7 @@ def _validate_entries(records):
         if not isinstance(settings, dict):
             raise ValueError("Invalid settings for step " + kind)
         defaults.update(settings)
-        if kind == "Transform":
+        if kind in ("Transform", "PoleVector"):
             defaults = _module(kind).NormalizeSettings(settings)
         if kind == "Constraint":
             defaults = _module(kind).NormalizeSettings(defaults)
@@ -1039,7 +1039,7 @@ def _mapping_item(pair):
 
 def _module_field_columns(kind, descriptors):
     """Partition UI fields without changing their keys or JSON values."""
-    if kind in ("SetValue", "Transform", "MatchRotatePair", "MatchRotate", "MatchTransform", "Constraint", "Connect", "Bake", "Clean", "CleanAnimation"):
+    if kind in ("SetValue", "Transform", "PoleVector", "MatchRotatePair", "MatchRotate", "MatchTransform", "Constraint", "Connect", "Bake", "Clean", "CleanAnimation"):
         return "", [], "", [], descriptors
     paired = {
         "ScaleFromObjectDistance": (("source_role", "vertex1", "vertex2"),
@@ -1048,8 +1048,6 @@ def _module_field_columns(kind, descriptors):
         "Scale": (("source_role", "old_low", "old_high"),
                   ("target_role", "new_low", "new_high"),
                   "Scale Ref", "Scale Object"),
-        "PoleVector": (("source_role", "start", "middle", "end"),
-                       ("name", "distance_ratio", "mirror"), "Joint Chain", "Pole Vector"),
         "OffsetPosition": (("ref_role", "ref_root", "ref_object"),
                            ("affect_role", "affect_root", "affect_object"),
                            "Ref", "Affect"),
@@ -1401,6 +1399,18 @@ class RetargetCard(QtWidgets.QFrame):
             self.widgets["namespace_role"] = ("choice", target)
             self.widgets["range_role"] = ("choice", source)
             self.widgets["range_object"] = ("text", field)
+            return
+        if kind == "pole_vector_items":
+            self.pole_rows = []
+            self.pole_list = QtWidgets.QVBoxLayout()
+            self.pole_list.setSpacing(5)
+            for item in value or []:
+                self._add_pole_item(item)
+            parent.addLayout(self.pole_list)
+            add = QtWidgets.QPushButton("+ Add Item")
+            add.clicked.connect(lambda checked=False: self._add_pole_item())
+            parent.addWidget(add)
+            self.widgets[key] = (kind, self.pole_rows)
             return
         if kind == "transform_items":
             self.transform_rows = []
@@ -1759,6 +1769,65 @@ class RetargetCard(QtWidgets.QFrame):
             row.addWidget(button)
         parent.addLayout(row)
         self.widgets[key] = (kind, widget)
+
+    def _add_pole_item(self, data=None):
+        data = _module("PoleVector").ItemData(data)
+        frame = QtWidgets.QFrame(self.details)
+        frame.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        grid = QtWidgets.QGridLayout(frame)
+        grid.setContentsMargins(5, 4, 5, 4)
+        grid.setSpacing(4)
+        role = QtWidgets.QComboBox()
+        role.addItems(["Rig", "Anim", "REF"])
+        role.setCurrentText(data["source_role"])
+        role.currentIndexChanged.connect(_queue_save)
+        grid.addWidget(role, 0, 0, 1, 2)
+        mirror = QtWidgets.QCheckBox("Mirror")
+        mirror.setChecked(bool(data["mirror"]))
+        mirror.toggled.connect(_queue_save)
+        grid.addWidget(mirror, 0, 2)
+        delete = QtWidgets.QPushButton("X")
+        delete.setFixedWidth(24)
+        grid.addWidget(delete, 0, 3)
+        row = {"frame": frame, "source_role": role, "mirror": mirror}
+        for index, (key, label) in enumerate(
+                (("start", "Start Joint"), ("middle", "Middle Joint"), ("end", "End Joint")), 1):
+            field = QtWidgets.QLineEdit(data[key])
+            field.setPlaceholderText(label)
+            field.setMinimumWidth(0)
+            field.textChanged.connect(_queue_save)
+            pick = QtWidgets.QPushButton("Pick")
+            pick.setFixedWidth(40)
+            pick.clicked.connect(lambda checked=False, f=field, r=role:
+                                 _safe(lambda: _pick_constraint_object(f, r)))
+            grid.addWidget(field, index, 0)
+            grid.addWidget(pick, index, 1)
+            row[key] = field
+        name = QtWidgets.QLineEdit(data["name"])
+        name.setPlaceholderText("Locator Name (optional)")
+        name.setMinimumWidth(0)
+        name.textChanged.connect(_queue_save)
+        grid.addWidget(name, 1, 2, 1, 2)
+        ratio = QtWidgets.QDoubleSpinBox()
+        ratio.setDecimals(5)
+        ratio.setRange(0.00001, 100000.0)
+        ratio.setValue(float(data["distance_ratio"]))
+        ratio.valueChanged.connect(_queue_save)
+        grid.addWidget(QtWidgets.QLabel("Distance Ratio"), 2, 2, 1, 2)
+        grid.addWidget(ratio, 3, 2, 1, 2)
+        grid.setColumnStretch(0, 2)
+        grid.setColumnStretch(2, 1)
+        row.update(name=name, distance_ratio=ratio)
+        self.pole_rows.append(row)
+        self.pole_list.addWidget(frame)
+        delete.clicked.connect(lambda checked=False: self._remove_pole_item(row))
+        _queue_save()
+
+    def _remove_pole_item(self, row):
+        self.pole_rows.remove(row)
+        self.pole_list.removeWidget(row["frame"])
+        row["frame"].deleteLater()
+        _queue_save()
 
     def _add_transform_item(self, data=None):
         data = _module("Transform").ItemData(data or {})
@@ -2344,6 +2413,12 @@ class RetargetCard(QtWidgets.QFrame):
                 value = widget.toPlainText()
             elif kind in ("int", "float"):
                 value = widget.value()
+            elif kind == "pole_vector_items":
+                value = [dict({key: row[key].text().strip()
+                               for key in ("start", "middle", "end", "name")},
+                              source_role=row["source_role"].currentText(),
+                              distance_ratio=row["distance_ratio"].value(),
+                              mirror=row["mirror"].isChecked()) for row in widget]
             elif kind == "transform_items":
                 value = [
                     {"source": row["source"].currentText(),
@@ -2377,7 +2452,7 @@ class RetargetCard(QtWidgets.QFrame):
             values[key] = value
         if self.kind == "Bake":
             values = _module("Bake").NormalizeSettings(values)
-        elif self.kind in ("SetValue", "Transform"):
+        elif self.kind in ("SetValue", "Transform", "PoleVector"):
             values = {"items": values.get("items", [])}
         elif self.kind == "MatchRotatePair":
             values = {"pairs": values.get("pairs", [])}
