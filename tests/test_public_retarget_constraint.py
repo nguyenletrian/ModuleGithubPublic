@@ -1,6 +1,7 @@
 """Offline contracts for REF-aligned live retarget constraints."""
 import ast
 import re
+from itertools import permutations, product
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,7 +32,8 @@ class ConstraintTests(unittest.TestCase):
         self.assertEqual((pair["translate"], pair["rotate"], pair["scale"]),
                          (False, True, False))
         self.assertFalse(pair["mirror"])
-        self.assertTrue(settings["maintain_offset"])
+        self.assertNotIn("maintain_offset", settings)
+        self.assertTrue(pair["maintain_offset"])
         self.assertTrue(settings["use_extra_joint"])
 
     def test_recover_pairs_saved_in_wrong_namespace_key(self):
@@ -42,8 +44,11 @@ class ConstraintTests(unittest.TestCase):
         fixed = normalize({"from_role": "Anim", "to_role": edited, "pairs": stale})
         self.assertEqual(fixed["from_role"], "Anim")
         self.assertEqual(fixed["to_role"], "Rig")
-        self.assertTrue(fixed["maintain_offset"])
-        self.assertFalse(normalize({"maintain_offset": False})["maintain_offset"])
+        self.assertNotIn("maintain_offset", fixed)
+        self.assertTrue(fixed["pairs"][0]["maintain_offset"])
+        self.assertFalse(normalize({"maintain_offset": False})["pairs"][0]["maintain_offset"])
+        mixed = normalize({"maintain_offset": False, "pairs": [{}, {"maintain_offset": True}]})
+        self.assertEqual([row["maintain_offset"] for row in mixed["pairs"]], [False, True])
         self.assertTrue(fixed["use_extra_joint"])
         self.assertFalse(normalize({"use_extra_joint": False})["use_extra_joint"])
         for source in ("Rig", "Anim", "REF"):
@@ -172,12 +177,14 @@ class ConstraintTests(unittest.TestCase):
         context = {"reference_pose_namespace": "REF", "target_namespace": "Rig"}
         result = env["Run"]({"pairs": [
             {"from": "Hand", "to": "HandFK"},
-            {"from": "Finger", "to": "FingerFK"},
+            {"from": "Finger", "to": "FingerFK", "maintain_offset": False},
             {"from": "", "to": "", "rotate": False}]}, context)
         self.assertEqual(events[:2], [
             ("extra", "REF:Hand", "Rig:HandFK", True),
-            ("extra", "REF:Finger", "Rig:FingerFK", True)])
+            ("extra", "REF:Finger", "Rig:FingerFK", False)])
         self.assertEqual(events[2], ("constraint", "REF:Hand|extra", "Rig:HandFK", True))
+        self.assertEqual(events[3], ("constraint", "REF:Finger|extra", "Rig:FingerFK", False))
+        self.assertEqual([entry["maintain_offset"] for entry in context["constraint_pairs"]], [True, False])
         self.assertEqual(context["constraint_pairs"][0]["source"], "REF:Hand")
         self.assertEqual(context["constraint_pairs"][0]["source_role"], "REF")
         self.assertEqual(result["pairs"], 2)
@@ -307,11 +314,12 @@ class ConstraintTests(unittest.TestCase):
         expand = env["_expand_pairs"]
         right = {"from": "Bip001FBXASC032RFBXASC032Hand",
                  "to": "R_Hand_FK", "mirror": True,
-                 "translate": True, "rotate": False, "scale": True}
+                 "translate": True, "rotate": False, "scale": True, "maintain_offset": False}
         pairs = expand([right])
         self.assertEqual(len(pairs), 2)
         self.assertEqual(pairs[1]["from"], "Bip001FBXASC032LFBXASC032Hand")
         self.assertEqual(pairs[1]["to"], "L_Hand_FK")
+        self.assertFalse(pairs[1]["maintain_offset"])
         self.assertEqual((pairs[1]["translate"], pairs[1]["rotate"], pairs[1]["scale"]),
                          (True, False, True))
         explicit = {"from": "CustomLeft", "to": "L_Hand_FK", "mirror": True}
@@ -339,6 +347,7 @@ class ConstraintTests(unittest.TestCase):
                     calls.append(("parent", joint, source, kw))
                     return [parent + "|" + name]
                 env = scope("_build_extra",
+                            mapJointAxes=lambda joint, target: calls.append(("mapAxes", joint, target)),
                             rt=SimpleNamespace(leaf=lambda node: node.split(":")[-1]),
                             cmds=SimpleNamespace(createNode=create,
                                 setAttr=lambda *args: calls.append(("setAttr", *args)),
@@ -354,6 +363,8 @@ class ConstraintTests(unittest.TestCase):
                     ("setAttr", name + ".segmentScaleCompensate", False),
                     ("parentConstraint", match, name, {"maintainOffset": False}),
                     ("delete", ["parentConstraint_temp"])]
+                if not maintain:
+                    expected.append(("mapAxes", name, target))
                 if scale:
                     expected.extend([
                         ("scaleConstraint", match, name, {"maintainOffset": False}),
@@ -363,6 +374,20 @@ class ConstraintTests(unittest.TestCase):
                                  {"apply": True, "translate": False, "rotate": True, "scale": False}))
                 self.assertEqual(calls, expected)
                 self.assertEqual(joint, parent + "|" + name)
+
+
+    def test_axis_mapping_preserves_source_basis_and_right_handedness(self):
+        env = scope("mapAxes", permutations=permutations, product=product)
+        map_axes = env["mapAxes"]
+        source = [[0.8, 0.6, 0.0], [-0.6, 0.8, 0.0], [0.0, 0.0, 1.0]]
+        target = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]
+        expected = [[0.6, -0.8, 0.0], [0.8, 0.6, 0.0], [0.0, 0.0, 1.0]]
+        self.assertEqual(map_axes(source, target), expected)
+        self.assertEqual(map_axes(source, source), source)
+        mirrored = map_axes(source, [[-v for v in source[0]], source[1], source[2]])
+        determinant = sum(mirrored[0][i] * (mirrored[1][(i+1)%3] * mirrored[2][(i+2)%3]
+                         - mirrored[1][(i+2)%3] * mirrored[2][(i+1)%3]) for i in range(3))
+        self.assertAlmostEqual(determinant, 1.0)
 
 
 if __name__ == "__main__":
