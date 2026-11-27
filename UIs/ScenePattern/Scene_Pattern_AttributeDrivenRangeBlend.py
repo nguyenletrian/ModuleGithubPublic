@@ -30,7 +30,8 @@ def _data_path(data):
 
 def normalizeItem(item):
     result = {key: item.get(key, "") for key in ("driverObject", "driverAttr", "driverMin", "driverMax", "driverDefault")}
-    result["drivens"] = [{"constraint": sub.get("constraint", "")} for sub in item.get("drivens", [{"constraint": item.get("constraint", "")}])]
+    result["drivens"] = [{"constraint": sub.get("constraint", ""), "restParent": sub.get("restParent", "") or ""}
+                         for sub in item.get("drivens", [{"constraint": item.get("constraint", ""), "restParent": item.get("restParent", "")}])]
     return result
 
 
@@ -57,6 +58,17 @@ def _pick_object(field, *unused):
     selected = cmds.ls(selection=True, objectsOnly=True) or []
     if not selected:
         cmds.warning("Driven Range Blend: select an object")
+        return
+    cmds.textField(field, edit=True, text=selected[0])
+
+
+def pickRestParent(field, *unused):
+    selected = cmds.ls(selection=True, long=True, objectsOnly=True) or []
+    if not selected:
+        cmds.textField(field, edit=True, text="")
+        return
+    if len(selected) != 1 or cmds.nodeType(selected[0]) not in ("transform", "joint"):
+        cmds.warning("Driven Range Blend: select one Rest Parent transform.")
         return
     cmds.textField(field, edit=True, text=selected[0])
 
@@ -131,7 +143,7 @@ def _snapshot(row):
     fields = ("driverObject", "driverAttr", "driverMin", "driverMax", "driverDefault")
     item = {key: cmds.textField(row[key], query=True, text=True) for key in fields}
     item["drivens"] = [{key: cmds.textField(sub[key], query=True, text=True)
-                         for key in ("constraint",)} for sub in row["drivens"]]
+                         for key in ("constraint", "restParent")} for sub in row["drivens"]]
     return item
 
 
@@ -149,6 +161,7 @@ def AddDriven(row, item=None, *unused):
     layout = cmds.columnLayout(parent=row["drivenList"], adjustableColumn=True, rowSpacing=2)
     sub = {"layout": layout}
     sub["constraint"] = _picker_field(layout, "Constraint", item.get("constraint", ""), pickConstraint)
+    sub["restParent"] = _picker_field(layout, "Rest Parent (Optional)", item.get("restParent", ""), pickRestParent)
     cmds.button(parent=layout, label="Remove Driven", height=19, command=partial(removeDriven, row, sub))
     row["drivens"].append(sub)
     return sub
@@ -187,7 +200,7 @@ def _collect():
         for key in ("driverObject", "driverAttr"):
             item[key] = item[key].strip()
         item["drivens"] = [{key: value.strip() for key, value in sub.items()} for sub in item["drivens"]]
-        if not item["driverObject"] or not item["driverAttr"] or not item["drivens"] or any(not all(sub.values()) for sub in item["drivens"]):
+        if not item["driverObject"] or not item["driverAttr"] or not item["drivens"] or any(not sub["constraint"] for sub in item["drivens"]):
             raise ValueError("Driven Range Blend: complete the driver and select at least one constraint.")
         for key, default in (("driverMin", 0), ("driverMax", 1)):
             item[key] = float(item[key].strip() or default)
@@ -251,16 +264,16 @@ def createBlend(driverObject, driverAttr, driverMin, driverMax, driverDefault, d
 
     # Capture all rest poses before changing any constraint weights.
     rests = []
-    for constraint in drivens:
+    for constraint, restParent in drivens:
         kind = cmds.nodeType(constraint)
         command = getattr(cmds, kind)
         driven = cmds.listConnections(constraint + ".constraintParentInverseMatrix", source=True, destination=False)[0]
         original = command(constraint, query=True, weightAliasList=True)[0]
         originalTarget = command(constraint, query=True, targetList=True)[0]
         matrix = cmds.xform(driven, query=True, worldSpace=True, matrix=True)
-        parents = cmds.listRelatives(driven, parent=True, fullPath=True) or []
+        parent = restParent or (cmds.listRelatives(driven, parent=True, fullPath=True) or [None])[0]
         restName = constraint.rsplit("|", 1)[-1] + "_Rest"
-        rest = cmds.createNode("transform", name=restName, parent=parents[0]) if parents else cmds.createNode("transform", name=restName)
+        rest = cmds.createNode("transform", name=restName, parent=parent) if parent else cmds.createNode("transform", name=restName)
         rest = cmds.ls(rest, long=True)[0]
         cmds.setAttr(rest + ".rotateOrder", cmds.getAttr(originalTarget + ".rotateOrder"))
         # Remap axis labels, preserving the original rest basis and tilt.
@@ -305,7 +318,7 @@ def blendArguments(item):
     item = normalizeItem(item)
     return (item["driverObject"], item["driverAttr"], float(item["driverMin"]), float(item["driverMax"]),
             float(item["driverMin"] if item.get("driverDefault") in (None, "") else item["driverDefault"]),
-            [sub["constraint"] for sub in item["drivens"]])
+            [(sub["constraint"], sub["restParent"]) for sub in item["drivens"]])
 
 
 def validateItem(item, seen=None):
@@ -316,7 +329,7 @@ def validateItem(item, seen=None):
         raise ValueError("Driven Range Blend: invalid range.")
     if seen is None:
         seen = set()
-    for constraint in drivens:
+    for constraint, restParent in drivens:
         matches = cmds.ls(constraint, long=True) or []
         if len(matches) != 1 or cmds.nodeType(matches[0]) not in ("parentConstraint", "pointConstraint", "orientConstraint"):
             raise ValueError("Driven Range Blend: select one Parent, Point or Orient Constraint.")
@@ -330,6 +343,12 @@ def validateItem(item, seen=None):
         if len(driven) != 1:
             raise ValueError("Driven Range Blend: cannot resolve the constrained object.")
         driven = cmds.ls(driven[0], long=True)[0]
+        if restParent:
+            parents = cmds.ls(restParent, long=True) or []
+            if len(parents) != 1 or cmds.nodeType(parents[0]) not in ("transform", "joint"):
+                raise ValueError("Driven Range Blend: invalid Rest Parent: " + restParent)
+            if parents[0] == driven or parents[0].startswith(driven + "|"):
+                raise ValueError("Driven Range Blend: Rest Parent cannot be the driven object or its descendant: " + restParent)
         constraints = cmds.listConnections(driven + ".parentInverseMatrix[0]", source=False, destination=True, type=kind) or []
         if set(cmds.ls(constraints, long=True) or []) != {constraint}:
             raise ValueError("Driven Range Blend: ambiguous existing constraint of the same type.")
