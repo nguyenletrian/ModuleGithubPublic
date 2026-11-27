@@ -121,12 +121,6 @@ def createPoleVector(start, middle, end, name, ratio):
         cmds.connectAttr(start + ".worldMatrix[0]", result + ".matrix")
         return result + ".output"
 
-    def distance(a, b, suffix):
-        result = node("distanceBetween", suffix)
-        cmds.connectAttr(a + ".worldMatrix[0]", result + ".inMatrix1")
-        cmds.connectAttr(b + ".worldMatrix[0]", result + ".inMatrix2")
-        return result + ".distance"
-
     a = position(start, "StartMatrix")
     b = position(middle, "MiddleMatrix")
     c = position(end, "EndMatrix")
@@ -147,16 +141,22 @@ def createPoleVector(start, middle, end, name, ratio):
     direction = normalized(choose(dot(bend, bend, "BendLengthSquared"), 1e-12,
                                   bend, fallback, "SafeBend"), "PoleDirection")
 
-    # Use the live straight-line Start-End distance as the base.
-    length = node("multDoubleLinear", "PoleDistance")
-    cmds.connectAttr(distance(start, end, "StartEndLength"), length + ".input1")
-    cmds.setAttr(length + ".input2", ratio)
-    pole_position = add(b, scale(direction, length + ".output", "PoleOffset"), "PolePosition")
+    # Measure the chord in the same numeric space as the position vectors.
+    # Keep the ratio unitless: multDoubleLinear.input2 is a distance plug.
+    chord_length = node("multiplyDivide", "StartEndLength")
+    cmds.setAttr(chord_length + ".operation", 3)
+    cmds.connectAttr(chord_sq, chord_length + ".input1X")
+    cmds.setAttr(chord_length + ".input2X", 0.5)
+    length = node("multiplyDivide", "PoleDistance")
+    cmds.connectAttr(chord_length + ".outputX", length + ".input1X")
+    cmds.setAttr(length + ".input2X", ratio)
+    pole_position = add(b, scale(direction, length + ".outputX", "PoleOffset"), "PolePosition")
 
     matrix = node("composeMatrix", "PoleMatrix")
     cmds.connectAttr(pole_position, matrix + ".inputTranslate")
     locator = cmds.spaceLocator(name=name)[0]
     locator = cmds.ls(locator, long=True)[0]
+    cmds.setAttr(locator + ".inheritsTransform", False)
     cmds.connectAttr(matrix + ".outputMatrix", locator + ".offsetParentMatrix")
     return locator, created
 
