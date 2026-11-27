@@ -1,22 +1,25 @@
 """Build live constraints directly or through an optional aligned extra joint."""
 import re
+from itertools import permutations, product
+import maya.api.OpenMaya as om
 import maya.cmds as cmds
 import NLTA_RetargetV2 as rt
 
 LABEL = "Constraint"
 
 
-def PairData(pair):
+def PairData(pair, maintain_default=True):
     return {"from": str(pair.get("from") or "").strip(),
             "to": str(pair.get("to") or "").strip(),
             "translate": bool(pair.get("translate", False)),
             "rotate": bool(pair.get("rotate", True)),
             "scale": bool(pair.get("scale", False)),
-            "mirror": bool(pair.get("mirror", False))}
+            "mirror": bool(pair.get("mirror", False)),
+            "maintain_offset": bool(pair.get("maintain_offset", maintain_default))}
 
 
 def DefaultSetting():
-    return {"from_role": "REF", "to_role": "Rig", "maintain_offset": True,
+    return {"from_role": "REF", "to_role": "Rig",
             "use_extra_joint": True, "pairs": [PairData({})]}
 
 
@@ -35,9 +38,8 @@ def NormalizeSettings(settings):
     if from_role not in ("Rig", "Anim", "REF") or to_role not in ("Rig", "Anim", "REF"):
         raise ValueError("Constraint namespaces must be Rig, Anim or REF.")
     return {"from_role": from_role, "to_role": to_role,
-            "maintain_offset": bool(settings.get("maintain_offset", True)),
             "use_extra_joint": bool(settings.get("use_extra_joint", True)),
-            "pairs": [PairData(row) for row in rows]}
+            "pairs": [PairData(row, settings.get("maintain_offset", True)) for row in rows]}
 
 
 def Fields():
@@ -82,6 +84,32 @@ def _resolve(namespace, name):
     return matches[0]
 
 
+def mapAxes(sourceAxes, targetAxes):
+    # Choose the closest right-handed signed permutation of From axes.
+    best = None
+    bestScore = -float("inf")
+    for order in permutations(range(3)):
+        parity = (-1) ** sum(order[i] > order[j] for i in range(3) for j in range(i + 1, 3))
+        for signs in product((1, -1), repeat=3):
+            if parity * signs[0] * signs[1] * signs[2] != 1:
+                continue
+            axes = [[signs[i] * value for value in sourceAxes[order[i]]] for i in range(3)]
+            score = sum(sum(a * b for a, b in zip(axes[i], targetAxes[i])) for i in range(3))
+            if score > bestScore + 1e-12:
+                best, bestScore = axes, score
+    return best
+
+
+def mapJointAxes(joint, target):
+    matrix = cmds.xform(joint, query=True, worldSpace=True, matrix=True)
+    targetMatrix = cmds.xform(target, query=True, worldSpace=True, matrix=True)
+    sourceRotation = list(om.MTransformationMatrix(om.MMatrix(matrix)).rotation(asQuaternion=True).asMatrix())
+    targetRotation = list(om.MTransformationMatrix(om.MMatrix(targetMatrix)).rotation(asQuaternion=True).asMatrix())
+    axes = mapAxes([sourceRotation[i:i+3] for i in (0, 4, 8)], [targetRotation[i:i+3] for i in (0, 4, 8)])
+    mapped = [value for axis in axes for value in (*axis, 0.0)] + matrix[12:16]
+    cmds.xform(joint, worldSpace=True, matrix=mapped)
+
+
 def _build_extra(source, target, pair, maintain_offset=True):
     namespace = source.split("|")[-1].rpartition(":")[0]
     name = ":" + (namespace + ":" if namespace else "") + rt.leaf(target) + "_extraJoint"
@@ -89,6 +117,8 @@ def _build_extra(source, target, pair, maintain_offset=True):
     cmds.setAttr(joint + ".segmentScaleCompensate", False)
     match = target if maintain_offset else source
     cmds.delete(cmds.parentConstraint(match, joint, maintainOffset=False))
+    if not maintain_offset:
+        mapJointAxes(joint, target)
     if pair["scale"]:
         cmds.delete(cmds.scaleConstraint(match, joint, maintainOffset=False))
     joint = cmds.parent(joint, source, absolute=True)[0]
@@ -215,7 +245,7 @@ def Run(settings, context):
             if not overlap:
                 continue
             if (source == entry.get("source") and requested == occupied
-                    and settings["maintain_offset"] == entry.get("maintain_offset")
+                    and pair["maintain_offset"] == entry.get("maintain_offset")
                     and settings["use_extra_joint"] == entry.get("use_extra_joint")):
                 duplicate = True
                 continue
@@ -228,13 +258,13 @@ def Run(settings, context):
                 rt.leaf(source), rt.leaf(target), ", ".join(key for key in channels if key in requested)))
             continue
         configured.setdefault(target, []).append(dict(
-            pair, source=source, maintain_offset=settings["maintain_offset"],
+            pair, source=source, maintain_offset=pair["maintain_offset"],
             use_extra_joint=settings["use_extra_joint"]))
         pending.append((pair, source, target))
 
     # Prepare every helper in the initial pose before driving any target.
     prepared = [(pair, source, target,
-                 _build_extra(source, target, pair, settings["maintain_offset"])
+                 _build_extra(source, target, pair, pair["maintain_offset"])
                  if settings["use_extra_joint"] else None)
                 for pair, source, target in pending]
     entries = []
@@ -242,12 +272,12 @@ def Run(settings, context):
     for pair, source, target, extra in prepared:
         driver = extra or source
         print("[Constraint] From: {} | Driver: {} | To: {}".format(source, driver, target))
-        constraints = _connect(driver, target, pair, settings["maintain_offset"])
+        constraints = _connect(driver, target, pair, pair["maintain_offset"])
         entries.append({"reference": source if from_role == "REF" else None,
                         "source_role": from_role, "source": source,
                         "target_role": to_role, "target": target, "extra_joint": extra,
                         "constraints": constraints,
-                        "maintain_offset": settings["maintain_offset"],
+                        "maintain_offset": pair["maintain_offset"],
                         "use_extra_joint": settings["use_extra_joint"],
                         "translate": pair["translate"], "rotate": pair["rotate"],
                         "scale": pair["scale"]})
