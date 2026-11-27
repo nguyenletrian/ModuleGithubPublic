@@ -226,7 +226,7 @@ def _validate_entries(records):
         if not isinstance(settings, dict):
             raise ValueError("Invalid settings for step " + kind)
         defaults.update(settings)
-        if kind in ("Transform", "PoleVector"):
+        if kind in ("Transform", "PoleVector", "CopyAttribute"):
             defaults = _module(kind).NormalizeSettings(settings)
         if kind == "Constraint":
             defaults = _module(kind).NormalizeSettings(defaults)
@@ -846,6 +846,14 @@ def _pick_channel_attribute(attribute_field, object_field):
     attribute_field.setText(attribute)
 
 
+def _pick_copy_source_attribute(attribute, source, role):
+    namespace = _constraint_role_namespace(role.currentText(), _general_from_form())
+    selected = cmds.ls(selection=True, long=True, objectsOnly=True) or []
+    if len(selected) != 1 or selected[0].split("|")[-1].rpartition(":")[0].lstrip(":") != namespace:
+        raise ValueError("Select Object From in its chosen namespace.")
+    _pick_channel_attribute(attribute, source)
+
+
 def _pick_scale_reference(field):
     """Pick one transform/joint or one polygon vertex for Match Scale."""
     selected = cmds.ls(selection=True, long=True, flatten=True) or []
@@ -1040,9 +1048,11 @@ def _mapping_item(pair):
 
 def _module_field_columns(kind, descriptors):
     """Partition UI fields without changing their keys or JSON values."""
-    if kind in ("SetValue", "CopyAttribute", "Transform", "PoleVector", "MatchRotatePair", "MatchRotate", "MatchTransform", "Constraint", "Connect", "Bake", "Clean", "CleanAnimation"):
+    if kind in ("SetValue", "Transform", "PoleVector", "MatchRotatePair", "MatchRotate", "MatchTransform", "Constraint", "Connect", "Bake", "Clean", "CleanAnimation"):
         return "", [], "", [], descriptors
     paired = {
+        "CopyAttribute": (("source_role", "from"), ("target_role", "to"),
+                          "From", "To"),
         "ScaleFromObjectDistance": (("source_role", "vertex1", "vertex2"),
                                     ("target_role", "vertex3", "vertex4"),
                                     "Namespace 1", "Namespace 2"),
@@ -1769,8 +1779,11 @@ class RetargetCard(QtWidgets.QFrame):
                                  52 if caption == "Folder" else 46)
             button.clicked.connect(
                 lambda checked=False, target=widget, way=mode, field_key=key: _safe(
-                    lambda: _pick_constraint_object(target, self.widgets["source_role"][1])
-                    if way == "copy_object" or (way == "pick" and self.kind == "PoleVector")
+                    lambda: _pick_constraint_object(target, self.widgets[
+                        "source_role" if field_key == "from" else "target_role"][1])
+                    if way == "copy_object"
+                    else _pick_constraint_object(target, self.widgets["source_role"][1])
+                    if way == "pick" and self.kind == "PoleVector"
                     else _pick_transform(target) if way == "pick"
                     else _pick_scale_vertex(target, self.widgets[
                         "source_role" if field_key in ("vertex1", "vertex2") else "target_role"][1])
@@ -1798,7 +1811,8 @@ class RetargetCard(QtWidgets.QFrame):
         pick.setFixedWidth(44)
         pick.setToolTip("Pick one Channel Box attribute from Object From")
         pick.clicked.connect(lambda checked=False: _safe(
-            lambda: _pick_channel_attribute(attribute, self.widgets["from"][1])))
+            lambda: _pick_copy_source_attribute(attribute, self.widgets["from"][1],
+                                                self.widgets["source_role"][1])))
         delete = QtWidgets.QPushButton("X")
         delete.setFixedWidth(24)
         layout.addWidget(attribute, 1)
