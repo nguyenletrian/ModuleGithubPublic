@@ -41,6 +41,7 @@ STEP_FILES = (
     ("MatchRotate", "Retarget_MatchRotate.py"),
     ("CreateJoint", "Retarget_CreateJoint.py"),
     ("PoleVector", "Retarget_PoleVector.py"),
+    ("Connect", "Retarget_Connect.py"),
     ("Animation", "Retarget_Animation.py"),
     ("Constraint", "Retarget_Constraint.py"),
     ("Bake", "Retarget_Bake.py"),
@@ -100,7 +101,7 @@ def _default_steps():
     # Optional modules require an object/file or a later Bake stage.
     for step in steps:
         if step["kind"] in ("Bake", "CleanAnimation", "Clean", "PythonFile", "Transform",
-                            "OffsetPosition", "SetValue", "MatchTransform", "MatchRotatePair", "MatchRotate", "CreateJoint", "PoleVector", "Constraint"):
+                            "OffsetPosition", "SetValue", "MatchTransform", "MatchRotatePair", "MatchRotate", "CreateJoint", "PoleVector", "Connect", "Constraint"):
             step["enabled"] = False
     return steps
 
@@ -1017,7 +1018,7 @@ def _mapping_item(pair):
 
 def _module_field_columns(kind, descriptors):
     """Partition UI fields without changing their keys or JSON values."""
-    if kind in ("SetValue", "Transform", "MatchRotatePair", "MatchRotate", "MatchTransform", "Constraint", "Bake", "Clean", "CleanAnimation"):
+    if kind in ("SetValue", "Transform", "MatchRotatePair", "MatchRotate", "MatchTransform", "Constraint", "Connect", "Bake", "Clean", "CleanAnimation"):
         return "", [], "", [], descriptors
     paired = {
         "Scale": (("source_role", "old_low", "old_high"),
@@ -1122,7 +1123,7 @@ class RetargetCard(QtWidgets.QFrame):
         detail.setContentsMargins(7, 5, 5, 3)
         detail.setSpacing(6)
         self.name = None
-        if self.kind not in ("MatchTransform", "MatchRotate", "CreateJoint", "PoleVector", "Constraint", "Bake", "Clean", "CleanAnimation"):
+        if self.kind not in ("MatchTransform", "MatchRotate", "CreateJoint", "PoleVector", "Connect", "Constraint", "Bake", "Clean", "CleanAnimation"):
             name_label = QtWidgets.QLabel("Module Name")
             detail.addWidget(name_label)
             self.name = QtWidgets.QLineEdit(record["name"])
@@ -1242,7 +1243,7 @@ class RetargetCard(QtWidgets.QFrame):
             self.widgets[key] = (kind, self.transform_rows)
             return
         if kind == "constraint_pairs":
-            data = _module("Constraint").NormalizeSettings(_get_step(self.identifier)["data"])
+            data = _module(self.kind).NormalizeSettings(_get_step(self.identifier)["data"])
             namespace_row = QtWidgets.QHBoxLayout()
             namespace_row.setSpacing(4)
             self.constraint_roles = {}
@@ -1262,13 +1263,32 @@ class RetargetCard(QtWidgets.QFrame):
             maintain.toggled.connect(_queue_save)
             namespace_row.addWidget(maintain)
             self.widgets["maintain_offset"] = ("bool", maintain)
-            extra = QtWidgets.QCheckBox("Extra Joint")
-            extra.setToolTip("Create an aligned intermediate joint; otherwise constrain From directly to To")
-            extra.setChecked(data["use_extra_joint"])
-            extra.toggled.connect(_queue_save)
-            namespace_row.addWidget(extra)
-            self.widgets["use_extra_joint"] = ("bool", extra)
+            if self.kind == "Constraint":
+                extra = QtWidgets.QCheckBox("Extra Joint")
+                extra.setToolTip("Create an aligned intermediate joint; otherwise constrain From directly to To")
+                extra.setChecked(data["use_extra_joint"])
+                extra.toggled.connect(_queue_save)
+                namespace_row.addWidget(extra)
+                self.widgets["use_extra_joint"] = ("bool", extra)
             parent.addLayout(namespace_row)
+            if self.kind == "Connect":
+                roots = QtWidgets.QHBoxLayout()
+                for root_key, role_key, label in (("source_root", "from_role", "Source Root"),
+                                                   ("target_root", "to_role", "Target Root")):
+                    field = QtWidgets.QLineEdit(data[root_key])
+                    field.setPlaceholderText(label)
+                    field.setToolTip(label)
+                    field.setMinimumWidth(0)
+                    field.textChanged.connect(_queue_save)
+                    pick = QtWidgets.QPushButton("Pick")
+                    pick.setFixedWidth(36)
+                    role = self.constraint_roles[role_key]
+                    pick.clicked.connect(lambda checked=False, f=field, r=role:
+                                         _safe(lambda: _pick_constraint_object(f, r)))
+                    roots.addWidget(field, 1)
+                    roots.addWidget(pick)
+                    self.widgets[root_key] = ("text", field)
+                parent.addLayout(roots)
             self._make_rotate_pairs(parent, data["pairs"])
             self.widgets[key] = (kind, self.rotate_pair_rows)
             return
@@ -1637,7 +1657,7 @@ class RetargetCard(QtWidgets.QFrame):
         add = QtWidgets.QPushButton("+ Add Pair")
         add.clicked.connect(
             lambda checked=False: self._add_rotate_pair_row())
-        if self.kind == "Constraint":
+        if self.kind in ("Constraint", "Connect"):
             buttons = QtWidgets.QHBoxLayout()
             buttons.addWidget(add, 1)
             match = QtWidgets.QPushButton("Match by Name")
@@ -1656,6 +1676,8 @@ class RetargetCard(QtWidgets.QFrame):
         settings = self.settings()["data"]
         context = _general_context(_general_from_form(), {})
         pairs = _module("Constraint").MatchByName(settings, context)
+        if self.kind == "Connect":
+            pairs = [dict(pair, translate=True, rotate=True) for pair in pairs]
         if pairs:
             for row in list(self.rotate_pair_rows):
                 if not row["from"].text().strip() and not row["to"].text().strip():
@@ -1676,7 +1698,7 @@ class RetargetCard(QtWidgets.QFrame):
         cards = {self.identifier: self}
         all_cards = UIs.get("cards", {})
         for identifier, card in all_cards.items():
-            if card.kind == "Constraint" and card is not self and card.enabled.isChecked():
+            if card.kind in ("Constraint", "Connect") and card is not self and card.enabled.isChecked():
                 cards[identifier] = card
         settings = [(identifier, card._constraint_rows_data())
                     for identifier, card in cards.items()]
@@ -1688,7 +1710,7 @@ class RetargetCard(QtWidgets.QFrame):
             for member in members:
                 marks.setdefault(member, {}).setdefault(side, []).append(label)
         for identifier, card in all_cards.items():
-            if card.kind != "Constraint":
+            if card.kind not in ("Constraint", "Connect"):
                 continue
             for index, row in enumerate(card.rotate_pair_rows):
                 flags = marks.get((identifier, index), {})
@@ -1720,7 +1742,7 @@ class RetargetCard(QtWidgets.QFrame):
 
     def _add_rotate_pair_row(self, data=None):
         vector = self.kind == "MatchRotatePair"
-        constraint = self.kind == "Constraint"
+        constraint = self.kind in ("Constraint", "Connect")
         data = _module(self.kind).PairData(
             data if isinstance(data, dict) else {})
         frame = QtWidgets.QFrame(self.details)
@@ -1797,6 +1819,8 @@ class RetargetCard(QtWidgets.QFrame):
                 check.setChecked(data[channel])
                 check.toggled.connect(_queue_save)
                 columns.addWidget(check)
+                if self.kind == "Connect" and channel == "scale":
+                    check.hide()
                 row[channel] = check
         if not vector:
             columns.addWidget(delete)
@@ -2179,6 +2203,8 @@ class RetargetCard(QtWidgets.QFrame):
             values = {"items": values.get("items", [])}
         elif self.kind == "MatchRotatePair":
             values = {"pairs": values.get("pairs", [])}
+        elif self.kind == "Connect":
+            values = _module("Connect").NormalizeSettings(values)
         elif self.kind == "Constraint":
             values = {"from_role": values.get("from_role", "REF"),
                       "to_role": values.get("to_role", "Rig"),
