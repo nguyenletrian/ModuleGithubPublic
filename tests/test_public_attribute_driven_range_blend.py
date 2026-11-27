@@ -70,7 +70,8 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
             mapped.append((rest, target))
             return rest
         env["mappedRestMatrix"] = map_matrix
-        env["createBlend"]("Driver", "AutoFollow", 0, 1, 1, list(kinds))
+        drivens = [(name, "|Rig|RestSpace" if name == "Parent" else "") for name in kinds]
+        env["createBlend"]("Driver", "AutoFollow", 0, 1, 1, drivens)
         blend = "Driver_AutoFollow_RangeBlend"
         self.assertEqual(events[:3], [("capture", name + "_Driven") for name in kinds])
         self.assertEqual(added, [(name, (name + "_Rest", name + "_Driven"),
@@ -86,7 +87,8 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
             self.assertEqual(attrs[prefix + "FloatValue"], index)
             self.assertEqual(attrs[prefix + "Interp"], 1)
         for name in kinds:
-            self.assertEqual(nodes[name + "_Rest"], ("transform", {"parent": "|Rig|Group"}))
+            parent = "|Rig|RestSpace" if name == "Parent" else "|Rig|Group"
+            self.assertEqual(nodes[name + "_Rest"], ("transform", {"parent": parent}))
             self.assertEqual(poses[name + "_Rest"], matrix)
             self.assertEqual(attrs[name + "_Rest.rotateOrder"], 3)
             if name in ("Parent", "Rotation"):
@@ -110,18 +112,20 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
                 "driverMin": 0, "driverMax": 1, "driverDefault": 1,
                 "drivens": [{"constraint": "Constraint", "target": "OldRef"}]}
         self.assertEqual(env["blendArguments"](data),
-                         ("Driver", "AutoFollow", 0.0, 1.0, 1.0, ["Constraint"]))
+                         ("Driver", "AutoFollow", 0.0, 1.0, 1.0, [("Constraint", "")]))
         self.assertEqual(env["normalizeItem"](data)["drivens"],
-                         [{"constraint": "Constraint"}])
+                         [{"constraint": "Constraint", "restParent": ""}])
+        data["drivens"][0]["restParent"] = "Uber_att"
+        self.assertEqual(env["blendArguments"](data)[-1], [("Constraint", "Uber_att")])
 
     def test_single_pass_export(self):
         env = scope()
         data = {"driverObject": "Driver", "driverAttr": "AutoFollow",
                 "driverMin": 0, "driverMax": 1, "driverDefault": 1,
-                "drivens": [{"constraint": "Constraint"}]}
+                "drivens": [{"constraint": "Constraint", "restParent": "Uber_att"}]}
         source = env["buildScript"]([data])
         compile(source, "<range blend export>", "exec")
-        self.assertIn("('Driver', 'AutoFollow', 0.0, 1.0, 1.0, ['Constraint'])", source)
+        self.assertIn("('Driver', 'AutoFollow', 0.0, 1.0, 1.0, [('Constraint', 'Uber_att')])", source)
         self.assertIn("for driverObject, driverAttr, driverMin, driverMax, driverDefault, drivens in BLEND_DATA:", source)
         self.assertNotIn("def createBlend(", source)
         self.assertIn('cmds.setAttr(constraint + ".interpType", 2)', source)
