@@ -1,10 +1,12 @@
 import os
 import inspect
+import itertools
 import math
 from datetime import datetime
 from functools import partial
 
 import maya.cmds as cmds
+import maya.api.OpenMaya as om
 import NLTA_General
 import NLTA_UI
 
@@ -215,6 +217,33 @@ def Load(data, listUI, *unused):
         Add(listUI)
 
 
+def mapAxes(restAxes, targetAxes):
+    # Select the closest proper signed permutation of the rest basis.
+    best = None
+    for order in itertools.permutations(range(3)):
+        parity = -1 if sum(order[i] > order[j] for i in range(3) for j in range(i + 1, 3)) % 2 else 1
+        for signs in itertools.product((1, -1), repeat=3):
+            if signs[0] * signs[1] * signs[2] != parity:
+                continue
+            basis = tuple(tuple(signs[i] * value for value in restAxes[order[i]]) for i in range(3))
+            score = sum(sum(a * b for a, b in zip(basis[i], targetAxes[i])) for i in range(3))
+            if best is None or score > best[0] + 1e-12:
+                best = (score, basis)
+    return best[1]
+
+
+def mappedRestMatrix(matrix, targetMatrix):
+    rest = om.MTransformationMatrix(om.MMatrix(matrix))
+    target = om.MTransformationMatrix(om.MMatrix(targetMatrix))
+    axes = ((1, 0, 0), (0, 1, 0), (0, 0, 1))
+    restAxes = tuple(tuple(om.MVector(*axis).rotateBy(rest.rotation(asQuaternion=True))) for axis in axes)
+    targetAxes = tuple(tuple(om.MVector(*axis).rotateBy(target.rotation(asQuaternion=True))) for axis in axes)
+    basis = mapAxes(restAxes, targetAxes)
+    mapped = om.MMatrix([*basis[0], 0, *basis[1], 0, *basis[2], 0, 0, 0, 0, 1])
+    rest.setRotation(om.MTransformationMatrix(mapped).rotation(asQuaternion=True))
+    return list(rest.asMatrix())
+
+
 def createBlend(driverObject, driverAttr, driverMin, driverMax, driverDefault, drivens):
     driver = driverObject + "." + driverAttr
     if not cmds.objExists(driver):
@@ -234,9 +263,10 @@ def createBlend(driverObject, driverAttr, driverMin, driverMax, driverDefault, d
         rest = cmds.createNode("transform", name=restName, parent=parents[0]) if parents else cmds.createNode("transform", name=restName)
         rest = cmds.ls(rest, long=True)[0]
         cmds.setAttr(rest + ".rotateOrder", cmds.getAttr(originalTarget + ".rotateOrder"))
+        # Remap axis labels, preserving the original rest basis and tilt.
+        if kind != "orientConstraint":
+            matrix = mappedRestMatrix(matrix, cmds.xform(originalTarget, query=True, worldSpace=True, matrix=True))
         cmds.xform(rest, worldSpace=True, matrix=matrix)
-        # Match the original target axes without moving the rest position.
-        cmds.matchTransform(rest, originalTarget, rotation=True, position=False, scale=False)
         rests.append((constraint, driven, kind, command, original, rest))
 
     name = driverObject.rsplit("|", 1)[-1].replace(":", "_") + "_" + driverAttr.replace(".", "_").replace("[", "_").replace("]", "") + "_RangeBlend"
@@ -324,10 +354,10 @@ def Run(data, *unused):
 
 
 def buildScript(items):
-    source = inspect.getsource(createBlend).rstrip()
+    source = "\n\n".join(inspect.getsource(fn).rstrip() for fn in (mapAxes, mappedRestMatrix, createBlend))
     source = "\n".join("    " + line if line.strip() else "" for line in source.splitlines())
     calls = ["    createBlend(*" + repr(blendArguments(item)) + ")" for item in items]
-    return ("def main():\n    import maya.cmds as cmds\n\n" + source + "\n\n"
+    return ("def main():\n    import itertools\n    import maya.cmds as cmds\n    import maya.api.OpenMaya as om\n\n" + source + "\n\n"
             + ("\n".join(calls) or "    pass") + '\n\nif __name__ == "__main__":\n    main()\n')
 
 
