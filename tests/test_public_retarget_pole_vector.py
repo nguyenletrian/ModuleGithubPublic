@@ -22,7 +22,7 @@ class PoleVectorTests(unittest.TestCase):
         env = scope()
         data = env["DefaultSetting"]()
         self.assertEqual(data["source_role"], "Anim")
-        self.assertEqual(data["distance_ratio"], 0.5)
+        self.assertEqual(data["distance_ratio"], 1.0)
         self.assertEqual(env["namespaceForRole"]("Anim", {
             "reference_namespaces": {"old_animations": "RT_ANIM"}}), "RT_ANIM")
         self.assertEqual({row[1] for row in env["Fields"]()}, set(data))
@@ -50,6 +50,10 @@ class PoleVectorTests(unittest.TestCase):
         self.assertEqual(connections[name + "_EndMatrix.inputMatrix"], "End.worldMatrix[0]")
         self.assertEqual(connections[name + ".offsetParentMatrix"], name + "_PoleMatrix.outputMatrix")
         self.assertEqual(attrs[name + "_PoleDistance.input2"], 0.5)
+        self.assertEqual(connections[name + "_StartEndLength.inMatrix1"], "Start.worldMatrix[0]")
+        self.assertEqual(connections[name + "_StartEndLength.inMatrix2"], "End.worldMatrix[0]")
+        self.assertEqual(connections[name + "_PoleDistance.input1"], name + "_StartEndLength.distance")
+        self.assertEqual(list(nodes.values()).count("distanceBetween"), 1)
         self.assertNotIn("expression", nodes.values())
         self.assertNotIn("parentConstraint", nodes.values())
 
