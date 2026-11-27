@@ -1076,6 +1076,153 @@ def _module_field_columns(kind, descriptors):
     return "", narrow[:halfway], "", narrow[halfway:], shared
 
 
+_CARD_DRAG_MIME = "application/x-nlta-retarget-card"
+
+
+class RetargetDragHandle(QtWidgets.QLabel):
+    """Start a card move only from its dedicated grip."""
+
+    def __init__(self, identifier, parent):
+        super(RetargetDragHandle, self).__init__(parent)
+        self.identifier = identifier
+        self.press_position = None
+        self.setText("\u283f")
+        self.setAlignment(QtCore.Qt.AlignCenter)
+        self.setFixedSize(20, 28)
+        self.setCursor(QtCore.Qt.OpenHandCursor)
+        self.setToolTip("Drag to reorder module")
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            self.press_position = event.pos()
+            self.setCursor(QtCore.Qt.ClosedHandCursor)
+            event.accept()
+        else:
+            super(RetargetDragHandle, self).mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self.press_position = None
+        self.setCursor(QtCore.Qt.OpenHandCursor)
+        super(RetargetDragHandle, self).mouseReleaseEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (self.press_position is None or
+                not event.buttons() & QtCore.Qt.LeftButton):
+            return
+        if (event.pos() - self.press_position).manhattanLength() < QtWidgets.QApplication.startDragDistance():
+            return
+        self.press_position = None
+        drag = QtGui.QDrag(self)
+        mime = QtCore.QMimeData()
+        mime.setData(_CARD_DRAG_MIME, self.identifier.encode("utf-8"))
+        drag.setMimeData(mime)
+        # A small header preview, not a potentially huge expanded card.
+        preview = self.parentWidget().title.grab()
+        if not preview.isNull():
+            drag.setPixmap(preview)
+            drag.setHotSpot(QtCore.QPoint(0, preview.height() // 2))
+        try:
+            execute = getattr(drag, "exec", None) or drag.exec_
+            execute(QtCore.Qt.MoveAction)
+        finally:
+            self.setCursor(QtCore.Qt.OpenHandCursor)
+
+
+class RetargetCardContainer(QtWidgets.QWidget):
+    """Accept internal card drops and show the insertion line without relayout."""
+
+    def __init__(self, scroll_area):
+        super(RetargetCardContainer, self).__init__()
+        self.scroll_area = scroll_area
+        self.setAcceptDrops(True)
+        self.indicator = QtWidgets.QFrame(self)
+        self.indicator.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        self.indicator.setStyleSheet("background-color: #58a6ff; border: none;")
+        self.indicator.hide()
+        self.scroll_timer = QtCore.QTimer(self)
+        self.scroll_timer.setInterval(35)
+        self.scroll_timer.timeout.connect(self._auto_scroll)
+
+    def _accept_source(self, event):
+        source = event.source()
+        return (event.mimeData().hasFormat(_CARD_DRAG_MIME)
+                and isinstance(source, RetargetDragHandle)
+                and source.parentWidget().parentWidget() is self
+                and source.identifier in UIs.get("cards", {}))
+
+    def _slot(self, y):
+        layout = self.layout()
+        cards = [layout.itemAt(i).widget() for i in range(layout.count())]
+        cards = [card for card in cards if isinstance(card, RetargetCard)]
+        for index, card in enumerate(cards):
+            if y < card.geometry().center().y():
+                return index, card.geometry().top() - 3
+        return len(cards), cards[-1].geometry().bottom() + 3 if cards else 1
+
+    def _show_indicator(self, y):
+        _, line_y = self._slot(y)
+        self.indicator.setGeometry(2, max(0, min(line_y, self.height() - 3)),
+                                   max(1, self.width() - 4), 3)
+        self.indicator.raise_()
+        self.indicator.show()
+
+    def _clear_drag(self):
+        self.scroll_timer.stop()
+        self.indicator.hide()
+
+    def _event_y(self, event):
+        return (event.position().toPoint().y() if hasattr(event, "position")
+                else event.pos().y())
+
+    def _auto_scroll(self):
+        viewport = self.scroll_area.viewport()
+        cursor = viewport.mapFromGlobal(QtGui.QCursor.pos())
+        if not viewport.rect().contains(cursor):
+            return
+        edge = 32
+        bar = self.scroll_area.verticalScrollBar()
+        if cursor.y() < edge:
+            bar.setValue(bar.value() - 18)
+        elif cursor.y() >= viewport.height() - edge:
+            bar.setValue(bar.value() + 18)
+        else:
+            return
+        self._show_indicator(self.mapFromGlobal(QtGui.QCursor.pos()).y())
+
+    def dragEnterEvent(self, event):
+        if self._accept_source(event):
+            event.setDropAction(QtCore.Qt.MoveAction)
+            event.accept()
+            self._show_indicator(self._event_y(event))
+            self.scroll_timer.start()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if self._accept_source(event):
+            event.setDropAction(QtCore.Qt.MoveAction)
+            event.accept()
+            self._show_indicator(self._event_y(event))
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self._clear_drag()
+        event.accept()
+
+    def dropEvent(self, event):
+        accepted = self._accept_source(event)
+        self._clear_drag()
+        if not accepted:
+            event.ignore()
+            return
+        slot, _ = self._slot(self._event_y(event))
+        identifier = event.source().identifier
+        event.setDropAction(QtCore.Qt.MoveAction)
+        event.accept()
+        _safe(lambda: _drop_step(identifier, slot))
+
+
 class RetargetCard(QtWidgets.QFrame):
     """One collapsible submodule with local order arrows and inline settings."""
 
@@ -1096,6 +1243,8 @@ class RetargetCard(QtWidgets.QFrame):
 
         header = QtWidgets.QHBoxLayout()
         header.setSpacing(2)
+        self.drag_handle = RetargetDragHandle(self.identifier, self)
+        header.addWidget(self.drag_handle)
         self.expand = QtWidgets.QToolButton()
         self.expand.setCheckable(True)
         self.expand.setFixedSize(24, 28)
@@ -2448,6 +2597,27 @@ def _move_step(identifier, direction):
     return _safe(work)
 
 
+def _drop_step(identifier, slot):
+    """Move a card to an insertion boundary in the current visual order."""
+    _collect_card_orders()
+    steps = _sorted_steps()
+    record = _get_step(identifier)
+    if record is None:
+        return
+    old_index = steps.index(record)
+    slot = max(0, min(int(slot), len(steps)))
+    target = slot - (1 if slot > old_index else 0)
+    if target == old_index:
+        return
+    steps.pop(old_index)
+    steps.insert(target, record)
+    for number, item in enumerate(steps, 1):
+        item["order"] = number * 10
+    _STATE["dirty"] = True
+    _sync_card_order()
+    _status("Module order changed. Click Save to keep it.")
+
+
 def _apply_manual_order():
     if UIs.get("building"):
         return
@@ -3016,7 +3186,7 @@ def CreateUI(data):
     area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
     area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
     area.setFrameShape(QtWidgets.QFrame.NoFrame)
-    cards_container = QtWidgets.QWidget()
+    cards_container = RetargetCardContainer(area)
     cards_container.setMinimumWidth(580)
     cards_layout = QtWidgets.QVBoxLayout(cards_container)
     cards_layout.setContentsMargins(1, 1, 1, 1)
