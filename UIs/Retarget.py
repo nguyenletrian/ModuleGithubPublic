@@ -36,6 +36,7 @@ STEP_FILES = (
     ("MatchTransform", "Retarget_MatchTransform.py"),
     ("Transform", "Retarget_Transform.py"),  # Legacy kind: Extra Transform.
     ("SetValue", "Retarget_SetValue.py"),
+    ("CopyAttribute", "Retarget_CopyAttribute.py"),
     ("OffsetPosition", "Retarget_OffsetPosition.py"),
     ("Mapping", "Retarget_Mapping.py"),
     ("MatchRotatePair", "Retarget_MatchRotatePair.py"),
@@ -102,7 +103,7 @@ def _default_steps():
     # Optional modules require an object/file or a later Bake stage.
     for step in steps:
         if step["kind"] in ("ScaleFromObjectDistance", "Bake", "CleanAnimation", "Clean", "PythonFile", "Transform",
-                            "OffsetPosition", "SetValue", "MatchTransform", "MatchRotatePair", "MatchRotate", "CreateJoint", "PoleVector", "Connect", "Constraint"):
+                            "OffsetPosition", "SetValue", "CopyAttribute", "MatchTransform", "MatchRotatePair", "MatchRotate", "CreateJoint", "PoleVector", "Connect", "Constraint"):
             step["enabled"] = False
     return steps
 
@@ -1039,7 +1040,7 @@ def _mapping_item(pair):
 
 def _module_field_columns(kind, descriptors):
     """Partition UI fields without changing their keys or JSON values."""
-    if kind in ("SetValue", "Transform", "PoleVector", "MatchRotatePair", "MatchRotate", "MatchTransform", "Constraint", "Connect", "Bake", "Clean", "CleanAnimation"):
+    if kind in ("SetValue", "CopyAttribute", "Transform", "PoleVector", "MatchRotatePair", "MatchRotate", "MatchTransform", "Constraint", "Connect", "Bake", "Clean", "CleanAnimation"):
         return "", [], "", [], descriptors
     paired = {
         "ScaleFromObjectDistance": (("source_role", "vertex1", "vertex2"),
@@ -1400,6 +1401,18 @@ class RetargetCard(QtWidgets.QFrame):
             self.widgets["range_role"] = ("choice", source)
             self.widgets["range_object"] = ("text", field)
             return
+        if kind == "copy_attributes":
+            self.copy_attribute_rows = []
+            self.copy_attribute_list = QtWidgets.QVBoxLayout()
+            self.copy_attribute_list.setSpacing(3)
+            for attribute in value or []:
+                self._add_copy_attribute(attribute)
+            parent.addLayout(self.copy_attribute_list)
+            add = QtWidgets.QPushButton("+ Add Attribute")
+            add.clicked.connect(lambda checked=False: self._add_copy_attribute())
+            parent.addWidget(add)
+            self.widgets[key] = (kind, self.copy_attribute_rows)
+            return
         if kind == "pole_vector_items":
             self.pole_rows = []
             self.pole_list = QtWidgets.QVBoxLayout()
@@ -1736,6 +1749,8 @@ class RetargetCard(QtWidgets.QFrame):
         modes = []
         if kind == "pick":
             modes = [("Pick", "pick")]
+        elif kind == "copy_object":
+            modes = [("Pick", "copy_object")]
         elif kind == "pick_vertex":
             modes = [("Pick", "pick_vertex")]
         elif kind == "pick_ref":
@@ -1755,7 +1770,7 @@ class RetargetCard(QtWidgets.QFrame):
             button.clicked.connect(
                 lambda checked=False, target=widget, way=mode, field_key=key: _safe(
                     lambda: _pick_constraint_object(target, self.widgets["source_role"][1])
-                    if way == "pick" and self.kind == "PoleVector"
+                    if way == "copy_object" or (way == "pick" and self.kind == "PoleVector")
                     else _pick_transform(target) if way == "pick"
                     else _pick_scale_vertex(target, self.widgets[
                         "source_role" if field_key in ("vertex1", "vertex2") else "target_role"][1])
@@ -1769,6 +1784,37 @@ class RetargetCard(QtWidgets.QFrame):
             row.addWidget(button)
         parent.addLayout(row)
         self.widgets[key] = (kind, widget)
+
+    def _add_copy_attribute(self, value=""):
+        line = QtWidgets.QWidget(self.details)
+        layout = QtWidgets.QHBoxLayout(line)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        attribute = QtWidgets.QLineEdit(str(value or ""))
+        attribute.setMinimumWidth(0)
+        attribute.setPlaceholderText("Attribute")
+        attribute.textChanged.connect(_queue_save)
+        pick = QtWidgets.QPushButton("Pick")
+        pick.setFixedWidth(44)
+        pick.setToolTip("Pick one Channel Box attribute from Object From")
+        pick.clicked.connect(lambda checked=False: _safe(
+            lambda: _pick_channel_attribute(attribute, self.widgets["from"][1])))
+        delete = QtWidgets.QPushButton("X")
+        delete.setFixedWidth(24)
+        layout.addWidget(attribute, 1)
+        layout.addWidget(pick)
+        layout.addWidget(delete)
+        row = {"frame": line, "attribute": attribute}
+        self.copy_attribute_rows.append(row)
+        self.copy_attribute_list.addWidget(line)
+        delete.clicked.connect(lambda checked=False: self._remove_copy_attribute(row))
+        _queue_save()
+
+    def _remove_copy_attribute(self, row):
+        self.copy_attribute_rows.remove(row)
+        self.copy_attribute_list.removeWidget(row["frame"])
+        row["frame"].deleteLater()
+        _queue_save()
 
     def _add_pole_item(self, data=None):
         data = _module("PoleVector").ItemData(data)
@@ -2413,6 +2459,8 @@ class RetargetCard(QtWidgets.QFrame):
                 value = widget.toPlainText()
             elif kind in ("int", "float"):
                 value = widget.value()
+            elif kind == "copy_attributes":
+                value = [row["attribute"].text().strip() for row in widget]
             elif kind == "pole_vector_items":
                 value = [dict({key: row[key].text().strip()
                                for key in ("start", "middle", "end", "name")},
