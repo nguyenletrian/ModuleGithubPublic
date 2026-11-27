@@ -236,9 +236,10 @@ def createBlend(driverObject, driverAttr, driverMin, driverMax, driverDefault, d
 
     # Capture all rest poses before changing any constraint weights.
     rests = []
+    commands = {"parentConstraint": cmds.parentConstraint, "pointConstraint": cmds.pointConstraint, "orientConstraint": cmds.orientConstraint}
     for constraint, restParent in drivens:
         kind = cmds.nodeType(constraint)
-        command = getattr(cmds, kind)
+        command = commands[kind]
         driven = cmds.listConnections(constraint + ".constraintParentInverseMatrix", source=True, destination=False)[0]
         original = command(constraint, query=True, weightAliasList=True)[0]
         originalTarget = command(constraint, query=True, targetList=True)[0]
@@ -270,7 +271,7 @@ def createBlend(driverObject, driverAttr, driverMin, driverMax, driverDefault, d
     for constraint, driven, kind, command, original, rest in rests:
         # Parent constraints have a separate offset for each target.
         if kind == "parentConstraint":
-            command(rest, driven, weight=0, maintainOffset=True)
+            cmds.parentConstraint(rest, driven, weight=0, maintainOffset=True)
         else:
             command(rest, driven, weight=0)
         restAlias = next(alias for alias in command(constraint, query=True, weightAliasList=True) if alias != original)
@@ -298,13 +299,14 @@ def validateItem(item, seen=None):
         raise ValueError("Driven Range Blend: invalid range.")
     if seen is None:
         seen = set()
+    commands = {"parentConstraint": cmds.parentConstraint, "pointConstraint": cmds.pointConstraint, "orientConstraint": cmds.orientConstraint}
     for constraint, restParent in drivens:
         matches = cmds.ls(constraint, long=True) or []
         if len(matches) != 1 or cmds.nodeType(matches[0]) not in ("parentConstraint", "pointConstraint", "orientConstraint"):
             raise ValueError("Driven Range Blend: select one Parent, Point or Orient Constraint.")
         constraint = matches[0]
         kind = cmds.nodeType(constraint)
-        command = getattr(cmds, kind)
+        command = commands[kind]
         if constraint in seen:
             raise ValueError("Driven Range Blend: repeated constraint: " + constraint)
         seen.add(constraint)
