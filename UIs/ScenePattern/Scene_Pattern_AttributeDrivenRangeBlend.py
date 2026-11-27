@@ -240,13 +240,19 @@ def createBlend(driverObject, driverAttr, driverMin, driverMax, driverDefault, d
     for constraint, target in drivens:
         command = getattr(cmds, cmds.nodeType(constraint))
         driven = cmds.listConnections(constraint + ".constraintParentInverseMatrix", source=True, destination=False)[0]
-        oldAliases = command(constraint, query=True, weightAliasList=True)
+        aliases = command(constraint, query=True, weightAliasList=True)
+        targets = command(constraint, query=True, targetList=True)
+        targetPath = cmds.ls(target, long=True)[0]
+        newAlias = next((alias for obj, alias in zip(targets, aliases)
+                         if cmds.ls(obj, long=True) == [targetPath]), None)
+        oldAliases = [alias for alias in aliases if alias != newAlias]
         oldPlugs = [constraint + "." + alias for alias in oldAliases]
         oldInputs = [(cmds.connectionInfo(plug, sourceFromDestination=True), cmds.getAttr(plug)) for plug in oldPlugs]
 
-        # Edit the existing constraint, initially at zero new weight.
-        command(target, driven, edit=True, weight=0)
-        newAlias = next(alias for alias in command(constraint, query=True, weightAliasList=True) if alias not in oldAliases)
+        # Reuse an existing target or add it at zero weight.
+        if newAlias is None:
+            command(target, driven, edit=True, weight=0)
+            newAlias = next(alias for alias in command(constraint, query=True, weightAliasList=True) if alias not in aliases)
         prefix = constraint.rsplit("|", 1)[-1].replace(":", "_") + "_RangeBlend"
         total = cmds.createNode("plusMinusAverage", name=prefix + "_OldTotal")
         safeTotal = cmds.createNode("condition", name=prefix + "_SafeTotal")
@@ -309,11 +315,20 @@ def validateItem(item):
         if set(cmds.ls(constraints, long=True) or []) != {constraint}:
             raise ValueError("Driven Range Blend: ambiguous existing constraint of the same type.")
         oldTargets = command(constraint, query=True, targetList=True) or []
-        if target in (cmds.ls(oldTargets, long=True) or []) or target == driven or target.startswith(driven + "|"):
-            raise ValueError("Driven Range Blend: target already exists or creates a dependency cycle.")
+        if target == driven or target.startswith(driven + "|"):
+            raise ValueError("Driven Range Blend: cycle risk on {}: target {} is the constrained object or its descendant {}.".format(constraint, target, driven))
         aliases = command(constraint, query=True, weightAliasList=True) or []
         if not aliases or any(cmds.getAttr(constraint + "." + alias, lock=True) for alias in aliases):
-            raise ValueError("Driven Range Blend: existing weights must be unlocked.")
+            raise ValueError("Driven Range Blend: existing weights must be unlocked: " + constraint)
+        existingAlias = next((alias for obj, alias in zip(oldTargets, aliases)
+                              if cmds.ls(obj, long=True) == [target]), None)
+        if existingAlias:
+            if len(aliases) < 2:
+                raise ValueError("Driven Range Blend: {} needs another target to blend with {}.".format(constraint, target))
+            plug = constraint + "." + existingAlias
+            source = cmds.connectionInfo(plug, sourceFromDestination=True)
+            if source:
+                raise ValueError("Driven Range Blend: {} already has a weight connection {} -> {}. Rebuild from a clean scene or remove the existing blend before running again.".format(target, source, plug))
         if constraint in (cmds.ls(driverObject, long=True) or []) and driverAttr in aliases:
             raise ValueError("Driven Range Blend: do not drive a blend from its own constraint weight.")
 
@@ -321,6 +336,7 @@ def validateItem(item):
 def BuildAttributeDrivenRangeBlend(items):
     for item in items:
         validateItem(item)
+    for item in items:
         createBlend(*blendArguments(item))
 
 
