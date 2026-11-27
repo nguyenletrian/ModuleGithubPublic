@@ -21,12 +21,13 @@ def scope(**dependencies):
 class PoleVectorTests(unittest.TestCase):
     def test_default_and_namespace(self):
         env = scope()
-        data = env["DefaultSetting"]()
+        settings = env["DefaultSetting"]()
+        data = settings["items"][0]
         self.assertEqual(data["source_role"], "Anim")
         self.assertEqual(data["distance_ratio"], 1.0)
         self.assertEqual(env["namespaceForRole"]("Anim", {
             "reference_namespaces": {"old_animations": "RT_ANIM"}}), "RT_ANIM")
-        self.assertEqual({row[1] for row in env["Fields"]()}, set(data))
+        self.assertEqual({row[1] for row in env["Fields"]()}, set(settings))
 
     def test_mirror_creates_two_independent_chains_with_same_ratio(self):
         cmds = SimpleNamespace(ls=lambda name, **kw: [name], objExists=lambda name: False)
@@ -46,7 +47,7 @@ class PoleVectorTests(unittest.TestCase):
         self.assertEqual(result["mirror"]["locator"], ":Anim:R_Knee_PV")
         self.assertEqual(env["mirrorName"]("Bip001FBXASC032LFBXASC032Calf"),
                          "Bip001FBXASC032RFBXASC032Calf")
-        self.assertFalse(env["DefaultSetting"]()["mirror"])
+        self.assertFalse(env["DefaultSetting"]()["items"][0]["mirror"])
 
     def test_mirror_checks_both_sides_before_building(self):
         cmds = SimpleNamespace(ls=lambda name, **kw: [name] if "R_Ankle" not in name else [],
@@ -57,6 +58,33 @@ class PoleVectorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "expected one joint"):
             env["Run"]({"start": "L_Thigh", "middle": "L_Knee", "end": "L_Ankle", "mirror": True},
                        {"source_namespace_animation": "Anim"})
+        self.assertEqual(calls, [])
+
+    def test_multiple_items_and_legacy_migration(self):
+        cmds = SimpleNamespace(ls=lambda name, **kw: [name], objExists=lambda name: False)
+        env = scope(cmds=cmds, rt=SimpleNamespace(leaf=lambda name: name.split(":")[-1]))
+        calls = []
+        def create(*args):
+            calls.append(args)
+            return args[3], []
+        env["createPoleVector"] = create
+        first = {"start": "L_Thigh", "middle": "L_Knee", "end": "L_Ankle",
+                 "distance_ratio": 0.75, "mirror": True}
+        second = {"source_role": "Rig", "start": "L_Arm", "middle": "L_Elbow",
+                  "end": "L_Wrist", "distance_ratio": 1.2}
+        migrated = env["NormalizeSettings"](first)
+        self.assertEqual(migrated["items"], [env["ItemData"](first)])
+        context = {"source_namespace_animation": "Anim", "target_namespace": "Rig"}
+        result = env["Run"]({"items": [first, second]}, context)
+        self.assertEqual(len(result["items"]), 2)
+        self.assertEqual(len(context["pole_vectors"]), 3)
+        self.assertEqual([call[3] for call in calls],
+                         [":Anim:L_Knee_PoleVector", ":Anim:R_Knee_PoleVector",
+                          ":Rig:L_Elbow_PoleVector"])
+        self.assertEqual([call[4] for call in calls], [0.75, 0.75, 1.2])
+        calls.clear()
+        with self.assertRaisesRegex(ValueError, "duplicated"):
+            env["Run"]({"items": [first, first]}, context)
         self.assertEqual(calls, [])
 
     def test_live_builder_uses_world_matrices_and_locator_offset_matrix(self):
