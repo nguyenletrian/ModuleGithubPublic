@@ -30,7 +30,8 @@ def _data_path(data):
 
 def normalizeItem(item):
     result = {key: item.get(key, "") for key in ("driverObject", "driverAttr", "driverMin", "driverMax", "driverDefault")}
-    result["drivens"] = [{"constraint": sub.get("constraint", ""), "restParent": sub.get("restParent", "") or ""}
+    result["driverObject"] = result["driverObject"].strip().rsplit("|", 1)[-1]
+    result["drivens"] = [{"constraint": sub.get("constraint", "").strip().rsplit("|", 1)[-1], "restParent": (sub.get("restParent", "") or "").strip().rsplit("|", 1)[-1]}
                          for sub in item.get("drivens", [{"constraint": item.get("constraint", ""), "restParent": item.get("restParent", "")}])]
     return result
 
@@ -51,7 +52,7 @@ def pickConstraint(field, *unused):
     if len(selected) != 1:
         cmds.warning("Driven Range Blend: select one Parent, Point or Orient Constraint.")
         return
-    cmds.textField(field, edit=True, text=selected[0])
+    cmds.textField(field, edit=True, text=selected[0].rsplit("|", 1)[-1])
 
 
 def _pick_object(field, *unused):
@@ -59,7 +60,7 @@ def _pick_object(field, *unused):
     if not selected:
         cmds.warning("Driven Range Blend: select an object")
         return
-    cmds.textField(field, edit=True, text=selected[0])
+    cmds.textField(field, edit=True, text=selected[0].rsplit("|", 1)[-1])
 
 
 def pickRestParent(field, *unused):
@@ -70,7 +71,7 @@ def pickRestParent(field, *unused):
     if len(selected) != 1 or cmds.nodeType(selected[0]) not in ("transform", "joint"):
         cmds.warning("Driven Range Blend: select one Rest Parent transform.")
         return
-    cmds.textField(field, edit=True, text=selected[0])
+    cmds.textField(field, edit=True, text=selected[0].rsplit("|", 1)[-1])
 
 
 def _pick_attribute(node_field, attr_field, *unused):
@@ -100,7 +101,7 @@ def _pick_attribute(node_field, attr_field, *unused):
                                if aliases[i] == attribute), None)
                 if actual is None:
                     actual = cmds.attributeName(node + "." + attribute, long=True, leaf=False)
-                cmds.textField(node_field, edit=True, text=node)
+                cmds.textField(node_field, edit=True, text=node.rsplit("|", 1)[-1])
                 cmds.textField(attr_field, edit=True, text=actual)
                 return
     cmds.warning("Driven Range Blend: cannot resolve the selected attribute and its node")
@@ -196,7 +197,7 @@ def Add(listUI, item=None, *unused):
 def _collect():
     items = []
     for row in STATE["rows"]:
-        item = _snapshot(row)
+        item = normalizeItem(_snapshot(row))
         for key in ("driverObject", "driverAttr"):
             item[key] = item[key].strip()
         item["drivens"] = [{key: value.strip() for key, value in sub.items()} for sub in item["drivens"]]
