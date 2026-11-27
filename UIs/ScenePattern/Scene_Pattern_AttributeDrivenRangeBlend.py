@@ -275,12 +275,11 @@ def createBlend(driverObject, driverAttr, driverMin, driverMax, driverDefault, d
     cmds.setAttr(blend + ".inputMax", driverMax)
     cmds.setAttr(blend + ".outputMin", 0)
     cmds.setAttr(blend + ".outputMax", 1)
-    cmds.setAttr(blend + ".value[0].value_Position", 0)
-    cmds.setAttr(blend + ".value[0].value_FloatValue", 0)
-    cmds.setAttr(blend + ".value[0].value_Interp", 1)
-    cmds.setAttr(blend + ".value[1].value_Position", 1)
-    cmds.setAttr(blend + ".value[1].value_FloatValue", 1)
-    cmds.setAttr(blend + ".value[1].value_Interp", 1)
+    for index in (0, 1):
+        entry = blend + ".value[{}].value_".format(index)
+        cmds.setAttr(entry + "Position", index)
+        cmds.setAttr(entry + "FloatValue", index)
+        cmds.setAttr(entry + "Interp", 1)
     cmds.connectAttr(driver, blend + ".inputValue")
     reverse = cmds.createNode("reverse", name=name + "_Reverse")
     cmds.connectAttr(blend + ".outValue", reverse + ".inputX")
@@ -356,11 +355,15 @@ def Run(data, *unused):
 
 
 def buildScript(items):
-    source = "\n\n".join(inspect.getsource(fn).rstrip() for fn in (mapAxes, mappedRestMatrix, createBlend))
-    source = "\n".join("    " + line if line.strip() else "" for line in source.splitlines())
-    calls = ["    createBlend(*" + repr(blendArguments(item)) + ")" for item in items]
-    return ("def main():\n    import itertools\n    import maya.cmds as cmds\n    import maya.api.OpenMaya as om\n\n" + source + "\n\n"
-            + ("\n".join(calls) or "    pass") + '\n\nif __name__ == "__main__":\n    main()\n')
+    helpers = "\n\n".join(inspect.getsource(fn).rstrip() for fn in (mapAxes, mappedRestMatrix))
+    body = inspect.getsource(createBlend).split("\n", 1)[1].rstrip()
+    data = ",\n".join("        " + repr(blendArguments(item)) for item in items)
+    helpers = "\n".join("    " + line if line.strip() else "" for line in helpers.splitlines())
+    body = "\n".join("    " + line if line.strip() else "" for line in body.splitlines())
+    return ("def main():\n    import itertools\n    import maya.cmds as cmds\n    import maya.api.OpenMaya as om\n\n"
+            + "    BLEND_DATA = [\n" + data + "\n    ]\n\n" + helpers + "\n\n"
+            + "    for driverObject, driverAttr, driverMin, driverMax, driverDefault, drivens in BLEND_DATA:\n"
+            + body + '\n\nif __name__ == "__main__":\n    main()\n')
 
 
 def ExportPython(data, *unused):
