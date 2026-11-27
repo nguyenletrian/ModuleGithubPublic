@@ -1049,7 +1049,7 @@ def _module_field_columns(kind, descriptors):
                   ("target_role", "new_low", "new_high"),
                   "Scale Ref", "Scale Object"),
         "PoleVector": (("source_role", "start", "middle", "end"),
-                       ("name", "distance_ratio"), "Joint Chain", "Pole Vector"),
+                       ("name", "distance_ratio", "mirror"), "Joint Chain", "Pole Vector"),
         "OffsetPosition": (("ref_role", "ref_root", "ref_object"),
                            ("affect_role", "affect_root", "affect_object"),
                            "Ref", "Affect"),
