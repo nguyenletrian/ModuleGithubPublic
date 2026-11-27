@@ -1377,7 +1377,9 @@ class RetargetCard(QtWidgets.QFrame):
             widget = QtWidgets.QPlainTextEdit()
             widget.setPlainText(str(value or ""))
             widget.setPlaceholderText("Stage notes...")
-            widget.setFixedHeight(100)
+            widget.setFixedHeight(widget.fontMetrics().lineSpacing() * 2
+                                  + int(widget.document().documentMargin() * 2)
+                                  + widget.frameWidth() * 2 + 2)
             widget.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
             widget.textChanged.connect(_queue_save)
             parent.addWidget(widget)
