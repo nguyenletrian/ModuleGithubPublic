@@ -1482,12 +1482,13 @@ class RetargetCard(QtWidgets.QFrame):
                 namespace_row.addWidget(role, 1)
                 self.constraint_roles[role_key] = role
                 self.widgets[role_key] = ("choice", role)
-            maintain = QtWidgets.QCheckBox("Maintain")
-            maintain.setToolTip("Maintain Offset for all constraints in this module")
-            maintain.setChecked(data["maintain_offset"])
-            maintain.toggled.connect(_queue_save)
-            namespace_row.addWidget(maintain)
-            self.widgets["maintain_offset"] = ("bool", maintain)
+            if self.kind == "Connect":
+                maintain = QtWidgets.QCheckBox("Maintain")
+                maintain.setToolTip("Maintain Offset for all constraints in this module")
+                maintain.setChecked(data["maintain_offset"])
+                maintain.toggled.connect(_queue_save)
+                namespace_row.addWidget(maintain)
+                self.widgets["maintain_offset"] = ("bool", maintain)
             if self.kind == "Constraint":
                 extra = QtWidgets.QCheckBox("Extra Joint")
                 extra.setToolTip("Create an aligned intermediate joint; otherwise constrain From directly to To")
@@ -2138,19 +2139,34 @@ class RetargetCard(QtWidgets.QFrame):
                 row[key + "_role"] = role
                 row[key] = field
             columns.addLayout(column, 1)
-        if constraint:
-            for channel, short in (("translate", "T"), ("rotate", "R"), ("scale", "S"), ("mirror", "M")):
+        if self.kind == "Constraint":
+            content.addLayout(columns)
+            options = QtWidgets.QHBoxLayout()
+            options.setSpacing(6)
+            for channel, short in (("translate", "T"), ("rotate", "R"), ("scale", "S"), ("mirror", "Mirror"), ("maintain_offset", "Maintain Offset")):
                 check = QtWidgets.QCheckBox(short)
-                check.setToolTip(channel.title())
+                check.setToolTip("Keep To pose; when off, map From axes to To if Extra Joint is enabled" if channel == "maintain_offset" else channel.title())
                 check.setChecked(data[channel])
                 check.toggled.connect(_queue_save)
-                columns.addWidget(check)
-                if self.kind == "Connect" and channel == "scale":
-                    check.hide()
+                options.addWidget(check)
                 row[channel] = check
-        if not vector:
-            columns.addWidget(delete)
-        content.addLayout(columns)
+            options.addStretch(1)
+            options.addWidget(delete)
+            content.addLayout(options)
+        else:
+            if constraint:
+                for channel, short in (("translate", "T"), ("rotate", "R"), ("scale", "S"), ("mirror", "M")):
+                    check = QtWidgets.QCheckBox(short)
+                    check.setToolTip(channel.title())
+                    check.setChecked(data[channel])
+                    check.toggled.connect(_queue_save)
+                    columns.addWidget(check)
+                    if self.kind == "Connect" and channel == "scale":
+                        check.hide()
+                    row[channel] = check
+            if not vector:
+                columns.addWidget(delete)
+            content.addLayout(columns)
         delete.clicked.connect(
             lambda checked=False, selected=row:
             self._remove_rotate_pair_row(selected))
@@ -2459,7 +2475,7 @@ class RetargetCard(QtWidgets.QFrame):
                 value = [
                     dict({key: row[key].text().strip() for key in ("from", "to")},
                          **{key: row[key].isChecked()
-                            for key in ("translate", "rotate", "scale", "mirror")})
+                            for key in ("translate", "rotate", "scale", "mirror", "maintain_offset") if key in row})
                     for row in widget]
             elif kind == "match_rotate_pairs":
                 value = [
@@ -2540,11 +2556,7 @@ class RetargetCard(QtWidgets.QFrame):
         elif self.kind == "Connect":
             values = _module("Connect").NormalizeSettings(values)
         elif self.kind == "Constraint":
-            values = {"from_role": values.get("from_role", "REF"),
-                      "to_role": values.get("to_role", "Rig"),
-                      "maintain_offset": bool(values.get("maintain_offset", True)),
-                      "use_extra_joint": bool(values.get("use_extra_joint", True)),
-                      "pairs": values.get("pairs", [])}
+            values = _module("Constraint").NormalizeSettings(values)
         elif self.kind == "MatchTransform":
             values = {"pairs": values.get("pairs", [])}
         elif self.kind == "MatchRotate":
