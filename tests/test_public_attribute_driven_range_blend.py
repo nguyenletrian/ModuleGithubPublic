@@ -18,87 +18,84 @@ def scope(**dependencies):
 
 
 class AttributeDrivenRangeBlendTests(unittest.TestCase):
-    def test_multiple_constraint_types_share_one_blend(self):
-        nodes, attrs, connections, disconnects, added = {}, {}, {}, [], []
+    def test_auto_rest_multiple_constraints(self):
         kinds = {"Parent": "parentConstraint", "Position": "pointConstraint",
                  "Rotation": "orientConstraint"}
-        aliases = {name: ["OldAW0", "OldBW1"] for name in kinds}
-        targets = {name: [name + "_OldA", name + "_OldB"] for name in kinds}
-        aliases["Rotation"].append("NewW2")
-        targets["Rotation"].append("Rotation_New")
+        aliases = {name: ["OriginalW0"] for name in kinds}
+        nodes, attrs, connections, added, poses, events = {}, {}, {}, [], {}, []
+        matrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 3, 4, 1]
+
         def constraint_command(name):
             def command(*args, **kwargs):
                 if kwargs.get("query"):
-                    return list(targets[name] if kwargs.get("targetList") else aliases[name])
+                    return list(aliases[name])
+                events.append(("add", name))
                 added.append((name, args, kwargs))
-                aliases[name].append("NewW2")
-                targets[name].append(args[0])
+                aliases[name].append("RestW1")
                 return [name]
             return command
-        def create_node(kind, name):
-            nodes[name] = kind
+
+        def create_node(kind, name, **kwargs):
+            nodes[name] = (kind, kwargs)
             return name
-        def set_attr(plug, value):
-            attrs[plug] = value
-        def connect(src, dst):
-            connections[dst] = src
+
+        def xform(node, **kwargs):
+            if kwargs.get("query"):
+                events.append(("capture", node))
+                return matrix[:]
+            poses[node] = kwargs["matrix"]
+
+        def connect(src, dst, **kwargs):
+            connections[dst] = (src, kwargs)
+
         cmds = SimpleNamespace(
             objExists=lambda plug: True,
-            ls=lambda name, **kwargs: [name],
             nodeType=lambda name: kinds[name],
+            ls=lambda name, **kwargs: [name],
             listConnections=lambda plug, **kwargs: [plug.split(".")[0] + "_Driven"],
+            listRelatives=lambda node, **kwargs: ["|Rig|Group"],
+            xform=xform, createNode=create_node,
+            setAttr=lambda plug, value: attrs.update({plug: value}),
+            connectAttr=connect,
             parentConstraint=constraint_command("Parent"),
             pointConstraint=constraint_command("Position"),
-            orientConstraint=constraint_command("Rotation"),
-            connectionInfo=lambda plug, **kwargs: "Control.AutoFollow" if plug.endswith("OldAW0") else "",
-            getAttr=lambda plug: 0.6 if plug.endswith("OldAW0") else 0.4,
-            createNode=create_node, setAttr=set_attr, connectAttr=connect,
-            disconnectAttr=lambda src, dst: disconnects.append((src, dst)))
+            orientConstraint=constraint_command("Rotation"))
         env = scope(cmds=cmds)
-        env["createBlend"]("Driver", "rotateX", 0, 90, 0,
-                           [(name, name + "_New") for name in kinds])
-        blend = "Driver_rotateX_RangeBlend"
-        self.assertEqual(added, [(name, (name + "_New", name + "_Driven"),
-                                 {"edit": True, "weight": 0}) for name in kinds if name != "Rotation"])
-        self.assertEqual(list(nodes.values()).count("remapValue"), 1)
-        self.assertEqual(list(nodes.values()).count("reverse"), 1)
+        env["createBlend"]("Driver", "AutoFollow", 0, 1, 1, list(kinds))
+        blend = "Driver_AutoFollow_RangeBlend"
+        self.assertEqual(events[:3], [("capture", name + "_Driven") for name in kinds])
+        self.assertEqual(added, [(name, (name + "_Rest", name + "_Driven"),
+                                 {"weight": 0}) for name in kinds])
+        self.assertEqual(sum(kind == "remapValue" for kind, _ in nodes.values()), 1)
+        self.assertEqual(sum(kind == "reverse" for kind, _ in nodes.values()), 1)
         self.assertEqual(attrs[blend + ".value[0].value_Interp"], 1)
-        self.assertEqual(attrs[blend + ".inputMax"], 90)
-        self.assertEqual(attrs[blend + ".outputMin"], 0)
-        self.assertEqual(attrs[blend + ".outputMax"], 1)
         for name in kinds:
-            prefix = name + "_RangeBlend"
-            self.assertIn(("Control.AutoFollow", name + ".OldAW0"), disconnects)
-            self.assertEqual(connections[prefix + "_Normalize01.input1X"], "Control.AutoFollow")
-            self.assertEqual(attrs[prefix + "_Normalize02.input1X"], 0.4)
-            self.assertEqual(connections[name + ".OldAW0"], prefix + "_Old01.outputX")
-            self.assertEqual(connections[prefix + "_Old01.input1X"], prefix + "_Normalize01.outputX")
-            self.assertEqual(connections[prefix + "_Old01.input2X"], blend + "_Reverse.outputX")
-            self.assertEqual(connections[prefix + "_OldTotal.input1D[0]"], prefix + "_Normalize01.input1X")
-            self.assertEqual(connections[prefix + "_Normalize01.input2X"], prefix + "_SafeTotal.outColorR")
-            self.assertEqual(connections[name + ".NewW2"], blend + ".outValue")
+            self.assertEqual(nodes[name + "_Rest"], ("transform", {"parent": "|Rig|Group"}))
+            self.assertEqual(poses[name + "_Rest"], matrix)
+            self.assertEqual(connections[name + ".OriginalW0"], (blend + ".outValue", {"force": True}))
+            self.assertEqual(connections[name + ".RestW1"], (blend + "_Reverse.outputX", {}))
 
-    def test_legacy_single_driven_and_fixed_weight_range(self):
+    def test_legacy_json_discards_manual_targets(self):
         env = scope()
-        data = {"driverObject": "Driver", "driverAttr": "rotateX",
-                "driverMin": -90, "driverMax": 90, "driverDefault": 0,
-                "constraint": "Constraint", "target": "New",
-                "blendMin": 0.2, "blendMax": 0.7, "smooth": True, "maintainOffset": True}
+        data = {"driverObject": "Driver", "driverAttr": "AutoFollow",
+                "driverMin": 0, "driverMax": 1, "driverDefault": 1,
+                "drivens": [{"constraint": "Constraint", "target": "OldRef"}]}
         self.assertEqual(env["blendArguments"](data),
-                         ("Driver", "rotateX", -90.0, 90.0, 0.0, [("Constraint", "New")]))
+                         ("Driver", "AutoFollow", 0.0, 1.0, 1.0, ["Constraint"]))
+        self.assertEqual(env["normalizeItem"](data)["drivens"],
+                         [{"constraint": "Constraint"}])
 
     def test_single_pass_export(self):
         env = scope()
-        data = {"driverObject": "Driver", "driverAttr": "rotateX",
-                "driverMin": 0, "driverMax": 90,
-                "constraint": "Constraint", "target": "New"}
+        data = {"driverObject": "Driver", "driverAttr": "AutoFollow",
+                "driverMin": 0, "driverMax": 1, "driverDefault": 1,
+                "drivens": [{"constraint": "Constraint"}]}
         source = env["buildScript"]([data])
         compile(source, "<range blend export>", "exec")
-        self.assertIn("createBlend(*('Driver', 'rotateX', 0.0, 90.0, 0.0, [('Constraint', 'New')]))", source)
-        self.assertNotIn("maintainOffset", source)
-        self.assertNotIn("smooth", source)
+        self.assertIn("createBlend(*('Driver', 'AutoFollow', 0.0, 1.0, 1.0, ['Constraint']))", source)
         self.assertNotIn("raise ", source)
         self.assertNotIn("validateItem", source)
+        self.assertNotIn("maintainOffset", source)
         self.assertNotIn("NLTA_", source)
 
 
