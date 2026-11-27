@@ -113,6 +113,8 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
         self.assertIn("('Driver', 'AutoFollow', 0.0, 1.0, 1.0, [('Constraint', 'Uber_att')])", source)
         self.assertIn("for driverObject, driverAttr, driverMin, driverMax, driverDefault, drivens in BLEND_DATA:", source)
         self.assertNotIn("def createBlend(", source)
+        self.assertNotIn("getattr(", source)
+        self.assertIn("cmds.parentConstraint(rest, driven, weight=0, maintainOffset=True)", source)
         self.assertIn('cmds.setAttr(constraint + ".interpType", 2)', source)
         self.assertNotIn("try:", source)
         self.assertNotIn("except ", source)
