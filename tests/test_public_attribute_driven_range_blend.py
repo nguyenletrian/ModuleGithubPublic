@@ -85,6 +85,10 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
             self.assertEqual(nodes[name + "_Rest"], ("transform", {"parent": "|Rig|Group"}))
             self.assertEqual(poses[name + "_Rest"], matrix)
             self.assertEqual(attrs[name + "_Rest.rotateOrder"], 3)
+            if name in ("Parent", "Rotation"):
+                self.assertEqual(attrs[name + ".interpType"], 2)
+            else:
+                self.assertNotIn(name + ".interpType", attrs)
             self.assertEqual(connections[name + ".OriginalW0"], (blend + ".outValue", {"force": True}))
             self.assertEqual(connections[name + ".RestW1"], (blend + "_Reverse.outputX", {}))
 
