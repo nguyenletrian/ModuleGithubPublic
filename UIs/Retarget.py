@@ -2867,7 +2867,7 @@ def _load_all(*args):
             _STATE.update({"steps": loaded, "path": _default_path(),
                            "context": {}, "selected_id": None,
                            "dirty": False,
-                           "expanded": {step["id"]: False
+                           "expanded": {step["id"]: step["kind"] == "Note"
                                         for step in loaded}})
             _set_general_form()
             _rebuild_cards()
@@ -3295,7 +3295,7 @@ def CreateUI(data):
     loaded = _read_profile()
     _STATE["steps"] = loaded if loaded is not None else _default_steps()
     _STATE["expanded"] = {
-        step["id"]: False for step in _STATE["steps"]
+        step["id"]: step["kind"] == "Note" for step in _STATE["steps"]
     }
 
     parent = data["parent"]
