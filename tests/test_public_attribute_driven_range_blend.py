@@ -80,7 +80,11 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
         self.assertTrue(all(events.index(("add", name)) < first_weight for name in kinds))
         self.assertEqual(sum(kind == "remapValue" for kind, _ in nodes.values()), 1)
         self.assertEqual(sum(kind == "reverse" for kind, _ in nodes.values()), 1)
-        self.assertEqual(attrs[blend + ".value[0].value_Interp"], 1)
+        for index in (0, 1):
+            prefix = blend + ".value[{}].value_".format(index)
+            self.assertEqual(attrs[prefix + "Position"], index)
+            self.assertEqual(attrs[prefix + "FloatValue"], index)
+            self.assertEqual(attrs[prefix + "Interp"], 1)
         for name in kinds:
             self.assertEqual(nodes[name + "_Rest"], ("transform", {"parent": "|Rig|Group"}))
             self.assertEqual(poses[name + "_Rest"], matrix)
@@ -117,7 +121,20 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
                 "drivens": [{"constraint": "Constraint"}]}
         source = env["buildScript"]([data])
         compile(source, "<range blend export>", "exec")
-        self.assertIn("createBlend(*('Driver', 'AutoFollow', 0.0, 1.0, 1.0, ['Constraint']))", source)
+        self.assertIn("('Driver', 'AutoFollow', 0.0, 1.0, 1.0, ['Constraint'])", source)
+        self.assertIn("for driverObject, driverAttr, driverMin, driverMax, driverDefault, drivens in BLEND_DATA:", source)
+        self.assertNotIn("def createBlend(", source)
+        self.assertIn('cmds.setAttr(constraint + ".interpType", 2)', source)
+        self.assertNotIn("try:", source)
+        self.assertNotIn("except ", source)
+        # The single-pass loop must contain exactly the tested runtime builder body.
+        main = ast.parse(source).body[0]
+        loop = next(node for node in main.body if isinstance(node, ast.For))
+        runtime = next(node for node in ast.parse(STEP.read_text(encoding="utf-8")).body
+                       if isinstance(node, ast.FunctionDef) and node.name == "createBlend")
+        self.assertEqual(ast.dump(ast.Module(body=loop.body, type_ignores=[])),
+                         ast.dump(ast.Module(body=runtime.body, type_ignores=[])))
+        compile(env["buildScript"]([]), "<empty range blend export>", "exec")
         self.assertNotIn("raise ", source)
         self.assertNotIn("validateItem", source)
         self.assertIn("maintainOffset=True", source)
