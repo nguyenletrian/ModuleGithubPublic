@@ -1,6 +1,8 @@
 """Offline contracts for Attribute Driven Range Blend."""
 import ast
 import inspect
+import itertools
+import math
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +12,7 @@ STEP = Path(__file__).resolve().parents[1] / "UIs/ScenePattern/Scene_Pattern_Att
 
 def scope(**dependencies):
     tree = ast.parse(STEP.read_text(encoding="utf-8"))
-    env = dict(inspect=inspect, **dependencies)
+    env = dict(inspect=inspect, itertools=itertools, **dependencies)
     exec(compile(ast.Module(body=[node for node in tree.body
                                   if isinstance(node, ast.FunctionDef)],
                             type_ignores=[]), str(STEP), "exec"), env)
@@ -22,7 +24,7 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
         kinds = {"Parent": "parentConstraint", "Position": "pointConstraint",
                  "Rotation": "orientConstraint"}
         aliases = {name: ["OriginalW0"] for name in kinds}
-        nodes, attrs, connections, added, poses, events, matched = {}, {}, {}, [], {}, [], []
+        nodes, attrs, connections, added, poses, events, mapped = {}, {}, {}, [], {}, [], []
         matrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 3, 4, 1]
 
         def constraint_command(name):
@@ -41,7 +43,8 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
 
         def xform(node, **kwargs):
             if kwargs.get("query"):
-                events.append(("capture", node))
+                if node.endswith("_Driven"):
+                    events.append(("capture", node))
                 return matrix[:]
             poses[node] = kwargs["matrix"]
 
@@ -57,20 +60,22 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
             listRelatives=lambda node, **kwargs: ["|Rig|Group"],
             xform=xform, createNode=create_node,
             getAttr=lambda plug: 3,
-            matchTransform=lambda rest, target, **kwargs: matched.append((rest, target, kwargs)),
             setAttr=lambda plug, value: attrs.update({plug: value}),
             connectAttr=connect,
             parentConstraint=constraint_command("Parent"),
             pointConstraint=constraint_command("Position"),
             orientConstraint=constraint_command("Rotation"))
         env = scope(cmds=cmds)
+        def map_matrix(rest, target):
+            mapped.append((rest, target))
+            return rest
+        env["mappedRestMatrix"] = map_matrix
         env["createBlend"]("Driver", "AutoFollow", 0, 1, 1, list(kinds))
         blend = "Driver_AutoFollow_RangeBlend"
         self.assertEqual(events[:3], [("capture", name + "_Driven") for name in kinds])
         self.assertEqual(added, [(name, (name + "_Rest", name + "_Driven"),
                                  dict(weight=0, **({"maintainOffset": True} if name == "Parent" else {}))) for name in kinds])
-        self.assertEqual(matched, [(name + "_Rest", name + "_Original",
-                                    {"rotation": True, "position": False, "scale": False}) for name in kinds])
+        self.assertEqual(mapped, [(matrix, matrix), (matrix, matrix)])
         first_weight = next(i for i, event in enumerate(events) if event[0] == "connect" and event[1].endswith(".OriginalW0"))
         self.assertTrue(all(events.index(("add", name)) < first_weight for name in kinds))
         self.assertEqual(sum(kind == "remapValue" for kind, _ in nodes.values()), 1)
@@ -82,6 +87,14 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
             self.assertEqual(attrs[name + "_Rest.rotateOrder"], 3)
             self.assertEqual(connections[name + ".OriginalW0"], (blend + ".outValue", {"force": True}))
             self.assertEqual(connections[name + ".RestW1"], (blend + "_Reverse.outputX", {}))
+
+    def test_signed_mapping_preserves_rest_tilt(self):
+        env = scope()
+        c, s = math.cos(math.radians(12)), math.sin(math.radians(12))
+        rest = ((c, s, 0), (-s, c, 0), (0, 0, 1))
+        target = ((0, 0, 1), (0, 1, 0), (-1, 0, 0))
+        self.assertEqual(env["mapAxes"](rest, target), (rest[2], rest[1], (-c, -s, 0)))
+        self.assertEqual(env["mapAxes"](rest, ((1, 0, 0), (0, 1, 0), (0, 0, 1))), rest)
 
     def test_legacy_json_discards_manual_targets(self):
         env = scope()
@@ -105,6 +118,8 @@ class AttributeDrivenRangeBlendTests(unittest.TestCase):
         self.assertNotIn("validateItem", source)
         self.assertIn("maintainOffset=True", source)
         self.assertIn("targetList=True", source)
+        self.assertIn("def mapAxes(", source)
+        self.assertNotIn("cmds.matchTransform", source)
         self.assertNotIn("NLTA_", source)
 
 
