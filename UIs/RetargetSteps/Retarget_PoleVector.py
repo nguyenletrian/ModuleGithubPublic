@@ -9,7 +9,7 @@ LABEL = "Pole Vector"
 
 def DefaultSetting():
     return {"source_role": "Anim", "start": "", "middle": "", "end": "",
-            "name": "", "distance_ratio": 0.5}
+            "name": "", "distance_ratio": 1.0}
 
 
 def Fields():
@@ -145,11 +145,9 @@ def createPoleVector(start, middle, end, name, ratio):
     direction = normalized(choose(dot(bend, bend, "BendLengthSquared"), 1e-12,
                                   bend, fallback, "SafeBend"), "PoleDirection")
 
-    total = node("plusMinusAverage", "ChainLength")
-    cmds.connectAttr(distance(start, middle, "UpperLength"), total + ".input1D[0]")
-    cmds.connectAttr(distance(middle, end, "LowerLength"), total + ".input1D[1]")
+    # Use the live straight-line Start-End distance as the base.
     length = node("multDoubleLinear", "PoleDistance")
-    cmds.connectAttr(total + ".output1D", length + ".input1")
+    cmds.connectAttr(distance(start, end, "StartEndLength"), length + ".input1")
     cmds.setAttr(length + ".input2", ratio)
     pole_position = add(b, scale(direction, length + ".output", "PoleOffset"), "PolePosition")
 
